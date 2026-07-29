@@ -3,7 +3,7 @@ import { initAuth } from './auth.js';
 import { renderLogin, doLogin } from './pages/login.js';
 import { renderAccount, saveAccountProfile, saveAccountPassword } from './pages/account.js';
 import { renderDashboard } from './pages/dashboard.js';
-import { renderOpsOverview } from './pages/opsOverview.js';
+import * as opsOverviewPage from './pages/opsOverview.js';
 import * as assetsPage from './pages/assets.js';
 import * as assetsInventoryPage from './pages/assetsInventory.js';
 import * as locationsPage from './pages/locations.js';
@@ -45,7 +45,7 @@ function bootMainApp() {
 
 registerPage('account', renderAccount);
 registerPage('dashboard', renderDashboard);
-registerPage('opsOverview', renderOpsOverview);
+registerPage('opsOverview', opsOverviewPage.renderOpsOverview);
 registerPage('assets', assetsPage.renderAssets);
 registerPage('assetsInventory', assetsInventoryPage.renderAssetsInventory);
 registerPage('locations', locationsPage.renderLocations);
@@ -75,6 +75,7 @@ window.App = {
   toggleSort,
   saveAccountProfile,
   saveAccountPassword,
+  ...opsOverviewPage,
   ...assetsPage,
   ...assetsInventoryPage,
   ...locationsPage,

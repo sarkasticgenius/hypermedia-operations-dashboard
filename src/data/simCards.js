@@ -37,3 +37,42 @@ export async function deleteSimCard(id) {
   const { error } = await supabase.from('sim_cards').delete().eq('id', id);
   if (error) throw error;
 }
+
+export async function returnSimToStock(id) {
+  const { error } = await supabase.from('sim_cards').update({
+    status: 'In Stock', deployed_location_id: null, deployed_location_name: null,
+    deployed_asset_inv_id: null, deployed_asset_inv_label: null, deployed_date: null,
+  }).eq('id', id);
+  if (error) throw error;
+}
+
+export async function markMismatchResolved(id) {
+  const { error } = await supabase.from('sim_cards').update({ has_mismatch: false }).eq('id', id);
+  if (error) throw error;
+}
+
+// Two SIMs at the same venue but different screens are NOT duplicates - only
+// same venue+screen (or both venue-level with no screen) counts. Computed live
+// on every render (unlike has_mismatch, a persisted one-time import flag) so
+// it self-clears the moment a SIM moves - ported from the original's
+// simLocationKey()/simLocationDuplicateCounts()/isDuplicateLocationSim().
+export function simLocationKey(s) {
+  if (s.status !== 'Deployed' || !s.deployed_location_name) return null;
+  return `${s.deployed_location_name}||${s.deployed_asset_inv_id || s.deployed_asset_inv_label || ''}`.toLowerCase().trim();
+}
+
+export function simLocationDuplicateCounts(simCards) {
+  const counts = new Map();
+  for (const s of simCards) {
+    const key = simLocationKey(s);
+    if (!key) continue;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+
+export function isDuplicateLocationSim(s, counts) {
+  const key = simLocationKey(s);
+  if (!key) return false;
+  return (counts.get(key) || 0) > 1;
+}

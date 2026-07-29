@@ -10,6 +10,16 @@ export async function listMetroPics() {
   return data;
 }
 
+export function metroPicStatus(m) {
+  if (!m.validity_end) return 'Active';
+  const today = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00');
+  const end = new Date(m.validity_end + 'T00:00:00');
+  const diffDays = Math.round((end - today) / 86400000);
+  if (diffDays < 0) return 'Expired';
+  if (diffDays <= 30) return 'Expiring Soon';
+  return 'Active';
+}
+
 export async function saveMetroPic(row, eidFile) {
   const payload = {
     station: row.station, pic_name: row.picName || null, designation: row.designation || null,
