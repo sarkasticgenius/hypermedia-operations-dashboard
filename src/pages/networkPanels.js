@@ -32,14 +32,41 @@ function renderNetworkPanel(source, healthyField, title, settingKey, syncFnName)
   const hasData = (l) => (l.location_sub_assets || []).some((sa) => sa.source === source) || !!l[healthyField];
   const dataLocs = allLocations.filter((l) => !hidden.has(l.id) && hasData(l));
 
-  const tiles = dataLocs.map((l) => {
+  // Chains (Metro Red Line, Metro Bridges, Nakheel Pavilions, etc.) merge into one tile
+  // aggregating every location that shares the chain tag, instead of flooding the grid with a
+  // separate tile per individual station/bridge - matches how the Locations page treats chains.
+  const chainNames = [...new Set(dataLocs.filter((l) => l.chain && !l.is_combined).map((l) => l.chain))];
+  const chainedIds = new Set();
+  const chainTiles = chainNames.map((chain) => {
+    const members = allLocations.filter((l) => l.chain === chain && !l.is_combined);
+    members.forEach((m) => chainedIds.add(m.id));
+    let offline = 0; let total = 0;
+    for (const m of members) {
+      const stats = sourceStats(m, allLocations, source, healthyField);
+      offline += stats.offline; total += stats.total;
+    }
+    const color = heatmapColor({ offline, total });
+    const html = `<div style="background:${color};border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openOfflineAssetsModal(${jsonAttr({ chain, source, healthyField })})' title="Click to see offline assets">
+      <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(chain)} <span style="font-weight:400;opacity:.85;">(${members.length} locations)</span></div>
+      <div style="font-size:11px;opacity:.95;">${total ? `${offline} offline / ${total} total` : 'No data'}</div>
+    </div>`;
+    return { name: chain, html };
+  });
+
+  const individualTiles = dataLocs.filter((l) => !chainedIds.has(l.id)).map((l) => {
     const stats = sourceStats(l, allLocations, source, healthyField);
     const color = heatmapColor(stats);
-    return `<div style="background:${color};border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openOfflineAssetsModal("${l.id}","${source}","${healthyField}")' title="Click to see offline assets">
+    const html = `<div style="background:${color};border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openOfflineAssetsModal(${jsonAttr({ locId: l.id, source, healthyField })})' title="Click to see offline assets">
       <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(l.name)}${l.is_combined ? ' <span style="font-weight:400;opacity:.85;">(combined)</span>' : ''}</div>
       <div style="font-size:11px;opacity:.95;">${stats.total ? `${stats.offline} offline / ${stats.total} total` : 'No data'}</div>
     </div>`;
-  }).join('');
+    return { name: l.name, html };
+  });
+
+  const search = (STATE.networkSearch || '').trim().toLowerCase();
+  const allTiles = chainTiles.concat(individualTiles);
+  const visibleTiles = search ? allTiles.filter((t) => t.name.toLowerCase().includes(search)) : allTiles;
+  const tiles = visibleTiles.map((t) => t.html).join('');
 
   return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
     <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}.` : 'No live API configured yet.'} ${dataLocs.length ? `Showing the last imported snapshot for ${dataLocs.length} location(s), pulled from Locations.` : 'No data imported for this source yet.'}</span>
@@ -48,11 +75,16 @@ function renderNetworkPanel(source, healthyField, title, settingKey, syncFnName)
       ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}
     </span>
   </div>
-  ${dataLocs.length ? `<div class="card">
-    <div class="card-head"><h3>Site Status Heatmap</h3><div class="desc">Colored by number/share of offline units - green = all online, red = high offline share. Click a tile to see what's offline and raise a ticket.</div></div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>
+  ${allTiles.length ? `<div class="card">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div><h3>Site Status Heatmap</h3><div class="desc">Colored by number/share of offline units - green = all online, red = high offline share. Locations that belong to the same chain are merged into one tile. Click a tile to see what's offline and raise a ticket.</div></div>
+      <input id="net-search" placeholder="Search by location or chain name..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+    </div>
+    ${visibleTiles.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No location or chain matches "${esc(STATE.networkSearch || '')}".</div>`}
   </div>` : `<div class="card"><div class="empty">No ${esc(title)} data yet.${admin ? ' Configure the API above, or run a sync, to populate this view.' : ' Ask an Admin to configure this.'}</div></div>`}`;
 }
+
+export function setNetworkSearch(value) { setState({ networkSearch: value }); }
 
 export function renderBroadsignPanel() {
   return renderNetworkPanel('broadsign', 'broadsign_healthy_count', 'Broadsign Console', 'broadsignApi', 'broadsign-sync');
@@ -88,7 +120,9 @@ export function renderGrassfishPanel() {
     byVenue[v].push(r);
   });
   const venues = Object.keys(byVenue).sort((a, b) => a.localeCompare(b));
-  const tiles = venues.map((v) => {
+  const search = (STATE.networkSearch || '').trim().toLowerCase();
+  const visibleVenues = search ? venues.filter((v) => v.toLowerCase().includes(search)) : venues;
+  const tiles = visibleVenues.map((v) => {
     const list = byVenue[v];
     return `<div style="background:#2f6fb3;border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openGrassfishVenueModal(${jsonAttr(v)})' title="Click to see screens at this venue">
       <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(v)}</div>
@@ -104,13 +138,16 @@ export function renderGrassfishPanel() {
     </span>
   </div>
   ${venues.length ? `<div class="card">
-    <div class="card-head"><h3>Screens by Venue</h3><div class="desc">One tile per venue with at least one Grassfish screen in Asset Inventory. Click a tile to see the individual screens and raise a ticket if needed.</div></div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div><h3>Screens by Venue</h3><div class="desc">One tile per venue with at least one Grassfish screen in Asset Inventory. Click a tile to see the individual screens and raise a ticket if needed.</div></div>
+      <input id="net-search" placeholder="Search by venue name..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+    </div>
+    ${visibleVenues.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No venue matches "${esc(STATE.networkSearch || '')}".</div>`}
   </div>` : `<div class="card"><div class="empty">No screens tagged Player Type = Grassfish in Asset Inventory yet. Set a screen's Player Type to "Grassfish" under Asset Inventory to have it show up here.</div></div>`}`;
 }
 
-export function openOfflineAssetsModal(locId, source, healthyField) {
-  openModal('offlineAssetsModal', { locId, source, healthyField });
+export function openOfflineAssetsModal(opts) {
+  openModal('offlineAssetsModal', opts);
 }
 
 export function openGrassfishVenueModal(venue) {
@@ -137,37 +174,53 @@ export async function runNetworkSync(settingKey, functionName) {
 
 registerModal('offlineAssetsModal', (data) => {
   const allLocations = STATE.pageData.locationsForNetworkPanel?.data || [];
-  const l = allLocations.find((x) => x.id === data.locId);
-  const stats = l ? sourceStats(l, allLocations, data.source, data.healthyField) : { offlineItems: [] };
-  const items = stats.offlineItems || [];
-  const sourceLabel = data.source === 'broadsign' ? 'Broadsign Console' : data.source === 'grassfish' ? 'Grassfish Console' : '';
   const ticketAddOk = canAdd('tickets');
+  const sourceLabel = data.source === 'broadsign' ? 'Broadsign Console' : data.source === 'grassfish' ? 'Grassfish Console' : '';
+
+  let items = [];
+  let displayName;
+  let singleLocation = null;
+  if (data.chain) {
+    const members = allLocations.filter((m) => m.chain === data.chain && !m.is_combined);
+    for (const m of members) {
+      const stats = sourceStats(m, allLocations, data.source, data.healthyField);
+      items.push(...(stats.offlineItems || []));
+    }
+    displayName = `${data.chain} (${members.length} locations)`;
+  } else {
+    singleLocation = allLocations.find((x) => x.id === data.locId);
+    const stats = singleLocation ? sourceStats(singleLocation, allLocations, data.source, data.healthyField) : { offlineItems: [] };
+    items = stats.offlineItems || [];
+    displayName = singleLocation ? singleLocation.name : '';
+  }
 
   const rows = items.map((i) => {
     const prefill = {
-      title: `${l ? l.name : i.location} - ${i.name} Offline`,
-      location: i.location || (l ? l.name : ''),
+      title: `${i.location} - ${i.name} Offline`,
+      location: i.location || '',
       description: `${i.detail || 'Offline'}${sourceLabel ? ` (via ${sourceLabel})` : ''}`,
       type: 'Issue',
     };
     return `<tr><td>${esc(i.location)}</td><td>${esc(i.name)}</td><td>${esc(i.detail || '')}</td><td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td></tr>`;
   }).join('') || `<tr><td colspan="4"><div class="empty">Nothing offline here.</div></td></tr>`;
 
-  const bulkPrefill = {
-    title: `${l ? l.name : ''} - ${items.length} item${items.length === 1 ? '' : 's'} offline${sourceLabel ? ` (${sourceLabel})` : ''}`,
-    location: l ? l.name : '',
+  // Bulk "ticket for all" only makes sense against a single real location - a chain tile spans
+  // many locations, so there's no one place to prefill.
+  const bulkPrefill = singleLocation ? {
+    title: `${singleLocation.name} - ${items.length} item${items.length === 1 ? '' : 's'} offline${sourceLabel ? ` (${sourceLabel})` : ''}`,
+    location: singleLocation.name,
     description: items.map((i) => `${i.name}: ${i.detail || 'Offline'}`).join('\n'),
     type: 'Issue',
-  };
+  } : null;
 
   return `
-    <h3>Offline - ${l ? esc(l.name) : ''}</h3>
+    <h3>Offline - ${esc(displayName)}</h3>
     <table>
       <thead><tr><th>Location</th><th>Name</th><th>Detail</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="modal-actions">
-      ${(ticketAddOk && items.length > 1) ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(bulkPrefill)})'>Create Ticket for All</button>` : ''}
+      ${(ticketAddOk && bulkPrefill && items.length > 1) ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(bulkPrefill)})'>Create Ticket for All</button>` : ''}
       <button class="btn-sm" onclick="App.closeModal()">Close</button>
     </div>
   `;

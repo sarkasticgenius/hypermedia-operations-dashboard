@@ -1,8 +1,8 @@
-import { STATE, loadData, invalidate, toast, setState } from '../state.js';
-import { loadingCard } from '../modals.js';
-import { listCategories, addCategory, deleteCategory } from '../data/categories.js';
+import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
+import { loadingCard, registerModal } from '../modals.js';
+import { listCategories, addCategory, updateCategory, deleteCategory } from '../data/categories.js';
 import { listContractors, saveContractor, deleteContractor } from '../data/contractors.js';
-import { listNetworks, ensureNetwork } from '../data/networks.js';
+import { listNetworks, ensureNetwork, renameNetwork, countNetworkUsage, deleteNetwork } from '../data/networks.js';
 import { getAllSettings, saveSetting } from '../data/settings.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { supabase } from '../supabaseClient.js';
@@ -39,34 +39,39 @@ function renderCategoriesTab() {
     <tr>
       <td>${esc(c.name)}</td>
       <td>${c.is_rental ? '<span class="badge b-amber">Rental-tracked</span>' : '-'}</td>
-      <td><button class="btn-sm" onclick="App.removeCategory('${c.id}')">Delete</button></td>
+      <td>
+        <button class="btn-sm" onclick="App.editCategoryModal('${c.id}')">Edit</button>
+        <button class="btn-sm" onclick="App.removeCategory('${c.id}')">Delete</button>
+      </td>
     </tr>
   `).join('');
   return `
     <div class="card">
       <div class="card-head"><h3>Asset Categories</h3><div class="desc">Rental-tracked categories (Scaffolding, Spider Lift) show a rental period + maintenance location instead of a warranty date on the Asset form.</div></div>
       <table><thead><tr><th>Name</th><th>Type</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-      <form onsubmit="App.addCategoryForm(event)" class="grid2" style="margin-top:14px;">
-        <div class="field"><label>New Category</label><input id="cat-name" required></div>
-        <div class="field"><label>&nbsp;</label>
-          <label style="display:flex;align-items:center;gap:6px;font-weight:400;"><input type="checkbox" id="cat-rental" style="width:auto;"> Rental-tracked</label>
-        </div>
-        <div><button class="btn btn-orange" type="submit">Add</button></div>
-      </form>
+      <button class="btn btn-orange" style="margin-top:14px;" onclick="App.editCategoryModal(null)">+ Add Category</button>
     </div>
   `;
 }
 
-export async function addCategoryForm(event) {
+export function editCategoryModal(id) {
+  const categories = STATE.pageData.categories?.data || [];
+  const row = id ? categories.find((c) => c.id === id) : null;
+  openModal('category', row || {});
+}
+
+export async function saveCategoryForm(event) {
   event.preventDefault();
+  const id = document.getElementById('cat-id').value || null;
   const name = document.getElementById('cat-name').value.trim();
   const isRental = document.getElementById('cat-rental').checked;
   try {
-    await addCategory(name, isRental);
-    await logAudit('Add category', name);
+    if (id) await updateCategory(id, name, isRental);
+    else await addCategory(name, isRental);
+    await logAudit(id ? 'Edit category' : 'Add category', name);
     invalidate('categories');
-    toast('Category added');
-    setState({});
+    closeModal();
+    toast('Category saved');
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -76,10 +81,25 @@ export async function removeCategory(id) {
     await deleteCategory(id);
     await logAudit('Delete category', id);
     invalidate('categories');
+    closeModal();
     toast('Category deleted');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }
+
+registerModal('category', (data) => `
+  <h3>${data.id ? 'Edit' : 'Add'} Category</h3>
+  <form onsubmit="App.saveCategoryForm(event)">
+    <input type="hidden" id="cat-id" value="${esc(data.id || '')}">
+    <div class="field"><label>Name</label><input id="cat-name" value="${esc(data.name || '')}" required></div>
+    <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="cat-rental" style="width:auto;" ${data.is_rental ? 'checked' : ''}> Rental-tracked (Date of Rent + Maintenance Location instead of Warranty)</label>
+    <div class="modal-actions">
+      ${data.id ? `<button type="button" class="btn-sm" style="color:#c0392b;" onclick="App.removeCategory('${data.id}')">Delete</button>` : ''}
+      <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+      <button type="submit" class="btn btn-orange">Save</button>
+    </div>
+  </form>
+`);
 
 function renderContractorsTab() {
   const contractors = loadData('contractors', listContractors);
@@ -96,39 +116,47 @@ function renderContractorsTab() {
   const rows = contractors.map((c) => `
     <tr>
       <td>${esc(c.name)}</td>
-      <td>${esc((c.emails || []).join(', ') || '-')}</td>
+      <td>${esc(c.company || '-')}</td>
+      <td class="small">${esc((c.emails || []).join(', ') || '-')}</td>
       <td>${esc(c.phone || '-')}</td>
       <td class="tright">${screenCounts[c.id] || 0}</td>
-      <td><button class="btn-sm" onclick="App.removeContractorRow('${c.id}','${screenCounts[c.id] || 0}')">Delete</button></td>
+      <td>
+        <button class="btn-sm" onclick="App.editContractorModal('${c.id}')">Edit</button>
+        <button class="btn-sm" onclick="App.removeContractorRow('${c.id}','${screenCounts[c.id] || 0}')">Delete</button>
+      </td>
     </tr>
   `).join('');
   return `
     <div class="card">
       <div class="card-head"><h3>Contractors</h3><div class="desc">Notified by email when a ticket is created for a screen assigned to them. Screen assignment happens on the Asset Inventory edit/bulk-edit form.</div></div>
-      <table><thead><tr><th>Name</th><th>Emails</th><th>Phone</th><th class="tright">Screens</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-      <form onsubmit="App.addContractorForm(event)" style="margin-top:14px;">
-        <div class="grid2">
-          <div class="field"><label>Name</label><input id="ct-name" required></div>
-          <div class="field"><label>Phone</label><input id="ct-phone"></div>
-        </div>
-        <div class="field"><label>Emails (comma separated)</label><input id="ct-emails"></div>
-        <button class="btn btn-orange" type="submit">Add Contractor</button>
-      </form>
+      <table><thead><tr><th>Name</th><th>Company</th><th>Emails</th><th>Phone</th><th class="tright">Screens</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <button class="btn btn-orange" style="margin-top:14px;" onclick="App.editContractorModal(null)">+ Add Contractor</button>
     </div>
   `;
 }
 
-export async function addContractorForm(event) {
+export function editContractorModal(id) {
+  const contractors = STATE.pageData.contractors?.data || [];
+  const assetInventory = STATE.pageData.assetInventory?.data || [];
+  const row = id ? contractors.find((c) => c.id === id) : null;
+  const screenCount = id ? assetInventory.filter((a) => a.contractor_id === id).length : 0;
+  openModal('contractor', { ...(row || {}), __screenCount: screenCount });
+}
+
+export async function saveContractorForm(event) {
   event.preventDefault();
+  const id = document.getElementById('ct-id').value || null;
   const name = document.getElementById('ct-name').value.trim();
+  const company = document.getElementById('ct-company').value.trim();
+  const emails = document.getElementById('ct-emails').value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
   const phone = document.getElementById('ct-phone').value.trim();
-  const emails = document.getElementById('ct-emails').value.split(',').map((s) => s.trim()).filter(Boolean);
+  const notes = document.getElementById('ct-notes').value.trim();
   try {
-    await saveContractor({ name, phone, emails });
-    await logAudit('Add contractor', name);
+    await saveContractor({ id, name, company, emails, phone, notes });
+    await logAudit(id ? 'Edit contractor' : 'Add contractor', name);
     invalidate('contractors');
-    toast('Contractor added');
-    setState({});
+    closeModal();
+    toast('Contractor saved');
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -143,40 +171,108 @@ export async function removeContractorRow(id, screenCount) {
     await logAudit('Delete contractor', `${id} (${count} screens cleared)`);
     invalidate('contractors');
     invalidate('assetInventory');
+    invalidate('assetsInventoryPage');
+    closeModal();
     toast('Contractor deleted');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }
 
+registerModal('contractor', (data) => `
+  <h3>${data.id ? 'Edit' : 'Add'} Contractor</h3>
+  <form onsubmit="App.saveContractorForm(event)">
+    <input type="hidden" id="ct-id" value="${esc(data.id || '')}">
+    <div class="grid2">
+      <div class="field"><label>Name</label><input id="ct-name" value="${esc(data.name || '')}" required></div>
+      <div class="field"><label>Company (optional, if different)</label><input id="ct-company" value="${esc(data.company || '')}"></div>
+    </div>
+    <div class="field"><label>Emails</label><textarea id="ct-emails" rows="2" placeholder="One or more, separated by commas or new lines">${esc((data.emails || []).join(', '))}</textarea>
+      <div class="small muted" style="margin-top:4px;">All of these are notified when a ticket is logged against a screen assigned to this contractor.</div>
+    </div>
+    <div class="field"><label>Phone (optional)</label><input id="ct-phone" value="${esc(data.phone || '')}"></div>
+    <div class="field"><label>Notes (optional)</label><textarea id="ct-notes" rows="2">${esc(data.notes || '')}</textarea></div>
+    <div class="modal-actions">
+      ${data.id ? `<button type="button" class="btn-sm" style="color:#c0392b;" onclick="App.removeContractorRow('${data.id}','${data.__screenCount || 0}')">Delete</button>` : ''}
+      <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+      <button type="submit" class="btn btn-orange">Save</button>
+    </div>
+  </form>
+`);
+
 function renderNetworksTab() {
   const networks = loadData('networks', listNetworks);
   if (networks === null) return loadingCard();
   if (networks?.__error) return loadingCard(networks.__error);
+  const rows = networks.map((n) => `
+    <tr>
+      <td>${esc(n.name)}</td>
+      <td>
+        <button class="btn-sm" onclick="App.editNetworkModal('${n.id}')">Edit</button>
+        <button class="btn-sm" onclick="App.removeNetworkRow('${n.id}')">Delete</button>
+      </td>
+    </tr>
+  `).join('');
   return `
     <div class="card">
-      <div class="card-head"><h3>Screen Networks</h3></div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
-        ${networks.map((n) => `<span class="file-chip">${esc(n.name)}</span>`).join('') || '<div class="empty">No networks yet.</div>'}
-      </div>
-      <form onsubmit="App.addNetworkForm(event)" class="grid2">
-        <div class="field"><label>New Network</label><input id="net-name" required></div>
-        <div><button class="btn btn-orange" type="submit">Add</button></div>
-      </form>
+      <div class="card-head"><h3>Screen Networks</h3><div class="desc">The list of networks selectable on each Asset Inventory screen (also addable directly from that form).</div></div>
+      <table><thead><tr><th>Name</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="2"><div class="empty">No networks yet.</div></td></tr>'}</tbody></table>
+      <button class="btn btn-orange" style="margin-top:14px;" onclick="App.editNetworkModal(null)">+ Add Network</button>
     </div>
   `;
 }
 
-export async function addNetworkForm(event) {
+export function editNetworkModal(id) {
+  const networks = STATE.pageData.networks?.data || [];
+  const row = id ? networks.find((n) => n.id === id) : null;
+  openModal('network', row || {});
+}
+
+export async function saveNetworkForm(event) {
   event.preventDefault();
+  const id = document.getElementById('net-id').value || null;
   const name = document.getElementById('net-name').value.trim();
   try {
-    await ensureNetwork(name);
-    await logAudit('Add network', name);
+    if (id) await renameNetwork(id, name);
+    else await ensureNetwork(name);
+    await logAudit(id ? 'Rename network' : 'Add network', name);
     invalidate('networks');
-    toast('Network added');
+    invalidate('assetInventory');
+    invalidate('assetsInventoryPage');
+    closeModal();
+    toast('Network saved');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+export async function removeNetworkRow(id) {
+  try {
+    const count = await countNetworkUsage(id);
+    const msg = count > 0
+      ? `${count} screen(s) in Asset Inventory are tagged with this network - deleting will remove that tag from all of them. Continue?`
+      : 'Delete this network?';
+    if (!confirm(msg)) return;
+    await deleteNetwork(id);
+    await logAudit('Delete network', `${id} (${count} screens untagged)`);
+    invalidate('networks');
+    invalidate('assetInventory');
+    invalidate('assetsInventoryPage');
+    closeModal();
+    toast('Network deleted');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }
+
+registerModal('network', (data) => `
+  <h3>${data.id ? 'Edit' : 'Add'} Network</h3>
+  <form onsubmit="App.saveNetworkForm(event)">
+    <input type="hidden" id="net-id" value="${esc(data.id || '')}">
+    <div class="field"><label>Name</label><input id="net-name" value="${esc(data.name || '')}" required></div>
+    <div class="modal-actions">
+      ${data.id ? `<button type="button" class="btn-sm" style="color:#c0392b;" onclick="App.removeNetworkRow('${data.id}')">Delete</button>` : ''}
+      <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+      <button type="submit" class="btn btn-orange">Save</button>
+    </div>
+  </form>
+`);
 
 function integrationField(settings, key, label, fields, testFunctionName) {
   const cfg = settings[key] || {};
