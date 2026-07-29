@@ -86,17 +86,18 @@ automatically at runtime — you don't set those yourself.
 ### Seeding real data
 
 The original file had two kinds of seed data baked in: generic demo/placeholder records (fake
-assets, tickets, permits, contractors with `@example.com` emails) and the company's actual
-operational data (2,249 real screens in `ASSET_INVENTORY_ROWS`, 559 real SIM cards, 121 real
-venues with live Broadsign health counts in `BROADSIGN_LOCATIONS`, and real BI dashboard links).
-**Only the real data is seeded** — the demo records were sample data for a fresh install and
-would just be clutter in a production database.
+assets, tickets, permits, contractors with `@example.com` emails) and real operational records
+(the deployed screen inventory, SIM cards, venues with live Broadsign health counts, and BI
+dashboard links). **Only the real data is seeded** — the demo records were sample data for a
+fresh install and would just be clutter in a production database.
 
-That real data is **not committed to this repo** — `scripts/seed-data/*.json` is gitignored, on
-purpose: it contains real SIM ICCIDs, AnyDesk/TeamViewer remote-access IDs, and internal
-monitoring URLs, none of which belong in a git history regardless of whether the repo is public
-or private. The live Supabase project already has it loaded (done once, locally, the same way).
-To regenerate that folder and re-seed a different project:
+That real data is **not committed to this repo, ever, in any form** — no raw exports, no
+counts, no identifiers. `scripts/seed-data/*.json` is gitignored on purpose: operational and
+company data (asset/SIM/location details, contractor info, credentials, API details, or
+anything else identifying the business) does not belong in a git history, public or private.
+The live Supabase project already has it loaded (done once, locally, the same way — access to
+that data is controlled entirely by Supabase Auth + the RLS policies in this repo, not by
+keeping the repo private). To regenerate that folder and re-seed a different project:
 
 ```bash
 node scripts/extract-legacy-data.mjs   # pulls the arrays out of the legacy HTML file - see its
@@ -126,11 +127,11 @@ Ported everything, but a few things were deliberately simplified rather than 1:1
 flagged here so they're easy to find and extend later, not silently missing:
 
 - **Broadsign folder-fallback venues**: the original's `refresh_broadsign_snapshot.py` had a
-  hand-maintained alias/fallback table for ~40 venues with no Asset Inventory rows (Metro
-  Bridges, Nakheel Pavilions, Palm Dubai outdoor sites, etc.), matched by Broadsign's folder
-  hierarchy instead of by asset link. `broadsign-sync` only implements the primary match (via
-  `asset_inventory.player_box_id`); those ~40 venues won't get a live health count until that
-  mapping is ported into the Edge Function.
+  hand-maintained alias/fallback table for a subset of venues with no Asset Inventory rows,
+  matched by Broadsign's folder hierarchy instead of by asset link. `broadsign-sync` only
+  implements the primary match (via `asset_inventory.player_box_id`); those venues won't get a
+  live health count until that mapping is ported into the Edge Function (the mapping itself is
+  business-specific, so it isn't included here — see the legacy script if you have it).
 - **Static campaign installations**: the `static_installations` table (per-site print
   house/permit tracking for static/print campaigns) exists in the schema but doesn't have a UI
   yet — the Static Campaigns page covers campaigns, machines, and bookings.

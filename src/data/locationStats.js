@@ -126,7 +126,7 @@ export function locationScreenCount(loc, allLocations, assetInventory) {
 }
 
 const EMIRATES_KEYWORDS = {
-  'Abu Dhabi': ['abu dhabi', 'auh', 'yas mall', 'yas island', 'saadiyat', 'khalifa city', 'mussafah', 'musaffah', 'corniche'],
+  'Abu Dhabi': ['abu dhabi', 'auh', 'yas island', 'saadiyat', 'khalifa city', 'mussafah', 'musaffah', 'corniche'],
   Dubai: ['dubai', 'dxb', 'deira', 'jumeirah', 'marina', 'jbr', 'downtown', 'business bay'],
   Sharjah: ['sharjah', 'shj'],
   Ajman: ['ajman'],
