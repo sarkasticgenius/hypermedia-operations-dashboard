@@ -47,3 +47,17 @@ export async function deleteSubAsset(id) {
   const { error } = await supabase.from('location_sub_assets').delete().eq('id', id);
   if (error) throw error;
 }
+
+export async function setManualAssetInventoryIds(locationId, ids) {
+  const { error } = await supabase.from('locations').update({ manual_asset_inventory_ids: ids }).eq('id', locationId);
+  if (error) throw error;
+}
+
+export async function combineLocations(name, memberIds) {
+  const { data, error } = await supabase.from('locations').insert({
+    name, type: 'Installed', address: '', notes: 'Combined view of selected locations',
+    is_combined: true, combined_members: memberIds,
+  }).select().single();
+  if (error) throw error;
+  return data;
+}

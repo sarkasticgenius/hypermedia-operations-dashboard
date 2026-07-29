@@ -24,6 +24,7 @@ import { initContractorPortal, renderContractorPortal, bindContractorPortalForm 
 import { renderShell, goToPage, doLogout } from './shell.js';
 import { registerPage, renderPage } from './router.js';
 import { renderModalRoot } from './modals.js';
+import { toggleSort } from './lib/sortableTable.js';
 
 const appEl = document.getElementById('app');
 
@@ -71,6 +72,7 @@ window.App = {
   logout: doLogout,
   setPage: goToPage,
   closeModal,
+  toggleSort,
   saveAccountProfile,
   saveAccountPassword,
   ...assetsPage,
