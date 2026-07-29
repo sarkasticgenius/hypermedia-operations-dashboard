@@ -120,7 +120,7 @@ const IMPORT_CONFIGS = {
       return out;
     },
     save: saveAssetInventory,
-    dataKey: 'assetInventory',
+    dataKey: 'assetsInventoryPage',
   },
 };
 

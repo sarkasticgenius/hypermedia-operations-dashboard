@@ -71,7 +71,7 @@ export function invalidate(key) {
 }
 
 export function openModal(type, data) {
-  setState({ modal: { type, data: data || {} } });
+  setState({ modal: { type, data: data || {}, openedAt: Date.now() } });
 }
 
 export function closeModal() {

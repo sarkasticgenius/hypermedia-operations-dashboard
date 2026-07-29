@@ -40,7 +40,11 @@ async function loadProfile(userId) {
     .eq('id', userId)
     .maybeSingle();
 
-  if (error || !profile || !profile.active) {
+  // A transient/network error fetching the profile must not force a sign-out of an otherwise
+  // valid session - this can run again on a background token refresh, and one flaky request
+  // shouldn't kick someone out mid-task. Only a genuinely missing or deactivated profile should.
+  if (error) return;
+  if (!profile || !profile.active) {
     await supabase.auth.signOut();
     STATE.user = null;
     STATE.permissions = {};

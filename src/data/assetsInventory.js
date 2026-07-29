@@ -26,7 +26,10 @@ export async function listAssetInventory() {
 
 function toPayload(row) {
   return {
-    source_asset_id: row.sourceAssetId ?? null,
+    // Omitted (not `?? null`) when the caller never set it, rather than defaulting to null - this
+    // column is populated by CSV/API imports, never by the manual Add/Edit Screen form, and an
+    // edit must never silently wipe out whatever an earlier import already set here.
+    ...(row.sourceAssetId !== undefined ? { source_asset_id: row.sourceAssetId } : {}),
     name: row.name, venue: row.venue || null, location: row.location || null,
     category: row.category || null, pdooh_ready: !!row.pdoohReady, format: row.format || null,
     width: row.width || null, height: row.height || null, screens: row.screens || null,
@@ -40,7 +43,10 @@ function toPayload(row) {
   };
 }
 
-export async function saveAssetInventory(row, networkNames) {
+// networkIds: ids of already-existing `networks` rows (checkboxes in the Add/Edit Screen modal are
+// keyed by network id, not name) - resolving names to ids happens separately via quickAddNetwork,
+// same as the original's "Add Network" button inside that modal.
+export async function saveAssetInventory(row, networkIds) {
   const payload = toPayload(row);
   let saved;
   if (row.id) {
@@ -52,19 +58,24 @@ export async function saveAssetInventory(row, networkNames) {
     if (error) throw error;
     saved = data;
   }
-  if (networkNames) {
+  if (networkIds) {
     await supabase.from('asset_inventory_networks').delete().eq('asset_inventory_id', saved.id);
-    const nets = await Promise.all(networkNames.filter(Boolean).map((n) => ensureNetwork(n)));
-    const rows = nets.filter(Boolean).map((n) => ({ asset_inventory_id: saved.id, network_id: n.id }));
+    const rows = networkIds.map((id) => ({ asset_inventory_id: saved.id, network_id: id }));
     if (rows.length) await supabase.from('asset_inventory_networks').insert(rows);
   }
   return saved;
 }
 
-export async function bulkUpdateAssetInventory(ids, patch) {
-  const payload = toPayload(patch);
-  Object.keys(payload).forEach((k) => { if (payload[k] == null) delete payload[k]; });
-  const { error } = await supabase.from('asset_inventory').update(payload).in('id', ids);
+export async function quickAddNetwork(name) {
+  return ensureNetwork(name);
+}
+
+// Bulk Edit modal: patch is already snake_case DB columns, built by the caller from only the
+// fields the admin actually touched - deliberately bypasses toPayload() (which would coerce
+// pdooh_ready/managed_by_hm to false for every untouched row) so this only ever applies fields
+// the admin explicitly set, across every selected row.
+export async function bulkPatchAssetInventory(ids, patch) {
+  const { error } = await supabase.from('asset_inventory').update(patch).in('id', ids);
   if (error) throw error;
 }
 

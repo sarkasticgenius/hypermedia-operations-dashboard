@@ -220,30 +220,47 @@ export async function saveAssetForm(event) {
   const id = document.getElementById('asset-id').value || null;
   const category = document.getElementById('asset-category').value;
   const rental = isRental(categories, category);
-  const row = {
-    id,
+  const base = {
     name: document.getElementById('asset-name').value.trim(),
     category,
     unitPrice: Number(document.getElementById('asset-price').value || 0),
-    stockAvailable: Number(document.getElementById('asset-stock-wh').value || 0),
-    stockOnSite: Number(document.getElementById('asset-stock-site').value || 0),
-    serialNumber: document.getElementById('asset-serial').value.trim(),
     status: document.getElementById('asset-status').value,
     notes: document.getElementById('asset-notes').value.trim(),
     maintenanceContractor: document.getElementById('asset-contractor').value.trim(),
   };
   if (rental) {
-    row.dateOfRent = document.getElementById('asset-date-of-rent')?.value || null;
-    row.maintenanceLocation = document.getElementById('asset-maint-location')?.value || null;
+    base.dateOfRent = document.getElementById('asset-date-of-rent')?.value || null;
+    base.maintenanceLocation = document.getElementById('asset-maint-location')?.value || null;
   } else {
-    row.warrantyExpiry = document.getElementById('asset-warranty')?.value || null;
+    base.warrantyExpiry = document.getElementById('asset-warranty')?.value || null;
   }
+
+  // Adding new (not editing): the Serial Number field is a textarea, one serial per line. Two or
+  // more lines creates one row per serial number instead of a single row, since each serialized
+  // unit is a distinct physical item, not a stock count - each gets 1 unit in warehouse stock.
+  const serialField = document.getElementById('asset-serial');
+  const serialLines = !id ? serialField.value.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+
   try {
-    await saveAsset(row);
-    await logAudit(id ? 'Edit asset' : 'Add asset', row.name);
+    if (!id && serialLines.length > 1) {
+      for (const serialNumber of serialLines) {
+        await saveAsset({ ...base, id: null, serialNumber, stockAvailable: 1, stockOnSite: 0 });
+      }
+      await logAudit('Add asset (batch)', `${base.name} x${serialLines.length}`);
+      toast(`${serialLines.length} assets added`);
+    } else {
+      const row = {
+        ...base, id,
+        serialNumber: (serialLines[0] || serialField.value.trim()),
+        stockAvailable: Number(document.getElementById('asset-stock-wh').value || 0),
+        stockOnSite: Number(document.getElementById('asset-stock-site').value || 0),
+      };
+      await saveAsset(row);
+      await logAudit(id ? 'Edit asset' : 'Add asset', row.name);
+      toast('Asset saved');
+    }
     invalidate('assets');
     closeModal();
-    toast('Asset saved');
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -273,12 +290,17 @@ registerModal('asset', (data) => {
       </div>
       <div class="grid2">
         <div class="field"><label>Unit Price (AED)</label><input id="asset-price" type="number" step="0.01" value="${data.unit_price || 0}"></div>
-        <div class="field"><label>Serial Number</label><input id="asset-serial" value="${esc(data.serial_number || '')}"></div>
+        <div class="field"><label>${data.id ? 'Serial Number' : 'Serial Number(s)'}</label>
+          ${data.id
+            ? `<input id="asset-serial" value="${esc(data.serial_number || '')}">`
+            : `<textarea id="asset-serial" rows="2" placeholder="Optional - one per line. Enter 2 or more to create one row per serial number."></textarea>`}
+        </div>
       </div>
       <div class="grid2">
         <div class="field"><label>Stock (Warehouse)</label><input id="asset-stock-wh" type="number" value="${data.stock_available || 0}"></div>
         <div class="field"><label>Stock (On Site)</label><input id="asset-stock-site" type="number" value="${data.stock_on_site || 0}"></div>
       </div>
+      ${!data.id ? `<p class="small muted" style="margin:-10px 0 12px;">If you enter more than one serial number above, the Stock fields are ignored - each serial number becomes its own row with 1 unit in Warehouse stock instead.</p>` : ''}
       ${rental ? `
         <div class="grid2">
           <div class="field"><label>Date of Rent</label><input id="asset-date-of-rent" type="date" value="${data.date_of_rent || ''}"></div>
