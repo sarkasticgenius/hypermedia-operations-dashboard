@@ -226,7 +226,7 @@ function renderBroadsignApiCard(settings) {
         <div class="field"><label>Base URL</label><input id="int-broadsignApi-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://api.broadsign.com"></div>
         <div class="grid2">
           <div class="field"><label>API Key</label><input id="int-broadsignApi-apiKey" type="password" value="${esc(cfg.apiKey || '')}"></div>
-          <div class="field"><label>Domain ID</label><input id="int-broadsignApi-domainId" value="${esc(cfg.domainId || '')}"></div>
+          <div class="field"><label>Domain ID</label><input id="int-broadsignApi-domainId" type="password" autocomplete="off" value="${esc(cfg.domainId || '')}"></div>
         </div>
         <div class="field"><label>Offline Status Values</label>
           <input id="int-broadsignApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. 2,3">
