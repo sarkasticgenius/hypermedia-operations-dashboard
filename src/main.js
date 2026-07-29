@@ -21,7 +21,7 @@ import * as settingsPage from './pages/settings.js';
 import * as networkPanelsPage from './pages/networkPanels.js';
 import * as bulkImportPage from './pages/bulkImport.js';
 import { initContractorPortal, renderContractorPortal, bindContractorPortalForm } from './pages/contractorPortal.js';
-import { renderShell, goToPage, doLogout } from './shell.js';
+import { renderShell, goToPage, doLogout, goToDashGroup, goToDashLink, toggleNavExpand } from './shell.js';
 import { registerPage, renderPage } from './router.js';
 import { renderModalRoot } from './modals.js';
 import { toggleSort } from './lib/sortableTable.js';
@@ -71,6 +71,9 @@ window.App = {
   doLogin,
   logout: doLogout,
   setPage: goToPage,
+  goToDashGroup,
+  goToDashLink,
+  toggleNavExpand,
   closeModal,
   toggleSort,
   saveAccountProfile,

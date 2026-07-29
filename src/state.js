@@ -6,6 +6,8 @@ export const STATE = {
   user: null,
   permissions: {},
   navExpanded: {},
+  activeDashSection: null,
+  activeDashboard: null,
   loading: false,
   toasts: [],
   pageData: {},

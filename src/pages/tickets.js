@@ -21,7 +21,11 @@ async function loadTicketsData() {
   return { tickets, locations, assetInventory };
 }
 
-function pageData() { return STATE.pageData.ticketsPage?.data; }
+// Self-loading (not just a cache read): the ticket modal can be opened from other pages too
+// (e.g. the Broadsign/Grassfish Console heatmaps' "+ Ticket" buttons), which never call
+// renderTickets() to prime this cache - loadData() is safe to call repeatedly, so this triggers
+// the fetch on first access from anywhere.
+function pageData() { return loadData('ticketsPage', loadTicketsData); }
 
 function filteredTickets(tickets) {
   const typeTab = STATE.ticketTypeTab || 'All';

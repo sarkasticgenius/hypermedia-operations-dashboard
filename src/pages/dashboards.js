@@ -1,75 +1,50 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
 import { canEdit } from '../auth.js';
+import { NAV_GROUP_LABELS } from '../shell.js';
 import {
-  listDashboardSections, addDashboardSection, deleteDashboardSection,
-  addDashboardLink, saveDashboardLink, deleteDashboardLink,
+  listDashboardSections, addDashboardLink, saveDashboardLink, deleteDashboardLink,
 } from '../data/dashboards.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 
-const PANEL_LABELS = { dashboards: 'Maintenance Panel', campaigns: 'Digital Campaigns Panel', pdooh: 'pDOOH Campaign Panel' };
-
+// The section/link list already lives in the sidebar under Workspace (Maintenance/Digital
+// Campaigns/pDOOH panels), so this page just shows the selected link's live view - no
+// duplicate list here.
 export function renderDashboards() {
   const allSections = loadData('dashboardSections', listDashboardSections);
   if (allSections === null) return loadingCard();
   if (allSections?.__error) return loadingCard(allSections.__error);
 
-  const panel = STATE.dashboardPanel || 'dashboards';
-  const sections = allSections.filter((s) => (s.nav_group || 'dashboards') === panel);
+  const admin = canEdit('dashboards');
 
-  const activeId = STATE.activeDashboardId || sections.flatMap((s) => s.dashboards || [])[0]?.id;
-  let activeDash = null;
-  for (const s of sections) {
-    const found = (s.dashboards || []).find((d) => d.id === activeId);
-    if (found) { activeDash = found; break; }
+  if (!allSections.length) {
+    return `<div class="card"><div class="empty">No dashboard links yet.${admin ? ' Configure one from the sidebar.' : ' Ask an Admin to add one.'}</div></div>`;
   }
 
-  const editable = canEdit('dashboards');
+  let activeSection = allSections.find((s) => s.id === STATE.activeDashSection);
+  if (!activeSection) activeSection = allSections.find((s) => (s.nav_group || 'dashboards') === 'dashboards') || allSections[0];
 
-  const panelSwitcher = `
-    <div class="field" style="max-width:280px;margin-bottom:14px;">
-      <select onchange="App.setDashboardPanel(this.value)">
-        ${Object.entries(PANEL_LABELS).map(([key, label]) => `<option value="${key}" ${panel === key ? 'selected' : ''}>${esc(label)}</option>`).join('')}
-      </select>
-    </div>
-  `;
+  let activeId = STATE.activeDashboard;
+  let active = activeId ? (activeSection.dashboards || []).find((d) => d.id === activeId) : null;
+  if (!active) active = (activeSection.dashboards || [])[0] || null;
 
-  const listHtml = sections.map((s) => `
-    <div class="dash-section">
-      <div class="dash-section-title">${esc(s.name)} ${editable ? `<button class="link-btn" style="float:right;" onclick="App.addDashLink('${s.id}')">+ Link</button>` : ''}</div>
-      ${(s.dashboards || []).map((d) => `
-        <div class="dash-item ${d.id === activeId ? 'active' : ''}" onclick="App.setActiveDashboard('${d.id}')">
-          <span>${esc(d.name)}</span>
-          ${editable ? `<span>
-            <button class="link-btn" onclick="event.stopPropagation();App.editDashLink('${d.id}','${s.id}')">Edit</button>
-            <button class="link-btn" onclick="event.stopPropagation();App.removeDashLink('${d.id}')">Delete</button>
-          </span>` : ''}
-        </div>
-      `).join('') || '<div class="empty small">No links yet.</div>'}
-    </div>
-  `).join('');
+  const groupTitle = NAV_GROUP_LABELS[activeSection.nav_group || 'dashboards'] || 'Dashboards';
 
-  return `
-    ${panelSwitcher}
-    <div class="dash-layout">
-      <div class="dash-list">${listHtml || '<div class="empty">No sections in this panel.</div>'}</div>
-      <div class="dash-frame-wrap">
-        <div class="dash-frame-head">
-          <span>${activeDash ? esc(activeDash.name) : 'Select a dashboard'}</span>
-        </div>
-        ${activeDash ? `<iframe class="dash-iframe" src="${esc(activeDash.url)}"></iframe>` : '<div class="empty">Pick a dashboard from the list.</div>'}
+  return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;flex-shrink:0;">
+    <span>Links are managed from the sidebar under Workspace.${admin ? ' Click Edit next to a link there to update its name or URL.' : ''} If a link shows blank, its site may block embedding - use "Open in new tab" as a fallback.</span>
+    ${admin ? `<button class="btn-sm" style="white-space:nowrap;" onclick='App.addDashLink("${activeSection.id}")'>+ Add Link to ${esc(groupTitle)}</button>` : ''}
+  </div>
+  <div class="dash-frame-wrap">
+    ${active && active.url ? `
+      <div class="dash-frame-head">
+        <b>${esc(active.name)}</b>
+        <a href="${esc(active.url)}" target="_blank" rel="noopener" class="link-btn">Open in new tab</a>
       </div>
-    </div>
-  `;
-}
-
-export function setDashboardPanel(panel) {
-  setState({ dashboardPanel: panel, activeDashboardId: null });
-}
-
-export function setActiveDashboard(id) {
-  setState({ activeDashboardId: id });
+      <iframe class="dash-iframe" src="${esc(active.url)}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+    ` : active ? `<div class="empty">No URL set for "${esc(active.name)}" yet.${admin ? ' Click Edit in the sidebar to add one.' : ''}</div>`
+      : `<div class="empty">No links added to ${esc(groupTitle)} yet.${admin ? ' Use "+ Add Link" above.' : ''}</div>`}
+  </div>`;
 }
 
 export function addDashLink(sectionId) {
@@ -107,6 +82,7 @@ export async function saveDashLinkForm(event) {
     invalidate('dashboardSections');
     closeModal();
     toast('Link saved');
+    setState({ activeDashSection: sectionId });
   } catch (e) { toast(e.message, 'error'); }
 }
 

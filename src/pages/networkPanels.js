@@ -1,38 +1,119 @@
-import { STATE, loadData, invalidate, toast, setState } from '../state.js';
-import { loadingCard } from '../modals.js';
+import { STATE, loadData, invalidate, openModal, toast, setState } from '../state.js';
+import { loadingCard, registerModal } from '../modals.js';
 import { getSetting } from '../data/settings.js';
+import { listLocations } from '../data/locations.js';
+import { listAssetInventory } from '../data/assetsInventory.js';
+import { hiddenMemberIds, sourceStats, heatmapColor } from '../data/locationStats.js';
 import { supabase } from '../supabaseClient.js';
+import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 
-function renderPanel(key, title, fnName) {
-  const cfg = loadData(key, () => getSetting(key));
-  if (cfg === null) return loadingCard();
+// JSON.stringify escapes backslashes/double-quotes per the JSON spec, but not single quotes -
+// these payloads get embedded inside single-quoted onclick='...' attributes below, so any
+// apostrophe in a venue/location/screen name would otherwise break out of the attribute.
+function jsonAttr(obj) {
+  return JSON.stringify(obj).replace(/'/g, '&#39;');
+}
+
+// Site Status Heatmap - one tile per location with data for this source, colored by
+// offline share (locations/asset inventory are the source of truth; this just visualizes
+// location_sub_assets + the health-count columns those tables already carry).
+function renderNetworkPanel(source, healthyField, title, settingKey, syncFnName) {
+  const cfg = loadData(settingKey, () => getSetting(settingKey));
+  const allLocations = loadData('locationsForNetworkPanel', listLocations);
+  if (cfg === null || allLocations === null) return loadingCard();
   if (cfg?.__error) return loadingCard(cfg.__error);
+  if (allLocations?.__error) return loadingCard(allLocations.__error);
+
+  const admin = isAdmin();
   const c = cfg || {};
-  return `
-    <div class="card">
-      <div class="card-head"><h3>${esc(title)}</h3></div>
-      <div class="grid2">
-        <div><div class="label muted small">Status</div><div>${c.enabled ? '<span class="badge b-green">Enabled</span>' : '<span class="badge b-gray">Disabled</span>'}</div></div>
-        <div><div class="label muted small">Last Sync</div><div>${esc(c.lastSync || 'Never')}</div></div>
-      </div>
-      ${c.lastSyncSummary ? `<p class="small muted">${esc(c.lastSyncSummary)}</p>` : ''}
-      ${c.lastError ? `<div class="login-error">${esc(c.lastError)}</div>` : ''}
-      <button class="btn btn-orange" onclick="App.runNetworkSync('${key}','${fnName}')" ${STATE.syncing === key ? 'disabled' : ''}>
-        ${STATE.syncing === key ? 'Syncing...' : 'Sync Now'}
-      </button>
-      <p class="small muted" style="margin-top:10px;">Configure the base URL / API key on the Settings &gt; Integrations tab.</p>
-    </div>
-  `;
+  const hidden = hiddenMemberIds(allLocations);
+  const hasData = (l) => (l.location_sub_assets || []).some((sa) => sa.source === source) || !!l[healthyField];
+  const dataLocs = allLocations.filter((l) => !hidden.has(l.id) && hasData(l));
+
+  const tiles = dataLocs.map((l) => {
+    const stats = sourceStats(l, allLocations, source, healthyField);
+    const color = heatmapColor(stats);
+    return `<div style="background:${color};border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openOfflineAssetsModal("${l.id}","${source}","${healthyField}")' title="Click to see offline assets">
+      <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(l.name)}${l.is_combined ? ' <span style="font-weight:400;opacity:.85;">(combined)</span>' : ''}</div>
+      <div style="font-size:11px;opacity:.95;">${stats.total ? `${stats.offline} offline / ${stats.total} total` : 'No data'}</div>
+    </div>`;
+  }).join('');
+
+  return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}.` : 'No live API configured yet.'} ${dataLocs.length ? `Showing the last imported snapshot for ${dataLocs.length} location(s), pulled from Locations.` : 'No data imported for this source yet.'}</span>
+    <span style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn-sm" onclick="App.runNetworkSync('${settingKey}','${syncFnName}')" ${STATE.syncing === settingKey ? 'disabled' : ''}>${STATE.syncing === settingKey ? 'Syncing...' : 'Sync Now'}</button>
+      ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}
+    </span>
+  </div>
+  ${dataLocs.length ? `<div class="card">
+    <div class="card-head"><h3>Site Status Heatmap</h3><div class="desc">Colored by number/share of offline units - green = all online, red = high offline share. Click a tile to see what's offline and raise a ticket.</div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>
+  </div>` : `<div class="card"><div class="empty">No ${esc(title)} data yet.${admin ? ' Configure the API above, or run a sync, to populate this view.' : ' Ask an Admin to configure this.'}</div></div>`}`;
 }
 
 export function renderBroadsignPanel() {
-  return renderPanel('broadsignApi', 'Broadsign Console', 'broadsign-sync');
+  return renderNetworkPanel('broadsign', 'broadsign_healthy_count', 'Broadsign Console', 'broadsignApi', 'broadsign-sync');
 }
 
+// Grassfish has no live health-count column yet (see README's "Known simplifications") - once
+// any location gets a location_sub_assets row sourced from Grassfish, this switches to the same
+// heatmap Broadsign uses. Until then, fall back to an Asset Inventory view grouped by venue
+// (Player Type = Grassfish) so the console stays useful rather than permanently empty.
 export function renderGrassfishPanel() {
-  return renderPanel('grassfishApi', 'Grassfish Console', 'grassfish-sync');
+  const allLocations = loadData('locationsForNetworkPanel', listLocations);
+  if (allLocations === null) return loadingCard();
+  if (allLocations?.__error) return loadingCard(allLocations.__error);
+  const hasLiveData = allLocations.some((l) => (l.location_sub_assets || []).some((sa) => sa.source === 'grassfish'));
+  if (hasLiveData) {
+    return renderNetworkPanel('grassfish', 'grassfish_healthy_count', 'Grassfish Console', 'grassfishApi', 'grassfish-sync');
+  }
+
+  const cfg = loadData('grassfishApi', () => getSetting('grassfishApi'));
+  const inventory = loadData('assetInventoryForGrassfishPanel', listAssetInventory);
+  if (cfg === null || inventory === null) return loadingCard();
+  if (cfg?.__error) return loadingCard(cfg.__error);
+  if (inventory?.__error) return loadingCard(inventory.__error);
+
+  const admin = isAdmin();
+  const c = cfg || {};
+  const screens = inventory.filter((r) => r.player_type === 'Grassfish');
+  const byVenue = {};
+  screens.forEach((r) => {
+    const v = r.venue || 'Unassigned';
+    if (!byVenue[v]) byVenue[v] = [];
+    byVenue[v].push(r);
+  });
+  const venues = Object.keys(byVenue).sort((a, b) => a.localeCompare(b));
+  const tiles = venues.map((v) => {
+    const list = byVenue[v];
+    return `<div style="background:#2f6fb3;border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openGrassfishVenueModal(${jsonAttr(v)})' title="Click to see screens at this venue">
+      <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(v)}</div>
+      <div style="font-size:11px;opacity:.95;">${list.length} screen${list.length === 1 ? '' : 's'}</div>
+    </div>`;
+  }).join('');
+
+  return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}.` : 'No live API configured yet.'} ${screens.length} Grassfish screen${screens.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = Grassfish) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign Console uses.</span>
+    <span style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn-sm" onclick="App.runNetworkSync('grassfishApi','grassfish-sync')" ${STATE.syncing === 'grassfishApi' ? 'disabled' : ''}>${STATE.syncing === 'grassfishApi' ? 'Syncing...' : 'Sync Now'}</button>
+      ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}
+    </span>
+  </div>
+  ${venues.length ? `<div class="card">
+    <div class="card-head"><h3>Screens by Venue</h3><div class="desc">One tile per venue with at least one Grassfish screen in Asset Inventory. Click a tile to see the individual screens and raise a ticket if needed.</div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>
+  </div>` : `<div class="card"><div class="empty">No screens tagged Player Type = Grassfish in Asset Inventory yet. Set a screen's Player Type to "Grassfish" under Asset Inventory to have it show up here.</div></div>`}`;
+}
+
+export function openOfflineAssetsModal(locId, source, healthyField) {
+  openModal('offlineAssetsModal', { locId, source, healthyField });
+}
+
+export function openGrassfishVenueModal(venue) {
+  openModal('grassfishVenueModal', { venue });
 }
 
 export async function runNetworkSync(settingKey, functionName) {
@@ -43,10 +124,84 @@ export async function runNetworkSync(settingKey, functionName) {
     if (data?.error) throw new Error(data.error);
     await logAudit(`${functionName} sync`, data?.summary || '');
     invalidate(settingKey);
+    invalidate('locationsForNetworkPanel');
+    invalidate('assetInventoryForGrassfishPanel');
     toast(data?.summary || 'Sync complete');
   } catch (e) {
     toast(e.message || 'Sync failed', 'error');
   } finally {
     setState({ syncing: null });
   }
+}
+
+registerModal('offlineAssetsModal', (data) => {
+  const allLocations = STATE.pageData.locationsForNetworkPanel?.data || [];
+  const l = allLocations.find((x) => x.id === data.locId);
+  const stats = l ? sourceStats(l, allLocations, data.source, data.healthyField) : { offlineItems: [] };
+  const items = stats.offlineItems || [];
+  const sourceLabel = data.source === 'broadsign' ? 'Broadsign Console' : data.source === 'grassfish' ? 'Grassfish Console' : '';
+  const ticketAddOk = canAdd('tickets');
+
+  const rows = items.map((i) => {
+    const prefill = {
+      title: `${l ? l.name : i.location} - ${i.name} Offline`,
+      location: i.location || (l ? l.name : ''),
+      description: `${i.detail || 'Offline'}${sourceLabel ? ` (via ${sourceLabel})` : ''}`,
+      type: 'Issue',
+    };
+    return `<tr><td>${esc(i.location)}</td><td>${esc(i.name)}</td><td>${esc(i.detail || '')}</td><td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td></tr>`;
+  }).join('') || `<tr><td colspan="4"><div class="empty">Nothing offline here.</div></td></tr>`;
+
+  const bulkPrefill = {
+    title: `${l ? l.name : ''} - ${items.length} item${items.length === 1 ? '' : 's'} offline${sourceLabel ? ` (${sourceLabel})` : ''}`,
+    location: l ? l.name : '',
+    description: items.map((i) => `${i.name}: ${i.detail || 'Offline'}`).join('\n'),
+    type: 'Issue',
+  };
+
+  return `
+    <h3>Offline - ${l ? esc(l.name) : ''}</h3>
+    <table>
+      <thead><tr><th>Location</th><th>Name</th><th>Detail</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="modal-actions">
+      ${(ticketAddOk && items.length > 1) ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(bulkPrefill)})'>Create Ticket for All</button>` : ''}
+      <button class="btn-sm" onclick="App.closeModal()">Close</button>
+    </div>
+  `;
+});
+
+registerModal('grassfishVenueModal', (data) => {
+  const venue = data.venue || '';
+  const inventory = STATE.pageData.assetInventoryForGrassfishPanel?.data || [];
+  const screens = inventory.filter((r) => r.player_type === 'Grassfish' && (r.venue || '') === venue);
+  const ticketAddOk = canAdd('tickets');
+  const rows = screens.map((r) => {
+    const prefill = {
+      title: `${venue} - ${r.name} Issue`,
+      location: venue,
+      description: `Screen: ${r.name}${r.format ? ` (${r.format})` : ''}${r.player_box_id ? ` - Player Box ID: ${r.player_box_id}` : ''}`,
+      type: 'Issue',
+    };
+    return `<tr>
+      <td><b>${esc(r.name)}</b></td>
+      <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
+      <td>${esc(r.player_box_id || '-')}</td>
+      <td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="4"><div class="empty">No Grassfish screens at this venue.</div></td></tr>`;
+  return `
+    <h3>Grassfish - ${esc(venue)}</h3>
+    <div class="small muted" style="margin-bottom:8px;">${screens.length} screen${screens.length === 1 ? '' : 's'} at this venue, pulled from Asset Inventory (Player Type = Grassfish).</div>
+    <table>
+      <thead><tr><th>Name</th><th>Format</th><th>Player Box ID</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
+  `;
+});
+
+export function openTicketFromOffline(prefill) {
+  openModal('ticket', { ...prefill, date_reported: new Date().toISOString().slice(0, 10), status: 'Open' });
 }
