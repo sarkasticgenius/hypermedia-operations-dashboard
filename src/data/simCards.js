@@ -11,7 +11,7 @@ export async function saveSimCard(row) {
     sim_number: row.simNumber || null, iccid: row.iccid || null, carrier: row.carrier || null,
     data_plan: row.dataPlan || null, billing_cost: row.billingCost || null,
     data_allocation_gb: row.dataAllocationGB || null, procured_date: row.procuredDate || null,
-    active_since: row.activeSince || null, notes: row.notes || null, status: row.status || 'In Stock',
+    active_since: row.activeSince || null, notes: row.notes || null, status: row.status || 'Spare',
   };
   if (row.id) {
     const { data, error } = await supabase.from('sim_cards').update(payload).eq('id', row.id).select().single();
@@ -23,14 +23,31 @@ export async function saveSimCard(row) {
   return data;
 }
 
+// No double-booking a screen: if another SIM is already Deployed at the exact
+// same venue+screen, it's automatically returned to spare stock first.
 export async function deploySimCard(id, { locationId, locationName, assetInvId, assetInvLabel }) {
+  const { data: conflicts } = await supabase
+    .from('sim_cards')
+    .select('id')
+    .eq('status', 'Deployed')
+    .eq('deployed_location_name', locationName)
+    .eq(assetInvId ? 'deployed_asset_inv_id' : 'deployed_location_name', assetInvId || locationName)
+    .neq('id', id);
+  let autoReturned = 0;
+  if (conflicts?.length) {
+    await supabase.from('sim_cards').update({
+      status: 'Spare', deployed_location_id: null, deployed_location_name: null,
+      deployed_asset_inv_id: null, deployed_asset_inv_label: null, deployed_date: null,
+    }).in('id', conflicts.map((c) => c.id));
+    autoReturned = conflicts.length;
+  }
   const { data, error } = await supabase.from('sim_cards').update({
     status: 'Deployed', deployed_location_id: locationId || null, deployed_location_name: locationName || null,
     deployed_asset_inv_id: assetInvId || null, deployed_asset_inv_label: assetInvLabel || null,
     deployed_date: new Date().toISOString().slice(0, 10),
   }).eq('id', id).select().single();
   if (error) throw error;
-  return data;
+  return { ...data, autoReturned };
 }
 
 export async function deleteSimCard(id) {
@@ -40,7 +57,7 @@ export async function deleteSimCard(id) {
 
 export async function returnSimToStock(id) {
   const { error } = await supabase.from('sim_cards').update({
-    status: 'In Stock', deployed_location_id: null, deployed_location_name: null,
+    status: 'Spare', deployed_location_id: null, deployed_location_name: null,
     deployed_asset_inv_id: null, deployed_asset_inv_label: null, deployed_date: null,
   }).eq('id', id);
   if (error) throw error;
