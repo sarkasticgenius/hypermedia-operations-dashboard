@@ -247,6 +247,54 @@ function renderBroadsignApiCard(settings) {
   `;
 }
 
+// Grassfish's response shape and status field are both undocumented (unlike Broadsign's real
+// monitor_poll/v2), so this card calibrates in two stages: Sync Now first logs a raw sample of a
+// matched screen's fields (below) so "Status Field Name" can be read off directly, then once set,
+// a raw histogram of that field's values so "Offline Status Values" can be set from real data.
+// See supabase/functions/grassfish-sync for the sync logic.
+function renderGrassfishApiCard(settings) {
+  const cfg = settings.grassfishApi || {};
+  const testing = STATE.testing_grassfishApi;
+  const rawCounts = cfg.lastRawStatusCounts || {};
+  const rawCountsHtml = Object.keys(rawCounts).length
+    ? `<div class="small muted" style="margin-top:6px;">Last raw "${esc(cfg.statusFieldName || '')}" counts (matched screens only): ${Object.keys(rawCounts).map((k) => `${esc(k)} (${rawCounts[k]}x)`).join(', ')}</div>`
+    : '';
+  const missingHtml = (cfg.lastMissingFromApi || []).length
+    ? `<div class="small muted" style="margin-top:2px;">${cfg.lastMissingFromApi.length} inventory Player Box ID(s) had no match in the API response last sync.</div>` : '';
+  const sampleHtml = cfg.lastRawSample
+    ? `<details style="margin-top:6px;"><summary class="small muted" style="cursor:pointer;">Last raw sample (read field names off this)</summary><pre style="font-size:11px;white-space:pre-wrap;background:#f7f6f4;border-radius:6px;padding:8px;margin-top:4px;">${esc(cfg.lastRawSample)}</pre></details>`
+    : '';
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Grassfish API</h3><div class="desc">locationlist/init sync, matched to Asset Inventory rows tagged Player Type "Grassfish" by Player Box ID.</div></div>
+      <form onsubmit="App.saveIntegrationForm(event,'grassfishApi')">
+        <div class="field"><label>Base URL</label><input id="int-grassfishApi-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://your-tenant.grassfish.tv"></div>
+        <div class="field"><label>API Key</label><input id="int-grassfishApi-apiKey" type="password" value="${esc(cfg.apiKey || '')}"></div>
+        <div class="grid2">
+          <div class="field"><label>Status Field Name</label>
+            <input id="int-grassfishApi-statusFieldName" value="${esc(cfg.statusFieldName || '')}" placeholder="e.g. Status">
+          </div>
+          <div class="field"><label>Offline Status Values</label>
+            <input id="int-grassfishApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. Offline,Error">
+          </div>
+        </div>
+        <div class="small muted" style="margin-top:-6px;margin-bottom:10px;">Grassfish's response shape isn't published anywhere - leave both blank and run Test/Sync Now first. It logs a raw sample matched screen below so you can read off the real field name, then a raw value histogram once Status Field Name is set, so Offline Status Values can be set from real data instead of guessed.</div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-grassfishApi-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-orange" type="submit">Save</button>
+          <button type="button" class="btn-outline btn-sm" ${testing ? 'disabled' : ''} onclick="App.testIntegration('grassfish-sync','grassfishApi')">${testing ? 'Testing...' : 'Test / Sync Now'}</button>
+          ${cfg.lastSync ? `<span class="small muted">Last sync: ${esc(cfg.lastSync)}</span>` : ''}
+        </div>
+        ${cfg.lastSyncSummary ? `<p class="small muted" style="margin-top:6px;">${esc(cfg.lastSyncSummary)}</p>` : ''}
+        ${cfg.lastError ? `<div class="login-error" style="margin-top:6px;">${esc(cfg.lastError)}</div>` : ''}
+        ${rawCountsHtml}
+        ${missingHtml}
+        ${sampleHtml}
+      </form>
+    </div>
+  `;
+}
+
 function renderAssetInventoryApiCard(settings) {
   const cfg = settings.assetInventoryApi || {};
   const testing = STATE.testing_assetInventoryApi;
@@ -322,10 +370,7 @@ function renderIntegrationsTab() {
   return `
     <div class="banner">API keys here are stored server-side and only readable by admins. Live syncs against Broadsign/Grassfish run through Edge Functions, never directly from the browser.</div>
     ${renderBroadsignApiCard(settings)}
-    ${integrationField(settings, 'grassfishApi', 'Grassfish API', [
-      { name: 'baseUrl', label: 'Base URL' }, { name: 'apiKey', label: 'API Key', type: 'password' },
-      { name: 'enabled', label: 'Enabled', type: 'checkbox' },
-    ], 'grassfish-sync')}
+    ${renderGrassfishApiCard(settings)}
     ${renderAssetInventoryApiCard(settings)}
     ${integrationField(settings, 'glpiFeed', 'GLPI CSV Feed', [
       { name: 'csvUrl', label: 'CSV URL' }, { name: 'autoRefreshMinutes', label: 'Auto-refresh (minutes)', type: 'number' },

@@ -58,10 +58,11 @@ export function renderBroadsignPanel() {
   return renderNetworkPanel('broadsign', 'broadsign_healthy_count', 'Broadsign Console', 'broadsignApi', 'broadsign-sync');
 }
 
-// Grassfish has no live health-count column yet (see README's "Known simplifications") - once
-// any location gets a location_sub_assets row sourced from Grassfish, this switches to the same
-// heatmap Broadsign uses. Until then, fall back to an Asset Inventory view grouped by venue
-// (Player Type = Grassfish) so the console stays useful rather than permanently empty.
+// Until grassfish-sync has run at least once with Status Field Name/Offline Status Values
+// calibrated (see Settings > Integrations), no location has a location_sub_assets row sourced
+// from Grassfish yet - fall back to an Asset Inventory view grouped by venue (Player Type =
+// Grassfish) so the console stays useful rather than permanently empty. Once calibrated, this
+// switches to the same heatmap Broadsign uses.
 export function renderGrassfishPanel() {
   const allLocations = loadData('locationsForNetworkPanel', listLocations);
   if (allLocations === null) return loadingCard();
