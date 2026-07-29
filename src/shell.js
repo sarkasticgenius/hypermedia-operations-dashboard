@@ -104,7 +104,7 @@ function renderSidebar(allSections) {
     : '';
 
   const bottomItems = NAV_ITEMS_BOTTOM.map((n) => navItem(n.page, n.label)).join('');
-  const adminLinks = admin ? navItem('admin', 'Admin') + navItem('settings', 'Settings') : '';
+  const adminLinks = admin ? navItem('admin', 'Administration') + navItem('settings', 'Settings') : '';
 
   return `
     <div class="sidebar">
@@ -152,7 +152,7 @@ const PAGE_TITLES = {
   gantt: 'Campaign Calendar',
   staticCampaigns: 'Static Campaigns',
   dashboards: 'Maintenance Panel',
-  admin: 'Admin',
+  admin: 'Administration',
   settings: 'Settings',
   account: 'My Account',
 };
