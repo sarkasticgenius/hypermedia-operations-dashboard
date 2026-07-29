@@ -77,7 +77,7 @@ export function renderLocations() {
             ${chains.map((c) => `<option value="${esc(c)}" ${chainFilter === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
           </select>
         ` : ''}
-        <input placeholder="Search locations..." value="${esc(STATE.locationSearch || '')}" oninput="App.setLocationSearch(this.value)">
+        <input id="loc-search" placeholder="Search locations..." value="${esc(STATE.locationSearch || '')}" oninput="App.setLocationSearch(this.value)">
         ${canExportArea('locations') ? `<button class="btn-sm" onclick="App.exportLocationsCsv()">Export CSV</button>` : ''}
         ${canAdd('locations') ? `<button class="btn-sm" onclick="App.openBulkImport('locations')">Bulk Import</button>` : ''}
         ${canEdit('locations') ? `<button class="btn-sm" onclick="App.openCombineLocationsModal()">+ Combine Locations</button>` : ''}
@@ -485,7 +485,7 @@ registerModal('location', (data) => {
           <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
             ${linked.map((a) => `<span class="file-chip">${esc(a.venue || a.name)} - ${esc(a.location || a.name)} <button type="button" onclick="App.removeManualAssetFromLocation('${a.id}')" style="border:none;background:none;cursor:pointer;color:var(--red);">×</button></span>`).join('') || '<span class="small muted">None linked.</span>'}
           </div>
-          <input placeholder="Search Asset Inventory to link..." oninput="App.searchAssetInventoryForLocationModal(this.value)" value="${esc(data.__assetSearch || '')}">
+          <input id="loc-asset-link-search" placeholder="Search Asset Inventory to link..." oninput="App.searchAssetInventoryForLocationModal(this.value)" value="${esc(data.__assetSearch || '')}">
           <div style="max-height:150px;overflow-y:auto;margin-top:6px;">
             ${results.map((a) => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12.5px;"><span>${esc(a.venue)} - ${esc(a.location || a.name)}</span><button type="button" class="link-btn" onclick="App.addManualAssetToLocation('${a.id}')">+ Add</button></div>`).join('')}
           </div>

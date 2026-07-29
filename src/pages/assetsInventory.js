@@ -115,7 +115,7 @@ export function renderAssetsInventory() {
     <div class="banner">This is the deployed-screen/player list (one row per physical screen). Player Box ID doubles as the Broadsign client_resource_id used by the Broadsign sync. ${editOk ? '' : 'You can view this table; ask an Admin for edit permission to change it.'}</div>
     <div class="toolbar">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <input placeholder="Search anything - name, venue, location, category, player, IDs, networks..." value="${esc(STATE.aiSearch || '')}" oninput="App.setAssetInvSearch(this.value)" style="min-width:260px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+        <input id="ai-search" placeholder="Search anything - name, venue, location, category, player, IDs, networks..." value="${esc(STATE.aiSearch || '')}" oninput="App.setAssetInvSearch(this.value)" style="min-width:260px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
         <select onchange="App.setAssetInvFilter('aiCategory', this.value)" style="padding:7px 8px;border:1px solid var(--border);border-radius:8px;">${categories.map((c) => `<option value="${esc(c)}" ${catFilter === c ? 'selected' : ''}>${c === 'All' ? 'All Categories' : esc(c)}</option>`).join('')}</select>
         <select onchange="App.setAssetInvFilter('aiPlayerType', this.value)" style="padding:7px 8px;border:1px solid var(--border);border-radius:8px;">${playerTypes.map((t) => `<option value="${esc(t)}" ${typeFilter === t ? 'selected' : ''}>${t === 'All' ? 'All Player Types' : esc(t)}</option>`).join('')}</select>
         <select onchange="App.setAssetInvFilter('aiPdooh', this.value)" style="padding:7px 8px;border:1px solid var(--border);border-radius:8px;">

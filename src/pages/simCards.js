@@ -95,7 +95,7 @@ export function renderSimCards() {
         ${['All', 'Spare', 'Deployed', 'Needs Review'].map((t) => `<div class="tab ${tab === t ? 'active' : ''}" onclick="App.setSimStatusFilter('${t}')">${t}${t === 'Needs Review' && needsReviewCount ? ` (${needsReviewCount})` : ''}</div>`).join('')}
       </div>
       <div class="toolbar-actions">
-        <input placeholder="Search SIM cards..." value="${esc(STATE.simSearch || '')}" oninput="App.setSimSearch(this.value)">
+        <input id="sim-search" placeholder="Search SIM cards..." value="${esc(STATE.simSearch || '')}" oninput="App.setSimSearch(this.value)">
         ${canExportArea('simCards') ? `<button class="btn-sm" onclick="App.exportSimCardsCsv()">Export CSV</button>` : ''}
         ${canAdd('simCards') ? `<button class="btn-sm" onclick="App.openBulkImport('simCards')">Bulk Import</button>` : ''}
         ${canAdd('simCards') ? `<button class="btn btn-orange" onclick="App.editSimCard(null)">+ Add SIM</button>` : ''}

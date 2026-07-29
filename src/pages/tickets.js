@@ -80,7 +80,7 @@ export function renderTickets() {
           ${['All', 'Open', 'In Progress', 'Closed'].map((s) => `<div class="tab ${(STATE.ticketStatusTab || 'All') === s ? 'active' : ''}" onclick="App.setTicketStatusTab('${s}')">${s}</div>`).join('')}
         </div>
       </div>
-      <div class="field" style="max-width:320px;"><input placeholder="Search tickets..." value="${esc(STATE.ticketSearch || '')}" oninput="App.setTicketSearch(this.value)"></div>
+      <div class="field" style="max-width:320px;"><input id="ticket-search" placeholder="Search tickets..." value="${esc(STATE.ticketSearch || '')}" oninput="App.setTicketSearch(this.value)"></div>
     ` : ''}
     ${body}
   `;
