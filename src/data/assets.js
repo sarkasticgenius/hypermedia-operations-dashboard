@@ -41,11 +41,47 @@ export async function setAssetLocations(assetId, breakdown) {
   }
 }
 
-export async function deployAsset({ assetId, assetName, locationName, qty, deployedBy, subAsset }) {
+// Full deploy flow, ported from the original's saveDeploy(): validates quantity against
+// available stock, auto-creates the destination Location if it doesn't already exist (typing a
+// brand-new venue name silently creates it, same as the original), merges the quantity into the
+// asset's per-location breakdown, moves stock from available -> on-site, and appends an
+// append-only history row.
+export async function deployAsset({ assetId, assetName, destinationName, qty, deployedBy, subAsset }) {
+  const { data: asset, error: assetErr } = await supabase
+    .from('assets').select('*, asset_locations(*)').eq('id', assetId).single();
+  if (assetErr) throw assetErr;
+  if (!qty || qty <= 0) throw new Error('Quantity must be greater than 0');
+  if (qty > asset.stock_available) throw new Error(`Only ${asset.stock_available} available in warehouse`);
+
+  const { data: existingLoc } = await supabase
+    .from('locations').select('id,name').ilike('name', destinationName).maybeSingle();
+  if (!existingLoc) {
+    await supabase.from('locations').insert({
+      name: destinationName, type: 'Installed', address: '',
+      notes: `Auto-added from deployment by ${deployedBy || 'system'}`,
+    });
+  }
+
+  const existingBreakdown = (asset.asset_locations || []).find((al) => al.location_name.toLowerCase() === destinationName.toLowerCase());
+  if (existingBreakdown) {
+    await supabase.from('asset_locations').update({ qty: existingBreakdown.qty + qty }).eq('id', existingBreakdown.id);
+  } else {
+    await supabase.from('asset_locations').insert({ asset_id: assetId, location_name: destinationName, qty });
+  }
+
+  await supabase.from('assets').update({
+    stock_available: asset.stock_available - qty, stock_on_site: asset.stock_on_site + qty,
+  }).eq('id', assetId);
+
   const { error } = await supabase.from('asset_assignments').insert({
-    asset_id: assetId, asset_name: assetName, location_name: locationName,
+    asset_id: assetId, asset_name: assetName, location_name: destinationName,
     qty, deployed_by: deployedBy || '', sub_asset: subAsset || null,
   });
+  if (error) throw error;
+}
+
+export async function quickSetAssetStatus(id, status) {
+  const { error } = await supabase.from('assets').update({ status }).eq('id', id);
   if (error) throw error;
 }
 
