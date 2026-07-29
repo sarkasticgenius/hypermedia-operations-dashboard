@@ -71,9 +71,19 @@ async function loadProfile(userId) {
   STATE.permissions = permissions;
 }
 
-export async function login(email, password) {
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw error;
+// Accepts either a username or an email address - signInWithPassword() only takes an email, and
+// resolving a username to one can't happen client-side (RLS blocks reading profiles without an
+// existing session, on purpose), so this always goes through the resolve-login Edge Function,
+// which does the lookup (when needed) and the real sign-in server-side, then hands back a session
+// for this client to adopt.
+export async function login(identifier, password) {
+  const { data, error } = await supabase.functions.invoke('resolve-login', { body: { identifier, password } });
+  if (data?.error) throw new Error(data.error);
+  if (error) throw new Error('Invalid login credentials');
+  const { error: sessionError } = await supabase.auth.setSession({
+    access_token: data.access_token, refresh_token: data.refresh_token,
+  });
+  if (sessionError) throw sessionError;
   await logAudit('Login', '');
 }
 

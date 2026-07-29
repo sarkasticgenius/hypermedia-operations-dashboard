@@ -16,8 +16,8 @@ export function renderLogin() {
         ${err}
         <form onsubmit="App.doLogin(event)">
           <div class="field">
-            <label>Email</label>
-            <input id="login-email" type="email" autocomplete="username" required value="${esc(STATE.loginEmailDraft || '')}">
+            <label>Username or Email</label>
+            <input id="login-email" type="text" autocomplete="username" required value="${esc(STATE.loginEmailDraft || '')}">
           </div>
           <div class="field">
             <label>Password</label>
@@ -28,8 +28,8 @@ export function renderLogin() {
           </button>
         </form>
         <div class="login-hint">
-          Sign in with the email your admin created for you. First time setting this app up?
-          The first account created (via the seed/bootstrap step) becomes the admin.
+          Sign in with the username or email your admin set up for you. First time setting this
+          app up? The first account created (via the seed/bootstrap step) becomes the admin.
         </div>
       </div>
     </div>
@@ -38,11 +38,11 @@ export function renderLogin() {
 
 export async function doLogin(event) {
   event.preventDefault();
-  const email = document.getElementById('login-email').value.trim();
+  const identifier = document.getElementById('login-email').value.trim();
   const password = document.getElementById('login-password').value;
-  setState({ loginBusy: true, loginError: null, loginEmailDraft: email });
+  setState({ loginBusy: true, loginError: null, loginEmailDraft: identifier });
   try {
-    await login(email, password);
+    await login(identifier, password);
     setState({ loginBusy: false, loginError: null });
   } catch (e) {
     setState({ loginBusy: false, loginError: e.message || 'Login failed' });
