@@ -204,6 +204,49 @@ function integrationField(settings, key, label, fields, testFunctionName) {
   `;
 }
 
+// Broadsign's monitor_status integer codes are undocumented (Broadsign's own docs show an
+// example value but never publish what any code means) - guessing that mapping would silently
+// invert every screen's status. So this card is two-stage: "Sync Now" first just reports the raw
+// monitor_status histogram seen among matched screens (below), then once "Offline Status Values"
+// is set (comparing that histogram against screens you know are actually down), subsequent syncs
+// apply real online/offline status. See supabase/functions/broadsign-sync for the sync logic.
+function renderBroadsignApiCard(settings) {
+  const cfg = settings.broadsignApi || {};
+  const testing = STATE.testing_broadsignApi;
+  const rawCounts = cfg.lastRawStatusCounts || {};
+  const rawCountsHtml = Object.keys(rawCounts).length
+    ? `<div class="small muted" style="margin-top:6px;">Last raw monitor_status counts (matched screens only): ${Object.keys(rawCounts).map((k) => `${esc(k)} (${rawCounts[k]}x)`).join(', ')}</div>`
+    : '';
+  const missingHtml = (cfg.lastMissingFromApi || []).length
+    ? `<div class="small muted" style="margin-top:2px;">${cfg.lastMissingFromApi.length} inventory Player Box ID(s) had no data back from the API last sync.</div>` : '';
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Broadsign API</h3><div class="desc">Real monitor_poll/v2 sync, matched to Asset Inventory rows tagged Player Type "Broadsign" by Player Box ID.</div></div>
+      <form onsubmit="App.saveIntegrationForm(event,'broadsignApi')">
+        <div class="field"><label>Base URL</label><input id="int-broadsignApi-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://api.broadsign.com"></div>
+        <div class="grid2">
+          <div class="field"><label>API Key</label><input id="int-broadsignApi-apiKey" type="password" value="${esc(cfg.apiKey || '')}"></div>
+          <div class="field"><label>Domain ID</label><input id="int-broadsignApi-domainId" value="${esc(cfg.domainId || '')}"></div>
+        </div>
+        <div class="field"><label>Offline Status Values</label>
+          <input id="int-broadsignApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. 2,3">
+          <div class="small muted" style="margin-top:4px;">Comma-separated raw monitor_status codes that mean "offline". Leave blank and run Test/Sync Now once first - it'll log the raw values it actually saw below, then compare those against screens you know are online/offline before filling this in.</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-broadsignApi-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-orange" type="submit">Save</button>
+          <button type="button" class="btn-outline btn-sm" ${testing ? 'disabled' : ''} onclick="App.testIntegration('broadsign-sync','broadsignApi')">${testing ? 'Testing...' : 'Test / Sync Now'}</button>
+          ${cfg.lastSync ? `<span class="small muted">Last sync: ${esc(cfg.lastSync)}</span>` : ''}
+        </div>
+        ${cfg.lastSyncSummary ? `<p class="small muted" style="margin-top:6px;">${esc(cfg.lastSyncSummary)}</p>` : ''}
+        ${cfg.lastError ? `<div class="login-error" style="margin-top:6px;">${esc(cfg.lastError)}</div>` : ''}
+        ${rawCountsHtml}
+        ${missingHtml}
+      </form>
+    </div>
+  `;
+}
+
 function renderAssetInventoryApiCard(settings) {
   const cfg = settings.assetInventoryApi || {};
   const testing = STATE.testing_assetInventoryApi;
@@ -278,10 +321,7 @@ function renderIntegrationsTab() {
 
   return `
     <div class="banner">API keys here are stored server-side and only readable by admins. Live syncs against Broadsign/Grassfish run through Edge Functions, never directly from the browser.</div>
-    ${integrationField(settings, 'broadsignApi', 'Broadsign API', [
-      { name: 'baseUrl', label: 'Base URL' }, { name: 'apiKey', label: 'API Key', type: 'password' },
-      { name: 'domainId', label: 'Domain ID' }, { name: 'enabled', label: 'Enabled', type: 'checkbox' },
-    ], 'broadsign-sync')}
+    ${renderBroadsignApiCard(settings)}
     ${integrationField(settings, 'grassfishApi', 'Grassfish API', [
       { name: 'baseUrl', label: 'Base URL' }, { name: 'apiKey', label: 'API Key', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
