@@ -1,18 +1,140 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
 import { listTickets, saveTicket, deleteTicket } from '../data/tickets.js';
+import { listLocations } from '../data/locations.js';
+import { listAssetInventory } from '../data/assetsInventory.js';
+import { assetInventoryForLocation } from '../data/locationStats.js';
+import { svgGroupedBarChart } from '../lib/charts.js';
+import { heatmapGrid } from '../lib/heatmapGrid.js';
 import { logAudit } from '../lib/audit.js';
-import { esc, fmtDate } from '../lib/format.js';
+import { esc, jsAttr, fmtDate } from '../lib/format.js';
+import { exportToCsv } from '../lib/csv.js';
+import { getSignedUrl } from '../lib/storage.js';
 
 const STATUS_BADGE = { Open: 'b-red', 'In Progress': 'b-amber', Resolved: 'b-blue', Closed: 'b-gray' };
 
-export function renderTickets() {
-  const tickets = loadData('tickets', listTickets);
-  if (tickets === null) return loadingCard();
-  if (tickets?.__error) return loadingCard(tickets.__error);
+async function loadTicketsData() {
+  const [tickets, locations, assetInventory] = await Promise.all([
+    listTickets(), listLocations(), listAssetInventory(),
+  ]);
+  return { tickets, locations, assetInventory };
+}
 
-  const rows = tickets.map((t) => `
+function pageData() { return STATE.pageData.ticketsPage?.data; }
+
+function filteredTickets(tickets) {
+  const typeTab = STATE.ticketTypeTab || 'All';
+  const statusTab = STATE.ticketStatusTab || 'All';
+  const search = (STATE.ticketSearch || '').trim().toLowerCase();
+  const locFilter = STATE.ticketLocationFilter;
+  return tickets.filter((t) => {
+    if (typeTab !== 'All' && t.type !== typeTab) return false;
+    if (statusTab !== 'All') {
+      if (statusTab === 'Closed' ? (t.status !== 'Closed' && t.status !== 'Resolved') : t.status !== statusTab) return false;
+    }
+    if (locFilter && (t.location || 'Unspecified') !== locFilter) return false;
+    if (search && !(`${t.title} ${t.location || ''} ${t.description || ''}`.toLowerCase().includes(search))) return false;
+    return true;
+  });
+}
+
+export function renderTickets() {
+  const data = loadData('ticketsPage', loadTicketsData);
+  if (data === null) return loadingCard();
+  if (data.__error) return loadingCard(data.__error);
+
+  const { tickets } = data;
+  const view = STATE.ticketView || 'list';
+  const visible = filteredTickets(tickets);
+
+  const viewTabs = ['list', 'calendar', 'heatmap'].map((v) =>
+    `<div class="tab ${view === v ? 'active' : ''}" onclick="App.setTicketView('${v}')">${v === 'list' ? 'List' : v === 'calendar' ? 'Calendar' : 'Heatmap'}</div>`
+  ).join('');
+
+  let body;
+  if (view === 'calendar') body = renderCalendar(tickets);
+  else if (view === 'heatmap') body = renderTicketHeatmap(tickets);
+  else body = renderListView(visible);
+
+  return `
+    ${renderCharts(tickets)}
+    ${STATE.ticketLocationFilter ? `<div class="banner">Filtered to location: <strong>${esc(STATE.ticketLocationFilter)}</strong> <button class="link-btn" onclick="App.clearTicketLocationFilter()">Clear filter</button></div>` : ''}
+    <div class="toolbar">
+      <div class="tabs">${viewTabs}</div>
+      <div class="toolbar-actions">
+        ${canExportArea('tickets') ? `<button class="btn-sm" onclick="App.exportTicketsCsv()">Export CSV</button>` : ''}
+        ${canAdd('tickets') ? `<button class="btn btn-orange" onclick="App.editTicket(null)">+ New Ticket</button>` : ''}
+      </div>
+    </div>
+    ${view === 'list' ? `
+      <div class="toolbar">
+        <div class="tabs">
+          ${['All', 'Issue', 'Internal'].map((t) => `<div class="tab ${(STATE.ticketTypeTab || 'All') === t ? 'active' : ''}" onclick="App.setTicketTypeTab('${t}')">${t === 'Issue' ? 'Issue Tickets' : t === 'Internal' ? 'Internal Tickets' : 'All'}</div>`).join('')}
+        </div>
+        <div class="tabs">
+          ${['All', 'Open', 'In Progress', 'Closed'].map((s) => `<div class="tab ${(STATE.ticketStatusTab || 'All') === s ? 'active' : ''}" onclick="App.setTicketStatusTab('${s}')">${s}</div>`).join('')}
+        </div>
+      </div>
+      <div class="field" style="max-width:320px;"><input placeholder="Search tickets..." value="${esc(STATE.ticketSearch || '')}" oninput="App.setTicketSearch(this.value)"></div>
+    ` : ''}
+    ${body}
+  `;
+}
+
+export function setTicketView(v) { setState({ ticketView: v }); }
+export function setTicketTypeTab(v) { setState({ ticketTypeTab: v }); }
+export function setTicketStatusTab(v) { setState({ ticketStatusTab: v }); }
+export function setTicketSearch(v) { setState({ ticketSearch: v }); }
+export function clearTicketLocationFilter() { setState({ ticketLocationFilter: null }); }
+
+// -------------------- charts --------------------
+function last6MonthLabels() {
+  const now = new Date();
+  const labels = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    labels.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return labels;
+}
+
+function renderCharts(tickets) {
+  const months = last6MonthLabels();
+  const opened = months.map((m) => tickets.filter((t) => (t.date_reported || '').startsWith(m)).length);
+  const closed = months.map((m) => tickets.filter((t) => (t.date_closed || '').startsWith(m)).length);
+
+  const priorities = ['Low', 'Medium', 'High', 'Critical'];
+  const byPriority = priorities.map((p) => tickets.filter((t) => (t.priority || 'Medium') === p).length);
+
+  const locCounts = {};
+  for (const t of tickets) {
+    const loc = (t.location || '').trim() || 'Unspecified';
+    locCounts[loc] = (locCounts[loc] || 0) + 1;
+  }
+  const topLocs = Object.entries(locCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:20px;">
+      <div class="card" style="margin-bottom:0;">
+        <div class="card-head"><h3>Opened vs Closed (6mo)</h3></div>
+        ${svgGroupedBarChart(months, [{ name: 'Opened', color: '#e07a2c', values: opened }, { name: 'Closed', color: '#1f9d55', values: closed }])}
+      </div>
+      <div class="card" style="margin-bottom:0;">
+        <div class="card-head"><h3>By Priority</h3></div>
+        ${svgGroupedBarChart(priorities, [{ name: 'Tickets', color: '#3a7ca5', values: byPriority }])}
+      </div>
+      <div class="card" style="margin-bottom:0;">
+        <div class="card-head"><h3>Top Locations by Ticket Count</h3></div>
+        ${svgGroupedBarChart(topLocs.map((l) => l[0]), [{ name: 'Tickets', color: '#8e44ad', values: topLocs.map((l) => l[1]) }])}
+      </div>
+    </div>
+  `;
+}
+
+// -------------------- list view --------------------
+function renderListView(visible) {
+  const rows = visible.map((t) => `
     <tr>
       <td>${esc(t.title)}</td>
       <td>${esc(t.location || '-')}</td>
@@ -25,16 +147,9 @@ export function renderTickets() {
       </td>
     </tr>
   `).join('');
-
   return `
-    <div class="toolbar">
-      <div class="tabs"><div class="tab active">All Tickets (${tickets.length})</div></div>
-      <div class="toolbar-actions">
-        ${canAdd('tickets') ? `<button class="btn btn-orange" onclick="App.editTicket(null)">+ New Ticket</button>` : ''}
-      </div>
-    </div>
     <div class="card">
-      ${tickets.length === 0 ? '<div class="empty">No tickets yet.</div>' : `
+      ${visible.length === 0 ? '<div class="empty">No tickets match your filters.</div>' : `
         <table>
           <thead><tr><th>Title</th><th>Location</th><th>Status</th><th>Priority</th><th>Reported</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
@@ -44,10 +159,163 @@ export function renderTickets() {
   `;
 }
 
+// -------------------- calendar --------------------
+function kpiRowForTickets(list) {
+  const total = list.length;
+  const open = list.filter((t) => t.status === 'Open').length;
+  const inProgress = list.filter((t) => t.status === 'In Progress').length;
+  const closed = list.filter((t) => t.status === 'Closed' || t.status === 'Resolved').length;
+  return `<div class="kpi-row">
+    <div class="kpi"><div class="label">Total</div><div class="value">${total}</div></div>
+    <div class="kpi"><div class="label">Open</div><div class="value">${open}</div></div>
+    <div class="kpi"><div class="label">In Progress</div><div class="value">${inProgress}</div></div>
+    <div class="kpi"><div class="label">Closed</div><div class="value">${closed}</div></div>
+  </div>`;
+}
+
+function renderCalendar(tickets) {
+  const mode = STATE.ticketCalMode || 'month';
+  const modeTabs = ['month', 'week'].map((m) => `<div class="tab ${mode === m ? 'active' : ''}" onclick="App.setTicketCalMode('${m}')">${m === 'month' ? 'Month' : 'Week'}</div>`).join('');
+  const body = mode === 'week' ? renderWeekStrip(tickets) : renderMonthGrid(tickets);
+  return `<div class="card"><div class="tabs" style="margin-bottom:10px;">${modeTabs}</div>${body}</div>`;
+}
+
+function renderMonthGrid(tickets) {
+  const monthStr = STATE.tkMonth || new Date().toISOString().slice(0, 7);
+  const [y, m] = monthStr.split('-').map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const firstDow = new Date(y, m - 1, 1).getDay();
+  const byDay = {};
+  const monthTickets = tickets.filter((t) => (t.date_reported || '').startsWith(monthStr));
+  for (const t of monthTickets) {
+    const day = Number(t.date_reported.split('-')[2]);
+    byDay[day] = byDay[day] || [];
+    byDay[day].push(t);
+  }
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  return `
+    ${kpiRowForTickets(monthTickets)}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0;">
+      <button class="btn-sm" onclick="App.shiftTicketMonth(-1)">&larr; Prev</button>
+      <strong>${new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</strong>
+      <button class="btn-sm" onclick="App.shiftTicketMonth(1)">Next &rarr;</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;">
+      ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => `<div class="small muted" style="text-align:center;font-weight:700;">${d}</div>`).join('')}
+      ${cells.map((d) => d === null ? '<div></div>' : `
+        <div style="min-height:74px;border:1px solid var(--border);border-radius:6px;padding:4px;">
+          <div class="small" style="font-weight:700;">${d}</div>
+          ${(byDay[d] || []).slice(0, 3).map((t) => `<div class="badge ${STATUS_BADGE[t.status] || 'b-gray'}" style="display:block;margin-top:2px;cursor:pointer;font-size:9.5px;" onclick="App.editTicket('${t.id}')">${esc((t.title || '').slice(0, 16))}</div>`).join('')}
+          ${(byDay[d] || []).length > 3 ? `<div class="small muted">+${(byDay[d] || []).length - 3}</div>` : ''}
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function startOfWeek(d) {
+  const r = new Date(d);
+  r.setDate(r.getDate() - r.getDay());
+  return r;
+}
+
+function renderWeekStrip(tickets) {
+  const start = STATE.tkWeekStart ? new Date(STATE.tkWeekStart + 'T00:00:00') : startOfWeek(new Date());
+  const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(start); d.setDate(start.getDate() + i); return d; });
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const dayStrs = days.map((d) => d.toISOString().slice(0, 10));
+  const weekTickets = tickets.filter((t) => dayStrs.includes(t.date_reported));
+
+  return `
+    ${kpiRowForTickets(weekTickets)}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0;">
+      <button class="btn-sm" onclick="App.shiftTicketWeek(-1)">&larr; Prev</button>
+      <strong>${days[0].toLocaleDateString()} - ${days[6].toLocaleDateString()}</strong>
+      <button class="btn-sm" onclick="App.shiftTicketWeek(1)">Next &rarr;</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;">
+      ${days.map((d) => {
+        const dayStr = d.toISOString().slice(0, 10);
+        const dayTickets = tickets.filter((t) => t.date_reported === dayStr);
+        const isToday = dayStr === todayStr;
+        return `
+          <div style="min-height:220px;border:1px solid ${isToday ? '#e07a2c' : 'var(--border)'};background:${isToday ? 'rgba(224,122,44,0.06)' : '#fff'};border-radius:8px;padding:6px;">
+            <div class="small" style="font-weight:700;">${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })}</div>
+            ${dayTickets.map((t) => `<div class="badge ${STATUS_BADGE[t.status] || 'b-gray'}" style="display:block;margin-top:4px;cursor:pointer;font-size:10px;" onclick="App.editTicket('${t.id}')">${esc(t.title)}</div>`).join('')}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+export function setTicketCalMode(m) { setState({ ticketCalMode: m }); }
+export function shiftTicketMonth(delta) {
+  const cur = STATE.tkMonth || new Date().toISOString().slice(0, 7);
+  const [y, m] = cur.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  setState({ tkMonth: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` });
+}
+export function shiftTicketWeek(delta) {
+  const cur = STATE.tkWeekStart ? new Date(STATE.tkWeekStart + 'T00:00:00') : startOfWeek(new Date());
+  cur.setDate(cur.getDate() + delta * 7);
+  setState({ tkWeekStart: cur.toISOString().slice(0, 10) });
+}
+
+// -------------------- heatmap --------------------
+function ticketHeatColor(stats) {
+  if (stats.total === 0) return '#f4f3f0';
+  if (stats.open === 0) return '#1f9d55';
+  if (stats.open === 1) return '#e0a13a';
+  if (stats.open <= 3) return '#e07a2c';
+  return '#c0392b';
+}
+
+function renderTicketHeatmap(tickets) {
+  const byLoc = {};
+  for (const t of tickets) {
+    const loc = (t.location || '').trim() || 'Unspecified';
+    byLoc[loc] = byLoc[loc] || { total: 0, open: 0 };
+    byLoc[loc].total++;
+    if (t.status !== 'Closed' && t.status !== 'Resolved') byLoc[loc].open++;
+  }
+  const items = Object.entries(byLoc).map(([loc, stats]) => ({ loc, stats }))
+    .sort((a, b) => b.stats.open - a.stats.open || b.stats.total - a.stats.total);
+
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Ticket Heatmap</h3><div class="desc">Colored by open-ticket load</div></div>
+      ${heatmapGrid(items, {
+        colorFn: (i) => ticketHeatColor(i.stats),
+        contentHtml: (i) => `<div style="font-weight:700;font-size:12.5px;">${esc(i.loc)}</div><div style="font-size:11px;margin-top:4px;">${i.stats.open} open / ${i.stats.total} total</div>`,
+        onClick: (i) => `App.filterTicketsByLocation("${jsAttr(i.loc)}")`,
+      })}
+    </div>
+  `;
+}
+
+export function filterTicketsByLocation(loc) {
+  setState({ ticketView: 'list', ticketStatusTab: 'All', ticketLocationFilter: loc });
+}
+
+// -------------------- CRUD --------------------
+export function exportTicketsCsv() {
+  const tickets = pageData()?.tickets || [];
+  exportToCsv('tickets.csv', [
+    { label: 'Title', value: (t) => t.title }, { label: 'Location', value: (t) => t.location },
+    { label: 'Status', value: (t) => t.status }, { label: 'Priority', value: (t) => t.priority },
+    { label: 'Reported', value: (t) => t.date_reported }, { label: 'Closed', value: (t) => t.date_closed },
+    { label: 'Reported By', value: (t) => t.reported_by }, { label: 'Root Cause', value: (t) => t.root_cause },
+  ], tickets);
+}
+
 export function editTicket(id) {
-  const tickets = STATE.pageData.tickets?.data || [];
+  const tickets = pageData()?.tickets || [];
   const row = id ? tickets.find((t) => t.id === id) : null;
-  openModal('ticket', row || { date_reported: new Date().toISOString().slice(0, 10) });
+  openModal('ticket', row || { date_reported: new Date().toISOString().slice(0, 10), status: 'Open' });
 }
 
 export async function removeTicket(id) {
@@ -55,12 +323,26 @@ export async function removeTicket(id) {
   try {
     await deleteTicket(id);
     await logAudit('Delete ticket', id);
-    invalidate('tickets');
+    invalidate('ticketsPage');
+    invalidate('opsOverviewV2');
     toast('Ticket deleted');
     setState({});
-  } catch (e) {
-    toast(e.message, 'error');
-  }
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+export function onTicketLocationChange(value) {
+  if (!STATE.modal) return;
+  STATE.modal.data = { ...STATE.modal.data, location: value, asset_inv_id: null };
+  setState({});
+}
+
+export async function viewTicketPhoto() {
+  const path = STATE.modal?.data?.photo_path;
+  if (!path) return;
+  try {
+    const url = await getSignedUrl(path, 300);
+    window.open(url, '_blank');
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 export async function saveTicketForm(event) {
@@ -72,11 +354,16 @@ export async function saveTicketForm(event) {
     toast('Root cause is required before closing a ticket', 'error');
     return;
   }
+  const assetInvId = document.getElementById('tk-screen').value || null;
+  const pd = pageData();
+  const screen = assetInvId ? pd.assetInventory.find((a) => a.id === assetInvId) : null;
   const row = {
     id,
     type: document.getElementById('tk-type').value,
     title: document.getElementById('tk-title').value.trim(),
-    location: document.getElementById('tk-location').value.trim(),
+    location: document.getElementById('tk-location').value,
+    assetInvId,
+    assetInvLabel: screen ? `${screen.venue} - ${screen.location || screen.name}` : null,
     description: document.getElementById('tk-description').value.trim(),
     status,
     priority: document.getElementById('tk-priority').value,
@@ -85,50 +372,73 @@ export async function saveTicketForm(event) {
     dateReported: document.getElementById('tk-date-reported').value || null,
     dateClosed: status === 'Closed' ? new Date().toISOString().slice(0, 10) : null,
   };
+  const photoFile = document.getElementById('tk-photo')?.files?.[0] || null;
   try {
-    await saveTicket(row);
+    await saveTicket(row, photoFile);
     await logAudit(id ? 'Edit ticket' : 'Add ticket', row.title);
-    invalidate('tickets');
+    invalidate('ticketsPage');
+    invalidate('opsOverviewV2');
     closeModal();
     toast('Ticket saved');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
+  } catch (e) { toast(e.message, 'error'); }
 }
 
-registerModal('ticket', (data) => `
-  <h3>${data.id ? 'Edit' : 'New'} Ticket</h3>
-  <form onsubmit="App.saveTicketForm(event)">
-    <input type="hidden" id="tk-id" value="${esc(data.id || '')}">
-    <div class="field"><label>Title</label><input id="tk-title" value="${esc(data.title || '')}" required></div>
-    <div class="grid2">
-      <div class="field"><label>Type</label>
-        <select id="tk-type">
-          <option value="Issue" ${data.type === 'Issue' ? 'selected' : ''}>Issue</option>
-          <option value="Internal" ${data.type === 'Internal' ? 'selected' : ''}>Internal</option>
-        </select>
+registerModal('ticket', (data) => {
+  const pd = pageData();
+  const locations = pd?.locations || [];
+  const assetInventory = pd?.assetInventory || [];
+  const screens = data.location ? assetInventoryForLocation(data.location, assetInventory) : [];
+  return `
+    <h3>${data.id ? 'Edit' : 'New'} Ticket</h3>
+    <form onsubmit="App.saveTicketForm(event)">
+      <input type="hidden" id="tk-id" value="${esc(data.id || '')}">
+      <div class="field"><label>Title</label><input id="tk-title" value="${esc(data.title || '')}" required></div>
+      <div class="grid2">
+        <div class="field"><label>Type</label>
+          <select id="tk-type">
+            <option value="Issue" ${data.type === 'Issue' ? 'selected' : ''}>Issue</option>
+            <option value="Internal" ${data.type === 'Internal' ? 'selected' : ''}>Internal</option>
+          </select>
+        </div>
+        <div class="field"><label>Priority</label>
+          <select id="tk-priority">
+            ${['Low', 'Medium', 'High', 'Critical'].map((p) => `<option value="${p}" ${(data.priority || 'Medium') === p ? 'selected' : ''}>${p}</option>`).join('')}
+          </select>
+        </div>
       </div>
-      <div class="field"><label>Priority</label>
-        <select id="tk-priority">
-          ${['Low', 'Medium', 'High', 'Critical'].map((p) => `<option value="${p}" ${(data.priority || 'Medium') === p ? 'selected' : ''}>${p}</option>`).join('')}
-        </select>
+      <div class="grid2">
+        <div class="field"><label>Location</label>
+          <select id="tk-location" onchange="App.onTicketLocationChange(this.value)">
+            <option value="">-</option>
+            ${locations.map((l) => `<option value="${esc(l.name)}" ${data.location === l.name ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Screen (optional)</label>
+          <select id="tk-screen">
+            <option value="">-</option>
+            ${screens.map((s) => `<option value="${s.id}" ${data.asset_inv_id === s.id ? 'selected' : ''}>${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('')}
+          </select>
+        </div>
       </div>
-    </div>
-    <div class="field"><label>Location</label><input id="tk-location" value="${esc(data.location || '')}"></div>
-    <div class="field"><label>Description</label><textarea id="tk-description" rows="3">${esc(data.description || '')}</textarea></div>
-    <div class="grid2">
-      <div class="field"><label>Status</label>
-        <select id="tk-status">
-          ${['Open', 'In Progress', 'Resolved', 'Closed'].map((s) => `<option value="${s}" ${(data.status || 'Open') === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>
+      <div class="field"><label>Description</label><textarea id="tk-description" rows="3">${esc(data.description || '')}</textarea></div>
+      <div class="grid2">
+        <div class="field"><label>Status</label>
+          <select id="tk-status">
+            ${['Open', 'In Progress', 'Resolved', 'Closed'].map((s) => `<option value="${s}" ${(data.status || 'Open') === s ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Reported By</label><input id="tk-reported-by" value="${esc(data.reported_by || '')}"></div>
       </div>
-      <div class="field"><label>Reported By</label><input id="tk-reported-by" value="${esc(data.reported_by || '')}"></div>
-    </div>
-    <div class="field"><label>Date Reported</label><input id="tk-date-reported" type="date" value="${data.date_reported || ''}"></div>
-    <div class="field"><label>Root Cause (required to close)</label><textarea id="tk-root-cause" rows="2">${esc(data.root_cause || '')}</textarea></div>
-    <div class="modal-actions">
-      <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
-      <button type="submit" class="btn btn-orange">Save</button>
-    </div>
-  </form>
-`);
+      <div class="field"><label>Date Reported</label><input id="tk-date-reported" type="date" value="${data.date_reported || ''}"></div>
+      <div class="field"><label>Root Cause (required to close)</label><textarea id="tk-root-cause" rows="2">${esc(data.root_cause || '')}</textarea></div>
+      <div class="field"><label>Photo (jpg/png)</label>
+        <input id="tk-photo" type="file" accept="image/jpeg,image/png">
+        ${data.photo_path ? `<button type="button" class="link-btn" style="margin-left:8px;" onclick="App.viewTicketPhoto()">View current photo</button>` : ''}
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-orange">Save</button>
+      </div>
+    </form>
+  `;
+});
