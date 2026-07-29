@@ -1,10 +1,11 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
 import { listAssetInventory, saveAssetInventory, deleteAssetInventory } from '../data/assetsInventory.js';
 import { listContractors } from '../data/contractors.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
+import { exportToCsv } from '../lib/csv.js';
 
 function filtered(rows) {
   const q = (STATE.assetInvSearch || '').trim().toLowerCase();
@@ -47,11 +48,13 @@ export function renderAssetsInventory() {
         <input placeholder="Search name, venue, location, player box ID..." value="${esc(STATE.assetInvSearch || '')}" oninput="App.setAssetInvSearch(this.value)">
       </div>
       <div class="toolbar-actions">
+        ${canExportArea('assetsInventory') ? `<button class="btn-sm" onclick="App.exportAssetInvCsv()">Export CSV</button>` : ''}
+        ${canAdd('assetsInventory') ? `<button class="btn-sm" onclick="App.openBulkImport('assetsInventory')">Bulk Import</button>` : ''}
         ${canAdd('assetsInventory') ? `<button class="btn btn-orange" onclick="App.editAssetInv(null)">+ Add Screen</button>` : ''}
       </div>
     </div>
     <div class="card">
-      <div class="card-head desc">Showing ${shown.length} of ${visible.length} matching screens (${rows.length} total).</div>
+      <div class="card-head desc">Showing ${shown.length} of ${visible.length} matching screens (${rows.length} total). Export/Import act on the full ${rows.length}, not just what's shown.</div>
       ${shown.length === 0 ? '<div class="empty">No screens found.</div>' : `
         <table>
           <thead><tr><th>Name</th><th>Venue</th><th>Location</th><th>Category</th><th>Player Type</th><th>pDOOH</th><th></th></tr></thead>
@@ -64,6 +67,17 @@ export function renderAssetsInventory() {
 
 export function setAssetInvSearch(value) {
   setState({ assetInvSearch: value });
+}
+
+export function exportAssetInvCsv() {
+  const rows = STATE.pageData.assetInventory?.data || [];
+  exportToCsv('asset-inventory.csv', [
+    { label: 'Asset ID', value: (r) => r.source_asset_id }, { label: 'Name', value: (r) => r.name },
+    { label: 'Venue', value: (r) => r.venue }, { label: 'Location', value: (r) => r.location },
+    { label: 'Category', value: (r) => r.category }, { label: 'Format', value: (r) => r.format },
+    { label: 'Player Type', value: (r) => r.player_type }, { label: 'Player Box ID', value: (r) => r.player_box_id },
+    { label: 'pDOOH Ready', value: (r) => r.pdooh_ready }, { label: 'Networks', value: (r) => (r.networkNames || []).join(', ') },
+  ], rows);
 }
 
 export function editAssetInv(id) {

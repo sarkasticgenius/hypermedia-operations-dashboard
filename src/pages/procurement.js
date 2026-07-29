@@ -1,10 +1,11 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
 import { listOrders, saveOrder, deleteOrder } from '../data/orders.js';
 import { listAssets } from '../data/assets.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate } from '../lib/format.js';
+import { exportToCsv } from '../lib/csv.js';
 
 const STATUS_BADGE = { Ordered: 'b-gray', 'In Transit': 'b-amber', Delivered: 'b-green' };
 
@@ -33,6 +34,7 @@ export function renderProcurement() {
     <div class="toolbar">
       <div class="tabs"><div class="tab active">All Orders (${orders.length})</div></div>
       <div class="toolbar-actions">
+        ${canExportArea('orders') ? `<button class="btn-sm" onclick="App.exportOrdersCsv()">Export CSV</button>` : ''}
         ${canAdd('orders') ? `<button class="btn btn-orange" onclick="App.editOrder(null)">+ New Order</button>` : ''}
       </div>
     </div>
@@ -45,6 +47,15 @@ export function renderProcurement() {
       `}
     </div>
   `;
+}
+
+export function exportOrdersCsv() {
+  const orders = STATE.pageData.orders?.data || [];
+  exportToCsv('orders.csv', [
+    { label: 'Asset', value: (o) => o.asset_name }, { label: 'Qty', value: (o) => o.qty },
+    { label: 'Order Date', value: (o) => o.order_date }, { label: 'Destination', value: (o) => o.destination },
+    { label: 'Status', value: (o) => o.status },
+  ], orders);
 }
 
 export function editOrder(id) {

@@ -20,7 +20,7 @@ const NAV_ITEMS = [
   { page: 'campaigns', label: 'Digital Campaigns' },
   { page: 'gantt', label: 'Campaign Calendar' },
   { page: 'staticCampaigns', label: 'Static Campaigns' },
-  { page: 'dashboards', label: 'Dashboards' },
+  { page: 'dashboards', label: 'Maintenance Panel' },
 ];
 
 function navItem(page, label) {
@@ -76,7 +76,7 @@ const PAGE_TITLES = {
   campaigns: 'Digital Campaigns',
   gantt: 'Campaign Calendar',
   staticCampaigns: 'Static Campaigns',
-  dashboards: 'Dashboards',
+  dashboards: 'Maintenance Panel',
   admin: 'Admin',
   settings: 'Settings',
   account: 'My Account',

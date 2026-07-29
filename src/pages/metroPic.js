@@ -1,9 +1,10 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
 import { listMetroPics, saveMetroPic, deleteMetroPic, renewMetroPic } from '../data/metroPics.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, daysUntilInfo } from '../lib/format.js';
+import { exportToCsv } from '../lib/csv.js';
 
 export function renderMetroPic() {
   const pics = loadData('metroPics', listMetroPics);
@@ -32,6 +33,7 @@ export function renderMetroPic() {
     <div class="toolbar">
       <div class="tabs"><div class="tab active">All PICs (${pics.length})</div></div>
       <div class="toolbar-actions">
+        ${canExportArea('metroPic') ? `<button class="btn-sm" onclick="App.exportMetroPicCsv()">Export CSV</button>` : ''}
         ${canAdd('metroPic') ? `<button class="btn btn-orange" onclick="App.editMetroPic(null)">+ Add PIC</button>` : ''}
       </div>
     </div>
@@ -44,6 +46,16 @@ export function renderMetroPic() {
       `}
     </div>
   `;
+}
+
+export function exportMetroPicCsv() {
+  const pics = STATE.pageData.metroPics?.data || [];
+  exportToCsv('metro-pic.csv', [
+    { label: 'Station', value: (m) => m.station }, { label: 'PIC Name', value: (m) => m.pic_name },
+    { label: 'Designation', value: (m) => m.designation }, { label: 'Phone', value: (m) => m.phone },
+    { label: 'Email', value: (m) => m.email }, { label: 'Validity Start', value: (m) => m.validity_start },
+    { label: 'Validity End', value: (m) => m.validity_end }, { label: 'EID Number', value: (m) => m.eid_number },
+  ], pics);
 }
 
 export function editMetroPic(id) {

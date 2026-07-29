@@ -8,10 +8,15 @@ import {
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 
+const PANEL_LABELS = { dashboards: 'Maintenance Panel', campaigns: 'Digital Campaigns Panel', pdooh: 'pDOOH Campaign Panel' };
+
 export function renderDashboards() {
-  const sections = loadData('dashboardSections', listDashboardSections);
-  if (sections === null) return loadingCard();
-  if (sections?.__error) return loadingCard(sections.__error);
+  const allSections = loadData('dashboardSections', listDashboardSections);
+  if (allSections === null) return loadingCard();
+  if (allSections?.__error) return loadingCard(allSections.__error);
+
+  const panel = STATE.dashboardPanel || 'dashboards';
+  const sections = allSections.filter((s) => (s.nav_group || 'dashboards') === panel);
 
   const activeId = STATE.activeDashboardId || sections.flatMap((s) => s.dashboards || [])[0]?.id;
   let activeDash = null;
@@ -21,6 +26,14 @@ export function renderDashboards() {
   }
 
   const editable = canEdit('dashboards');
+
+  const panelSwitcher = `
+    <div class="field" style="max-width:280px;margin-bottom:14px;">
+      <select onchange="App.setDashboardPanel(this.value)">
+        ${Object.entries(PANEL_LABELS).map(([key, label]) => `<option value="${key}" ${panel === key ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+      </select>
+    </div>
+  `;
 
   const listHtml = sections.map((s) => `
     <div class="dash-section">
@@ -38,8 +51,9 @@ export function renderDashboards() {
   `).join('');
 
   return `
+    ${panelSwitcher}
     <div class="dash-layout">
-      <div class="dash-list">${listHtml}</div>
+      <div class="dash-list">${listHtml || '<div class="empty">No sections in this panel.</div>'}</div>
       <div class="dash-frame-wrap">
         <div class="dash-frame-head">
           <span>${activeDash ? esc(activeDash.name) : 'Select a dashboard'}</span>
@@ -48,6 +62,10 @@ export function renderDashboards() {
       </div>
     </div>
   `;
+}
+
+export function setDashboardPanel(panel) {
+  setState({ dashboardPanel: panel, activeDashboardId: null });
 }
 
 export function setActiveDashboard(id) {
