@@ -4,6 +4,8 @@ import { listCategories, addCategory, deleteCategory } from '../data/categories.
 import { listContractors, saveContractor, deleteContractor } from '../data/contractors.js';
 import { listNetworks, ensureNetwork } from '../data/networks.js';
 import { getAllSettings, saveSetting } from '../data/settings.js';
+import { listAssetInventory } from '../data/assetsInventory.js';
+import { supabase } from '../supabaseClient.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 
@@ -81,20 +83,29 @@ export async function removeCategory(id) {
 
 function renderContractorsTab() {
   const contractors = loadData('contractors', listContractors);
-  if (contractors === null) return loadingCard();
+  const assetInventory = loadData('assetInventory', listAssetInventory);
+  if (contractors === null || assetInventory === null) return loadingCard();
   if (contractors?.__error) return loadingCard(contractors.__error);
+  if (assetInventory?.__error) return loadingCard(assetInventory.__error);
+
+  const screenCounts = {};
+  for (const a of assetInventory) {
+    if (a.contractor_id) screenCounts[a.contractor_id] = (screenCounts[a.contractor_id] || 0) + 1;
+  }
+
   const rows = contractors.map((c) => `
     <tr>
       <td>${esc(c.name)}</td>
       <td>${esc((c.emails || []).join(', ') || '-')}</td>
       <td>${esc(c.phone || '-')}</td>
-      <td><button class="btn-sm" onclick="App.removeContractorRow('${c.id}')">Delete</button></td>
+      <td class="tright">${screenCounts[c.id] || 0}</td>
+      <td><button class="btn-sm" onclick="App.removeContractorRow('${c.id}','${screenCounts[c.id] || 0}')">Delete</button></td>
     </tr>
   `).join('');
   return `
     <div class="card">
-      <div class="card-head"><h3>Contractors</h3><div class="desc">Notified by email when a ticket is created for a screen assigned to them.</div></div>
-      <table><thead><tr><th>Name</th><th>Emails</th><th>Phone</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="card-head"><h3>Contractors</h3><div class="desc">Notified by email when a ticket is created for a screen assigned to them. Screen assignment happens on the Asset Inventory edit/bulk-edit form.</div></div>
+      <table><thead><tr><th>Name</th><th>Emails</th><th>Phone</th><th class="tright">Screens</th><th></th></tr></thead><tbody>${rows}</tbody></table>
       <form onsubmit="App.addContractorForm(event)" style="margin-top:14px;">
         <div class="grid2">
           <div class="field"><label>Name</label><input id="ct-name" required></div>
@@ -121,12 +132,17 @@ export async function addContractorForm(event) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-export async function removeContractorRow(id) {
-  if (!confirm('Delete this contractor?')) return;
+export async function removeContractorRow(id, screenCount) {
+  const count = Number(screenCount) || 0;
+  const msg = count > 0
+    ? `This contractor is assigned to ${count} screen(s) in Asset Inventory - deleting will clear that assignment on all of them. Continue?`
+    : 'Delete this contractor?';
+  if (!confirm(msg)) return;
   try {
     await deleteContractor(id);
-    await logAudit('Delete contractor', id);
+    await logAudit('Delete contractor', `${id} (${count} screens cleared)`);
     invalidate('contractors');
+    invalidate('assetInventory');
     toast('Contractor deleted');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
@@ -162,8 +178,9 @@ export async function addNetworkForm(event) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-function integrationField(settings, key, label, fields) {
+function integrationField(settings, key, label, fields, testFunctionName) {
   const cfg = settings[key] || {};
+  const testing = STATE[`testing_${key}`];
   return `
     <div class="card">
       <div class="card-head"><h3>${esc(label)}</h3></div>
@@ -175,11 +192,83 @@ function integrationField(settings, key, label, fields) {
               : `<input id="int-${key}-${f.name}" type="${f.type || 'text'}" value="${esc(cfg[f.name] ?? '')}">`}
           </div>
         `).join('')}
-        <button class="btn btn-orange" type="submit">Save</button>
-        ${cfg.lastSync ? `<span class="small muted" style="margin-left:10px;">Last sync: ${esc(cfg.lastSync)}</span>` : ''}
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-orange" type="submit">Save</button>
+          ${testFunctionName ? `<button type="button" class="btn-outline btn-sm" ${testing ? 'disabled' : ''} onclick="App.testIntegration('${testFunctionName}','${key}')">${testing ? 'Testing...' : 'Test'}</button>` : ''}
+          ${cfg.lastSync ? `<span class="small muted">Last sync: ${esc(cfg.lastSync)}</span>` : ''}
+        </div>
+        ${cfg.lastSyncSummary ? `<p class="small muted" style="margin-top:6px;">${esc(cfg.lastSyncSummary)}</p>` : ''}
+        ${cfg.lastError ? `<div class="login-error" style="margin-top:6px;">${esc(cfg.lastError)}</div>` : ''}
       </form>
     </div>
   `;
+}
+
+function renderAssetInventoryApiCard(settings) {
+  const cfg = settings.assetInventoryApi || {};
+  const testing = STATE.testing_assetInventoryApi;
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Asset Inventory API Sync</h3><div class="desc">Generic JSON API puller - point it at any system and map its fields to our columns. For a one-off import instead, use the Bulk Import button on the Asset Inventory page.</div></div>
+      <form onsubmit="App.saveAssetInventoryApiForm(event)">
+        <div class="field"><label>Base URL</label><input id="int-ai-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://source-system.example.com/api/screens"></div>
+        <div class="grid2">
+          <div class="field"><label>Auth Header Name (optional)</label><input id="int-ai-authHeaderName" value="${esc(cfg.authHeaderName || '')}" placeholder="Authorization"></div>
+          <div class="field"><label>Auth Header Value (optional)</label><input id="int-ai-authHeaderValue" type="password" value="${esc(cfg.authHeaderValue || '')}" placeholder="Bearer ..."></div>
+        </div>
+        <div class="field"><label>Field Mapping (JSON: our column -&gt; source field path)</label>
+          <textarea id="int-ai-fieldMapping" rows="4" style="font-family:monospace;font-size:12px;">${esc(JSON.stringify(cfg.fieldMapping || { source_asset_id: 'id', name: 'name', venue: 'venue', location: 'location', category: 'category' }, null, 2))}</textarea>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-ai-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-orange" type="submit">Save</button>
+          <button type="button" class="btn-outline btn-sm" ${testing ? 'disabled' : ''} onclick="App.testIntegration('asset-inventory-sync','assetInventoryApi')">${testing ? 'Testing...' : 'Test / Sync Now'}</button>
+          ${cfg.lastSync ? `<span class="small muted">Last sync: ${esc(cfg.lastSync)}</span>` : ''}
+        </div>
+        ${cfg.lastSyncSummary ? `<p class="small muted" style="margin-top:6px;">${esc(cfg.lastSyncSummary)}</p>` : ''}
+        ${cfg.lastError ? `<div class="login-error" style="margin-top:6px;">${esc(cfg.lastError)}</div>` : ''}
+      </form>
+    </div>
+  `;
+}
+
+export async function saveAssetInventoryApiForm(event) {
+  event.preventDefault();
+  const settings = STATE.pageData.settings?.data || {};
+  const cfg = { ...(settings.assetInventoryApi || {}) };
+  cfg.baseUrl = document.getElementById('int-ai-baseUrl').value.trim();
+  cfg.authHeaderName = document.getElementById('int-ai-authHeaderName').value.trim();
+  cfg.authHeaderValue = document.getElementById('int-ai-authHeaderValue').value.trim();
+  cfg.enabled = document.getElementById('int-ai-enabled').checked;
+  try {
+    cfg.fieldMapping = JSON.parse(document.getElementById('int-ai-fieldMapping').value || '{}');
+  } catch (e) {
+    toast('Field Mapping must be valid JSON', 'error');
+    return;
+  }
+  try {
+    await saveSetting('assetInventoryApi', cfg);
+    await logAudit('Save integration settings', 'assetInventoryApi');
+    invalidate('settings');
+    toast('Settings saved');
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+export async function testIntegration(functionName, settingKey) {
+  setState({ [`testing_${settingKey}`]: true });
+  try {
+    const { data, error } = await supabase.functions.invoke(functionName, { body: {} });
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+    await logAudit(`Test ${functionName}`, data?.summary || '');
+    invalidate('settings');
+    toast(data?.summary || 'Test succeeded');
+  } catch (e) {
+    toast(e.message || 'Test failed', 'error');
+  } finally {
+    setState({ [`testing_${settingKey}`]: false });
+  }
 }
 
 function renderIntegrationsTab() {
@@ -192,11 +281,12 @@ function renderIntegrationsTab() {
     ${integrationField(settings, 'broadsignApi', 'Broadsign API', [
       { name: 'baseUrl', label: 'Base URL' }, { name: 'apiKey', label: 'API Key', type: 'password' },
       { name: 'domainId', label: 'Domain ID' }, { name: 'enabled', label: 'Enabled', type: 'checkbox' },
-    ])}
+    ], 'broadsign-sync')}
     ${integrationField(settings, 'grassfishApi', 'Grassfish API', [
       { name: 'baseUrl', label: 'Base URL' }, { name: 'apiKey', label: 'API Key', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
-    ])}
+    ], 'grassfish-sync')}
+    ${renderAssetInventoryApiCard(settings)}
     ${integrationField(settings, 'glpiFeed', 'GLPI CSV Feed', [
       { name: 'csvUrl', label: 'CSV URL' }, { name: 'autoRefreshMinutes', label: 'Auto-refresh (minutes)', type: 'number' },
     ])}
