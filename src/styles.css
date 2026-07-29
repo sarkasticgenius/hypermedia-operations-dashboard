@@ -151,8 +151,8 @@ tr:hover td{background:#fbfbfa;}
 .status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;}
 
 /* dashboards */
-.dash-layout{display:flex;gap:16px;align-items:flex-start;}
-.dash-list{width:250px;flex-shrink:0;}
+.dash-layout{display:flex;gap:16px;height:calc(100vh - 190px);}
+.dash-list{width:250px;flex-shrink:0;overflow-y:auto;}
 .dash-section{border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:12px;background:#fff;}
 .dash-section-title{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-dim);font-weight:700;padding:2px 4px 8px;}
 .dash-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;font-size:13px;cursor:grab;margin-bottom:3px;border:1px solid transparent;}
