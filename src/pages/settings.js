@@ -5,6 +5,7 @@ import { listContractors, saveContractor, deleteContractor } from '../data/contr
 import { listNetworks, ensureNetwork, renameNetwork, countNetworkUsage, deleteNetwork } from '../data/networks.js';
 import { getAllSettings, saveSetting } from '../data/settings.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
+import { invalidateAssetInventoryCaches } from './assetsInventory.js';
 import { supabase } from '../supabaseClient.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
@@ -170,8 +171,7 @@ export async function removeContractorRow(id, screenCount) {
     await deleteContractor(id);
     await logAudit('Delete contractor', `${id} (${count} screens cleared)`);
     invalidate('contractors');
-    invalidate('assetInventory');
-    invalidate('assetsInventoryPage');
+    invalidateAssetInventoryCaches();
     closeModal();
     toast('Contractor deleted');
     setState({});
@@ -236,8 +236,7 @@ export async function saveNetworkForm(event) {
     else await ensureNetwork(name);
     await logAudit(id ? 'Rename network' : 'Add network', name);
     invalidate('networks');
-    invalidate('assetInventory');
-    invalidate('assetsInventoryPage');
+    invalidateAssetInventoryCaches();
     closeModal();
     toast('Network saved');
   } catch (e) { toast(e.message, 'error'); }
@@ -253,8 +252,7 @@ export async function removeNetworkRow(id) {
     await deleteNetwork(id);
     await logAudit('Delete network', `${id} (${count} screens untagged)`);
     invalidate('networks');
-    invalidate('assetInventory');
-    invalidate('assetsInventoryPage');
+    invalidateAssetInventoryCaches();
     closeModal();
     toast('Network deleted');
     setState({});

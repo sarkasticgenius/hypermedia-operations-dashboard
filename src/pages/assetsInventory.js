@@ -33,6 +33,22 @@ async function loadAssetsInventoryData() {
 // anywhere.
 function pageData() { return loadData('assetsInventoryPage', loadAssetsInventoryData); }
 
+// Asset Inventory is the baseline every other workspace matches screens against by venue name -
+// Locations, Live Ops, Tickets, SIM Cards, Hardware Inventory (deploy modal), Settings
+// (contractor screen counts) and the Grassfish Console fallback each fetch their own independent
+// copy of asset_inventory bundled with their own page's data, under their own loadData() cache
+// key. Any change here has to bust every one of those, or a newly added/edited/deleted screen
+// only shows up on THIS page until the user leaves and comes back to the others.
+export function invalidateAssetInventoryCaches() {
+  invalidate('assetsInventoryPage');
+  invalidate('locationsPage');
+  invalidate('assets');
+  invalidate('assetInventoryForGrassfishPanel');
+  invalidate('assetInventory');
+  invalidate('simCardsPage');
+  invalidate('ticketsPage');
+}
+
 function matchesSearch(r, q) {
   return SEARCH_FIELDS.some((f) => String(r[f] || '').toLowerCase().includes(q))
     || (r.networkNames || []).some((n) => n.toLowerCase().includes(q));
@@ -192,7 +208,7 @@ export async function bulkDeleteAssetInv() {
   try {
     await Promise.all(ids.map((id) => deleteAssetInventory(id)));
     await logAudit('Bulk-delete asset inventory items', `${ids.length} item(s)`);
-    invalidate('assetsInventoryPage');
+    invalidateAssetInventoryCaches();
     setState({ aiSelectedIds: [] });
     toast(`${ids.length} screen(s) deleted`);
   } catch (e) { toast(e.message, 'error'); }
@@ -227,7 +243,7 @@ export async function saveBulkEditAssetInv(event) {
   try {
     await bulkPatchAssetInventory(ids, patch);
     await logAudit('Bulk-edit asset inventory items', `${ids.length} item(s): ${Object.keys(patch).join(', ')}`);
-    invalidate('assetsInventoryPage');
+    invalidateAssetInventoryCaches();
     closeModal();
     setState({ aiSelectedIds: [] });
     toast(`${ids.length} screen(s) updated`);
@@ -306,8 +322,7 @@ export async function removeAssetInv(id) {
   try {
     await deleteAssetInventory(id);
     await logAudit('Delete asset inventory item', id);
-    invalidate('assetsInventoryPage');
-    invalidate('locationsPage'); // Locations' venue-detail modal also lists these rows
+    invalidateAssetInventoryCaches();
     toast('Screen deleted');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
@@ -377,8 +392,7 @@ export async function saveAssetInvForm(event) {
   try {
     await saveAssetInventory(row, networkIds);
     await logAudit(id ? 'Edit asset inventory item' : 'Add asset inventory item', name);
-    invalidate('assetsInventoryPage');
-    invalidate('locationsPage'); // Locations' venue-detail modal also lists these rows
+    invalidateAssetInventoryCaches();
     closeModal();
     toast('Screen saved');
     // A brand-new screen is most useful seen in context on its venue, so route to Locations

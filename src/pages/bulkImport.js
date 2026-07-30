@@ -8,6 +8,7 @@ import { saveCampaign } from '../data/campaigns.js';
 import { savePermit } from '../data/permits.js';
 import { saveSimCard, listSimCards } from '../data/simCards.js';
 import { saveAssetInventory, listAssetInventory } from '../data/assetsInventory.js';
+import { invalidateAssetInventoryCaches } from './assetsInventory.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 
@@ -155,7 +156,10 @@ export async function runBulkImport(event, entity) {
       }
     }
     await logAudit(`Bulk import ${config.label}`, `${inserted} new, ${updated} updated`);
-    invalidate(config.dataKey || entity);
+    // Asset Inventory is the baseline every other workspace matches screens against, each with
+    // its own independent cache - busting just this one key would leave the rest stale.
+    if (entity === 'assetsInventory') invalidateAssetInventoryCaches();
+    else invalidate(config.dataKey || entity);
     closeModal();
     toast(`Imported: ${inserted} new, ${updated} updated`);
   } catch (e) {
