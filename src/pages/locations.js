@@ -253,22 +253,57 @@ export function openVenueDetail(id) {
   if (loc) openModal('venueDetail', { locationId: id });
 }
 
+// Every Asset Inventory row matched to a member location, auto (by venue name) + manually linked
+// (via the Edit Location modal's linker), de-duplicated - matches the original's
+// assetInventoryForLocation(loc), which is why manually-linked screens show up here even when
+// their venue text doesn't match the location name.
+function mergedItemsForMember(m, assetInventory) {
+  const auto = assetInventoryForLocation(m.name, assetInventory);
+  const manualIds = new Set(m.manual_asset_inventory_ids || []);
+  const manual = assetInventory.filter((r) => manualIds.has(r.id));
+  const seen = new Set();
+  const merged = [];
+  for (const r of [...auto, ...manual]) {
+    if (!seen.has(r.id)) { seen.add(r.id); merged.push(r); }
+  }
+  return merged;
+}
+
 registerModal('venueDetail', (data) => {
   const pd = pageData();
   const loc = pd.locations.find((l) => l.id === data.locationId);
   if (!loc) return '<div class="empty">Location not found.</div>';
   const members = loc.is_combined ? resolveMembers(loc, pd.locations) : [loc];
-  const groups = members.map((m) => ({ m, items: assetInventoryForLocation(m.name, pd.assetInventory) }));
-  return `
-    <h3>${esc(loc.name)}</h3>
-    ${groups.map((g) => `
+  const editOk = canEdit('assetsInventory');
+  const delOk = canDelete('assetsInventory');
+
+  const groups = members.map((m) => {
+    const items = mergedItemsForMember(m, pd.assetInventory);
+    const screens = items.reduce((s, i) => s + (Number(i.screens) || 0), 0);
+    const faces = items.reduce((s, i) => s + (Number(i.faces) || 0), 0);
+    const rows = items.map((i) => {
+      const label = [i.venue, i.location].filter(Boolean).join(' - ') || i.name;
+      const specs = [i.screens ? `${i.screens} screen${i.screens === 1 ? '' : 's'}` : '', i.faces ? `${i.faces} face${i.faces === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ');
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid #f2f1ee;">
+        <span><b>${esc(label)}</b> <span class="muted">${esc(i.name)}${i.category ? ` · ${esc(i.category)}` : ''}${specs ? ` · ${esc(specs)}` : ''}</span></span>
+        <span style="white-space:nowrap;">
+          ${editOk ? `<button class="btn-sm" style="border:none;background:none;padding:0 4px;" onclick="App.editAssetInv('${i.id}')">Edit</button>` : ''}
+          ${delOk ? `<button class="btn-sm" style="border:none;background:none;color:#c0392b;padding:0 4px;" onclick="App.removeAssetInv('${i.id}')">Delete</button>` : ''}
+        </span>
+      </div>`;
+    }).join('') || '<div class="small muted">No Asset Inventory screens matched yet.</div>';
+    return `
       <div style="margin-bottom:12px;">
-        <div style="font-weight:700;font-size:13px;">${esc(g.m.name)} (${g.items.length} items · ${g.items.reduce((s, i) => s + (i.screens || 0), 0)} screens · ${g.items.reduce((s, i) => s + (i.faces || 0), 0)} faces)</div>
-        <div style="max-height:180px;overflow-y:auto;margin-top:6px;">
-          ${g.items.map((i) => `<div class="small" style="padding:4px 0;border-bottom:1px solid #f2f1ee;">${esc(i.venue)} - ${esc(i.location || i.name)}</div>`).join('') || '<div class="empty small">No matched screens.</div>'}
-        </div>
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${esc(m.name)} <span class="small muted" style="font-weight:400;">(${items.length} item${items.length === 1 ? '' : 's'}${items.length ? ` · ${screens} screen${screens === 1 ? '' : 's'} · ${faces} face${faces === 1 ? '' : 's'}` : ''})</span></div>
+        <div style="max-height:220px;overflow-y:auto;">${rows}</div>
       </div>
-    `).join('')}
+    `;
+  }).join('');
+
+  return `
+    <h3>Screens - ${esc(loc.name)}</h3>
+    ${loc.is_combined ? '<div class="small muted" style="margin-bottom:8px;">Grouped by member location, matched from Asset Inventory.</div>' : ''}
+    ${groups}
     <div class="modal-actions"><button type="button" class="btn-sm" onclick="App.closeModal()">Close</button></div>
   `;
 });

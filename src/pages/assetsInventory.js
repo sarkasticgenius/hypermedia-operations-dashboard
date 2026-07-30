@@ -27,7 +27,11 @@ async function loadAssetsInventoryData() {
   return { rows, contractors, networks };
 }
 
-function pageData() { return STATE.pageData.assetsInventoryPage?.data; }
+// Self-loading (not just a cache read): the Edit Screen modal can be opened from other pages too
+// (e.g. Locations' venue-detail modal), which never call renderAssetsInventory() to prime this
+// cache - loadData() is safe to call repeatedly, so this triggers the fetch on first access from
+// anywhere.
+function pageData() { return loadData('assetsInventoryPage', loadAssetsInventoryData); }
 
 function matchesSearch(r, q) {
   return SEARCH_FIELDS.some((f) => String(r[f] || '').toLowerCase().includes(q))
@@ -289,7 +293,10 @@ export function exportAssetInvCsv(filteredOnly) {
 }
 
 export function editAssetInv(id) {
-  const rows = pageData()?.rows || [];
+  // Prefer whatever's already loaded (e.g. Locations' venue-detail modal, which is usually how
+  // this gets called for an id not on the Asset Inventory page itself) so Edit doesn't flash a
+  // blank "Add" form while assetsInventoryPage's own fetch is still in flight.
+  const rows = pageData()?.rows || STATE.pageData.locationsPage?.data?.assetInventory || [];
   const row = id ? rows.find((r) => r.id === id) : null;
   openModal('assetInv', row || {});
 }
@@ -300,6 +307,7 @@ export async function removeAssetInv(id) {
     await deleteAssetInventory(id);
     await logAudit('Delete asset inventory item', id);
     invalidate('assetsInventoryPage');
+    invalidate('locationsPage'); // Locations' venue-detail modal also lists these rows
     toast('Screen deleted');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
@@ -370,6 +378,7 @@ export async function saveAssetInvForm(event) {
     await saveAssetInventory(row, networkIds);
     await logAudit(id ? 'Edit asset inventory item' : 'Add asset inventory item', name);
     invalidate('assetsInventoryPage');
+    invalidate('locationsPage'); // Locations' venue-detail modal also lists these rows
     closeModal();
     toast('Screen saved');
     // A brand-new screen is most useful seen in context on its venue, so route to Locations
