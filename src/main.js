@@ -62,6 +62,7 @@ registerPage('admin', adminPage.renderAdmin);
 registerPage('settings', settingsPage.renderSettings);
 registerPage('broadsignPanel', networkPanelsPage.renderBroadsignPanel);
 registerPage('grassfishPanel', networkPanelsPage.renderGrassfishPanel);
+registerPage('iotPanel', networkPanelsPage.renderIotPanel);
 
 // Every inline onclick="App.xyz(...)" in the HTML-string page templates resolves against this
 // single global, assembled here from each page module's exported handlers. Keeps the render-

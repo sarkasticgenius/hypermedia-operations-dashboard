@@ -85,14 +85,16 @@ function renderSidebar(allSections) {
   const activeGroup = activeDashSec ? (activeDashSec.nav_group || 'dashboards') : null;
 
   const campExpanded = !!STATE.navExpanded.campaigns || STATE.page === 'gantt' || activeGroup === 'campaigns';
-  const dashExpanded = !!STATE.navExpanded.dashboards || activeGroup === 'dashboards' || STATE.page === 'broadsignPanel' || STATE.page === 'grassfishPanel';
+  const dashExpanded = !!STATE.navExpanded.dashboards || activeGroup === 'dashboards' || STATE.page === 'broadsignPanel' || STATE.page === 'grassfishPanel' || STATE.page === 'iotPanel';
   const pdoohExpanded = !!STATE.navExpanded.pdooh || activeGroup === 'pdooh';
 
   const maintenanceSection = allSections.find((s) => s.lock_key === 'maintenance') || allSections.find((s) => (s.nav_group || 'dashboards') === 'dashboards');
   const pdoohSection = allSections.find((s) => s.lock_key === 'pdooh') || allSections.find((s) => (s.nav_group || 'dashboards') === 'pdooh');
 
   const consoleLinksHtml = canView('locations')
-    ? navSubItem('Broadsign Console', STATE.page === 'broadsignPanel', 'broadsignPanel') + navSubItem('Grassfish Console', STATE.page === 'grassfishPanel', 'grassfishPanel')
+    ? navSubItem('Broadsign Console', STATE.page === 'broadsignPanel', 'broadsignPanel')
+      + navSubItem('Grassfish Console', STATE.page === 'grassfishPanel', 'grassfishPanel')
+      + navSubItem('IoT Panel', STATE.page === 'iotPanel', 'iotPanel')
     : '';
   const dashLinksHtml = canView('dashboards')
     ? flattenDashboards(allSections, 'dashboards').map(({ sectionId, dash }) => navDashLink(sectionId, dash, admin)).join('')
@@ -113,7 +115,7 @@ function renderSidebar(allSections) {
     : '';
 
   const maintenanceGroup = (canView('dashboards') || canView('locations'))
-    ? navParent(NAV_GROUP_LABELS.dashboards, (STATE.page === 'dashboards' && activeGroup === 'dashboards') || STATE.page === 'broadsignPanel' || STATE.page === 'grassfishPanel', dashExpanded, 'dashboards', maintenanceSection ? `App.goToDashGroup('${maintenanceSection.id}')` : "App.setPage('dashboards')")
+    ? navParent(NAV_GROUP_LABELS.dashboards, (STATE.page === 'dashboards' && activeGroup === 'dashboards') || STATE.page === 'broadsignPanel' || STATE.page === 'grassfishPanel' || STATE.page === 'iotPanel', dashExpanded, 'dashboards', maintenanceSection ? `App.goToDashGroup('${maintenanceSection.id}')` : "App.setPage('dashboards')")
       + (dashExpanded ? consoleLinksHtml + dashLinksHtml : '')
     : '';
 
@@ -158,6 +160,7 @@ const PAGE_TITLES = {
   locations: 'Locations',
   broadsignPanel: 'Broadsign Console',
   grassfishPanel: 'Grassfish Console',
+  iotPanel: 'IoT Panel',
   permits: 'Permits',
   metroPic: 'Metro PIC',
   tickets: 'Tickets',

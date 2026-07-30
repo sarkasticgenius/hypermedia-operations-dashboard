@@ -6,10 +6,12 @@ import {
 } from '../data/assetsInventory.js';
 import { listContractors } from '../data/contractors.js';
 import { listNetworks } from '../data/networks.js';
+import { listTickets } from '../data/tickets.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
-import { esc } from '../lib/format.js';
+import { esc, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
+import { brandLogoTag } from '../lib/brandLogo.js';
 
 const PAGE_SIZE = 50;
 
@@ -23,8 +25,8 @@ function contractorLabel(contractors, id) {
 }
 
 async function loadAssetsInventoryData() {
-  const [rows, contractors, networks] = await Promise.all([listAssetInventory(), listContractors(), listNetworks()]);
-  return { rows, contractors, networks };
+  const [rows, contractors, networks, tickets] = await Promise.all([listAssetInventory(), listContractors(), listNetworks(), listTickets()]);
+  return { rows, contractors, networks, tickets };
 }
 
 // Self-loading (not just a cache read): the Edit Screen modal can be opened from other pages too
@@ -60,12 +62,14 @@ function computeFiltered(rows) {
   const typeFilter = STATE.aiPlayerType || 'All';
   const pdoohFilter = STATE.aiPdooh || 'All';
   const hmFilter = STATE.aiManagedByHM || 'All';
+  const netFilter = STATE.aiNetwork || 'All';
   const mafFilter = !!STATE.aiMafOnly;
   return rows.filter((r) => {
     if (catFilter !== 'All' && r.category !== catFilter) return false;
     if (typeFilter !== 'All' && r.player_type !== typeFilter) return false;
     if (pdoohFilter !== 'All' && !!r.pdooh_ready !== (pdoohFilter === 'Yes')) return false;
     if (hmFilter !== 'All' && !!r.managed_by_hm !== (hmFilter === 'Yes')) return false;
+    if (netFilter !== 'All' && !(r.networkNames || []).includes(netFilter)) return false;
     if (mafFilter && !(r.networkNames || []).some((n) => n.toUpperCase().includes('MAF'))) return false;
     if (search && !matchesSearch(r, search)) return false;
     return true;
@@ -85,7 +89,9 @@ export function renderAssetsInventory() {
   const data = loadData('assetsInventoryPage', loadAssetsInventoryData);
   if (data === null) return loadingCard();
   if (data.__error) return loadingCard(data.__error);
-  const { rows, contractors } = data;
+  const { rows, contractors, tickets } = data;
+  const ticketCountByAsset = {};
+  (tickets || []).forEach((t) => { if (t.asset_inv_id) ticketCountByAsset[t.asset_inv_id] = (ticketCountByAsset[t.asset_inv_id] || 0) + 1; });
 
   const editOk = canEdit('assetsInventory');
   const addOk = canAdd('assetsInventory');
@@ -97,8 +103,10 @@ export function renderAssetsInventory() {
   const typeFilter = STATE.aiPlayerType || 'All';
   const pdoohFilter = STATE.aiPdooh || 'All';
   const hmFilter = STATE.aiManagedByHM || 'All';
+  const netFilter = STATE.aiNetwork || 'All';
   const categories = ['All', ...new Set(rows.map((r) => r.category).filter(Boolean))].sort((a, b) => (a === 'All' ? -1 : b === 'All' ? 1 : a.localeCompare(b)));
   const playerTypes = ['All', ...new Set(rows.map((r) => r.player_type).filter(Boolean))].sort((a, b) => (a === 'All' ? -1 : b === 'All' ? 1 : a.localeCompare(b)));
+  const networkOptions = ['All', ...new Set(rows.flatMap((r) => r.networkNames || []))].sort((a, b) => (a === 'All' ? -1 : b === 'All' ? 1 : a.localeCompare(b)));
 
   const list = sortedAndFiltered(rows, contractors);
   const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
@@ -112,18 +120,19 @@ export function renderAssetsInventory() {
     <tr>
       ${bulkOk ? `<td style="width:28px;"><input type="checkbox" ${selectedIds.has(r.id) ? 'checked' : ''} onchange="App.toggleAssetInvSelection('${r.id}', this.checked)"></td>` : ''}
       <td><b>${esc(r.name)}</b>${r.source_asset_id ? `<div class="small muted">ID: ${esc(r.source_asset_id)}</div>` : ''}</td>
-      <td>${esc(r.venue || '-')}<div class="small muted">${esc(r.location || '')}</div></td>
+      <td>${r.venue ? `${brandLogoTag(r.venue, 18)} ` : ''}${esc(r.venue || '-')}<div class="small muted">${esc(r.location || '')}</div></td>
       <td>${esc(r.category || '-')}</td>
       <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
       <td>${esc(r.player_type || '-')}${r.player_box_id ? `<div class="small muted">${esc(r.player_box_id)}</div>` : ''}</td>
       <td>${r.pdooh_ready ? '<span class="badge b-green">Yes</span>' : '<span class="muted small">No</span>'}</td>
       <td>${r.contractor_id ? esc(contractorLabel(contractors, r.contractor_id)) : '<span class="muted small">-</span>'}</td>
+      <td>${ticketCountByAsset[r.id] ? `<button class="link-btn" onclick="App.openAssetTicketHistory('${r.id}')">${ticketCountByAsset[r.id]}</button>` : '<span class="muted small">0</span>'}</td>
       <td>
         ${editOk ? `<button class="btn-sm" onclick="App.editAssetInv('${r.id}')">Edit</button>` : ''}
         ${delOk ? `<button class="btn-sm" onclick="App.removeAssetInv('${r.id}')">Delete</button>` : ''}
       </td>
     </tr>
-  `).join('') || `<tr><td colspan="${bulkOk ? 9 : 8}"><div class="empty">No screens match this filter.</div></td></tr>`;
+  `).join('') || `<tr><td colspan="${bulkOk ? 10 : 9}"><div class="empty">No screens match this filter.</div></td></tr>`;
 
   const pager = totalPages > 1 ? `<div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:10px 4px;">
       <span class="small muted">${list.length} screen(s) - page ${curPage} of ${totalPages}</span>
@@ -148,6 +157,7 @@ export function renderAssetsInventory() {
           <option value="Yes" ${hmFilter === 'Yes' ? 'selected' : ''}>Managed by HM: Yes</option>
           <option value="No" ${hmFilter === 'No' ? 'selected' : ''}>Managed by HM: No</option>
         </select>
+        <select onchange="App.setAssetInvFilter('aiNetwork', this.value)" style="padding:7px 8px;border:1px solid var(--border);border-radius:8px;">${networkOptions.map((n) => `<option value="${esc(n)}" ${netFilter === n ? 'selected' : ''}>${n === 'All' ? 'All Networks' : esc(n)}</option>`).join('')}</select>
         <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);"><input type="checkbox" style="width:auto;" ${STATE.aiMafOnly ? 'checked' : ''} onchange="App.setAssetInvMafOnly(this.checked)"> MAF Malls only</label>
       </div>
       <div class="toolbar-actions">
@@ -167,7 +177,7 @@ export function renderAssetsInventory() {
     </div>` : ''}
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr>${bulkOk ? `<th><input type="checkbox" ${allPageSelected ? 'checked' : ''} onchange="App.toggleAssetInvSelectAllOnPage(this.checked)" title="Select all on this page"></th>` : ''}${sortTh('assetsInventory', 'name', 'Name')}${sortTh('assetsInventory', 'venue', 'Venue / Location')}${sortTh('assetsInventory', 'category', 'Category')}${sortTh('assetsInventory', 'format', 'Format')}${sortTh('assetsInventory', 'player', 'Player')}${sortTh('assetsInventory', 'pdooh', 'pDOOH')}${sortTh('assetsInventory', 'contractor', 'Contractor')}<th></th></tr></thead>
+        <thead><tr>${bulkOk ? `<th><input type="checkbox" ${allPageSelected ? 'checked' : ''} onchange="App.toggleAssetInvSelectAllOnPage(this.checked)" title="Select all on this page"></th>` : ''}${sortTh('assetsInventory', 'name', 'Name')}${sortTh('assetsInventory', 'venue', 'Venue / Location')}${sortTh('assetsInventory', 'category', 'Category')}${sortTh('assetsInventory', 'format', 'Format')}${sortTh('assetsInventory', 'player', 'Player')}${sortTh('assetsInventory', 'pdooh', 'pDOOH')}${sortTh('assetsInventory', 'contractor', 'Contractor')}<th>Tickets</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
       ${pager}
@@ -407,7 +417,7 @@ registerModal('assetInv', (data) => {
   const networks = pd?.networks || [];
   const linkedNetworkIds = new Set((data.asset_inventory_networks || []).map((n) => n.network_id));
   const playerType = data.player_type || '';
-  const isCustomPlayerType = !!playerType && playerType !== 'Broadsign' && playerType !== 'Grassfish';
+  const isCustomPlayerType = !!playerType && playerType !== 'Broadsign' && playerType !== 'Grassfish' && playerType !== 'IoT';
   return `
     <h3>${data.id ? 'Edit' : 'Add'} Screen</h3>
     <form onsubmit="App.saveAssetInvForm(event)">
@@ -439,6 +449,7 @@ registerModal('assetInv', (data) => {
             <option value="">-- Select --</option>
             <option value="Broadsign" ${playerType === 'Broadsign' ? 'selected' : ''}>Broadsign</option>
             <option value="Grassfish" ${playerType === 'Grassfish' ? 'selected' : ''}>Grassfish</option>
+            <option value="IoT" ${playerType === 'IoT' ? 'selected' : ''}>IoT</option>
             <option value="Custom" ${isCustomPlayerType ? 'selected' : ''}>Custom...</option>
           </select>
           <input id="ai-playertype-custom" value="${isCustomPlayerType ? esc(playerType) : ''}" placeholder="Enter custom player type" style="margin-top:6px;display:${isCustomPlayerType ? 'block' : 'none'};">
@@ -482,5 +493,33 @@ registerModal('assetInv', (data) => {
         <button type="submit" class="btn btn-orange">Save</button>
       </div>
     </form>
+  `;
+});
+
+const TICKET_STATUS_BADGE = { Open: 'b-red', 'In Progress': 'b-amber', Resolved: 'b-blue', Closed: 'b-gray' };
+
+export function openAssetTicketHistory(assetInvId) {
+  openModal('assetTicketHistory', { assetInvId });
+}
+
+registerModal('assetTicketHistory', (data) => {
+  const pd = pageData();
+  const row = (pd?.rows || []).find((r) => r.id === data.assetInvId);
+  const history = (pd?.tickets || [])
+    .filter((t) => t.asset_inv_id === data.assetInvId)
+    .sort((a, b) => (b.date_reported || '').localeCompare(a.date_reported || ''));
+  const rows = history.map((t) => `
+    <tr>
+      <td>${fmtDate(t.date_reported)}</td>
+      <td>${esc(t.title)}</td>
+      <td><span class="badge ${TICKET_STATUS_BADGE[t.status] || 'b-gray'}">${esc(t.status)}</span></td>
+      <td>${esc(t.priority || '')}</td>
+    </tr>
+  `).join('') || `<tr><td colspan="4"><div class="empty">No tickets for this screen.</div></td></tr>`;
+  return `
+    <h3>Ticket History${row ? ` - ${esc(row.venue || row.name)}` : ''}</h3>
+    <div class="small muted" style="margin-bottom:8px;">${history.length} ticket${history.length === 1 ? '' : 's'} raised for this screen.</div>
+    <table><thead><tr><th>Reported</th><th>Title</th><th>Status</th><th>Priority</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
   `;
 });

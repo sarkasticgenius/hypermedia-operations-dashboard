@@ -13,6 +13,7 @@ import {
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { heatmapGrid } from '../lib/heatmapGrid.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
+import { brandLogoTag } from '../lib/brandLogo.js';
 import { exportToCsv } from '../lib/csv.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
@@ -149,7 +150,7 @@ function venueCardHtml(l, editOk) {
     <div class="card" style="margin-bottom:0;cursor:pointer;" ${dragAttrs} onclick="App.openVenueDetail('${l.id}')">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
         <div>
-          ${editOk ? '<span style="cursor:grab;color:var(--text-dim);">⋮⋮</span> ' : ''}<strong>${esc(l.name)}</strong>
+          ${editOk ? '<span style="cursor:grab;color:var(--text-dim);">⋮⋮</span> ' : ''}${brandLogoTag(l.name)} <strong>${esc(l.name)}</strong>
           ${l.is_combined ? ' <span class="badge b-blue">Combined</span>' : ''}
         </div>
         <span class="badge ${l.type === 'Installed' ? 'b-green' : 'b-gray'}">${esc(l.type)}</span>

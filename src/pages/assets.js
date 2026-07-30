@@ -11,6 +11,7 @@ import { assetInventoryForLocation } from '../data/locationStats.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtMoney, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
+import { svgGroupedBarChart } from '../lib/charts.js';
 
 function isRental(categories, name) {
   return !!categories.find((c) => c.name.toLowerCase() === String(name || '').toLowerCase())?.is_rental;
@@ -31,14 +32,28 @@ export function renderAssets() {
   if (data.__error) return loadingCard(data.__error);
 
   const view = STATE.assetView || 'inventory';
-  const viewTabs = ['inventory', 'history'].map((v) =>
-    `<div class="tab ${view === v ? 'active' : ''}" onclick="App.setAssetView('${v}')">${v === 'inventory' ? 'Inventory' : 'Deployment History'}</div>`
+  const deployedCount = data.assets.filter(isDeployed).length;
+  const VIEW_LABELS = { inventory: 'Inventory', deployed: `Deployed${deployedCount ? ` (${deployedCount})` : ''}`, history: 'Deployment History' };
+  const viewTabs = ['inventory', 'deployed', 'history'].map((v) =>
+    `<div class="tab ${view === v ? 'active' : ''}" onclick="App.setAssetView('${v}')">${VIEW_LABELS[v]}</div>`
   ).join('');
+
+  let body;
+  if (view === 'history') body = renderHistoryView(data);
+  else if (view === 'deployed') body = renderDeployedView(data);
+  else body = renderInventoryView(data);
 
   return `
     <div class="toolbar"><div class="tabs">${viewTabs}</div><div></div></div>
-    ${view === 'history' ? renderHistoryView(data) : renderInventoryView(data)}
+    ${body}
   `;
+}
+
+// An asset "counts as deployed" once any stock has actually left the warehouse - on-site stock or
+// a per-location breakdown row, either one, since a unit can be on-site without (yet) having a
+// breakdown row parsed from a bulk import, and vice versa.
+function isDeployed(a) {
+  return (a.stock_on_site || 0) > 0 || (a.asset_locations || []).length > 0;
 }
 
 export function setAssetView(v) { setState({ assetView: v }); }
@@ -116,6 +131,76 @@ function renderInventoryView(data) {
     </div>
   `;
 }
+
+// -------------------- deployed view --------------------
+// Assets that have actually left the warehouse, split out from the main Inventory tab so a
+// warehouse manager isn't scrolling past hundreds of shelved units to find what's live on site.
+// Includes a redeployment-frequency chart (from asset_assignments history, not just the current
+// snapshot) so an asset/location that keeps needing hardware swapped out is visible at a glance
+// rather than only discoverable by reading the full history list one row at a time.
+function redeploymentFrequency(assignments, limit = 10) {
+  const counts = {};
+  for (const a of assignments) {
+    const key = a.asset_name || 'Unknown';
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .filter(([, count]) => count > 1)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit);
+}
+
+function renderDeployedView(data) {
+  const { assets, assignments } = data;
+  const search = (STATE.assetDeployedSearch || '').trim().toLowerCase();
+  const deployed = assets.filter(isDeployed).filter((a) => {
+    if (!search) return true;
+    const locText = (a.asset_locations || []).map((al) => al.location_name).join(' ').toLowerCase();
+    return a.name.toLowerCase().includes(search) || (a.category || '').toLowerCase().includes(search) || locText.includes(search);
+  });
+
+  const repeats = redeploymentFrequency(assignments);
+
+  const rows = deployed.map((a) => {
+    const deployedLocs = (a.asset_locations || []).map((al) => `${al.location_name} (${al.qty})`).join(', ') || '-';
+    return `
+      <tr style="${a.status === 'Faulty' ? 'background:#fdecea;' : ''}">
+        <td><div>${esc(a.name)}</div><div class="small muted">${esc(a.category)}</div></td>
+        <td class="tright">${a.stock_on_site}</td>
+        <td class="small">${esc(deployedLocs)}</td>
+        <td><span class="badge ${a.status === 'Active' ? 'b-green' : a.status === 'Faulty' ? 'b-red' : 'b-gray'}">${esc(a.status)}</span></td>
+        <td>
+          ${canEdit('assets') ? `<button class="btn-sm" onclick="App.editAsset('${a.id}')">Edit</button>` : ''}
+          ${canEdit('assets') && a.stock_available > 0 ? `<button class="btn-sm" onclick="App.openDeployModal('${a.id}')">Deploy More</button>` : ''}
+          ${canEdit('assets') ? (a.status === 'Faulty'
+            ? `<button class="btn-sm" onclick="App.quickSetStatus('${a.id}','Active')">Mark Active</button>`
+            : `<button class="btn-sm" onclick="App.openMarkFaultyModal('${a.id}')">Mark Faulty</button>`) : ''}
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    ${repeats.length ? `<div class="card">
+      <div class="card-head"><h3>Most Redeployed Assets</h3><div class="desc">Asset names with more than one deployment event in history - a repeated deployment usually means the on-site unit was swapped/replaced, not just newly installed.</div></div>
+      ${svgGroupedBarChart(repeats.map((r) => r[0]), [{ name: 'Deployments', color: '#e07a2c', values: repeats.map((r) => r[1]) }])}
+    </div>` : ''}
+    <div class="toolbar">
+      <input id="asset-deployed-search" placeholder="Search deployed assets by name, category or location..." value="${esc(STATE.assetDeployedSearch || '')}" oninput="App.setAssetDeployedSearch(this.value)" style="min-width:280px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+      <div class="toolbar-actions"><span class="small muted">${deployed.length} deployed asset row(s)</span></div>
+    </div>
+    <div class="card">
+      ${deployed.length === 0 ? '<div class="empty">No assets have been deployed out of the warehouse yet.</div>' : `
+        <table>
+          <thead><tr><th>Asset</th><th class="tright">On Site</th><th>Deployed Locations</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `}
+    </div>
+  `;
+}
+
+export function setAssetDeployedSearch(v) { setState({ assetDeployedSearch: v }); }
 
 // -------------------- deployment history view --------------------
 function renderHistoryView(data) {

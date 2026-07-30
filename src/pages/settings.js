@@ -6,9 +6,13 @@ import { listNetworks, ensureNetwork, renameNetwork, countNetworkUsage, deleteNe
 import { getAllSettings, saveSetting } from '../data/settings.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { invalidateAssetInventoryCaches } from './assetsInventory.js';
+import { listLocations } from '../data/locations.js';
+import { listCampaigns } from '../data/campaigns.js';
+import { listBrandLogos, lookupBrandLogos } from '../data/brandLogos.js';
 import { supabase } from '../supabaseClient.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
+import { brandLogoTag } from '../lib/brandLogo.js';
 
 const TABS = [
   { key: 'categories', label: 'Asset Categories' },
@@ -116,7 +120,7 @@ function renderContractorsTab() {
 
   const rows = contractors.map((c) => `
     <tr>
-      <td>${esc(c.name)}</td>
+      <td>${brandLogoTag(c.company || c.name)} ${esc(c.name)}</td>
       <td>${esc(c.company || '-')}</td>
       <td class="small">${esc((c.emails || []).join(', ') || '-')}</td>
       <td>${esc(c.phone || '-')}</td>
@@ -359,42 +363,78 @@ function renderBroadsignApiCard(settings) {
   `;
 }
 
-// Grassfish's response shape and status field are both undocumented (unlike Broadsign's real
-// monitor_poll/v2), so this card calibrates in two stages: Sync Now first logs a raw sample of a
-// matched screen's fields (below) so "Status Field Name" can be read off directly, then once set,
-// a raw histogram of that field's values so "Offline Status Values" can be set from real data.
+// Real, documented per-box endpoint (GET {baseUrl}/v1/player/{boxId}, header X-Session-Id,
+// response {IsOnline, LastAccess}) - no calibration needed, unlike Broadsign's undocumented
+// monitor_status codes. Syncs automatically every 20 minutes via a pg_cron job (see migration
+// 0014_grassfish_cron_schedule.sql) in addition to the manual Test/Sync Now button here.
 // See supabase/functions/grassfish-sync for the sync logic.
 function renderGrassfishApiCard(settings) {
   const cfg = settings.grassfishApi || {};
   const testing = STATE.testing_grassfishApi;
+  const missingHtml = (cfg.lastMissingFromApi || []).length
+    ? `<div class="small muted" style="margin-top:2px;">${cfg.lastMissingFromApi.length} Player Box ID(s) failed to respond last sync.</div>` : '';
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Grassfish API</h3><div class="desc">Polls GET /v1/player/{boxId} per screen, matched to Asset Inventory rows tagged Player Type "Grassfish" by Player Box ID. Runs automatically every 20 minutes, plus on demand below.</div></div>
+      <form onsubmit="App.saveIntegrationForm(event,'grassfishApi')">
+        <div class="field"><label>Base URL</label><input id="int-grassfishApi-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://your-grassfish-host"></div>
+        <div class="field"><label>Session ID</label><input id="int-grassfishApi-sessionId" type="password" value="${esc(cfg.sessionId || '')}" placeholder="X-Session-Id value"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-grassfishApi-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-orange" type="submit">Save</button>
+          <button type="button" class="btn-outline btn-sm" ${testing ? 'disabled' : ''} onclick="App.testIntegration('grassfish-sync','grassfishApi')">${testing ? 'Testing...' : 'Test / Sync Now'}</button>
+          ${cfg.lastSync ? `<span class="small muted">Last sync: ${esc(cfg.lastSync)}</span>` : ''}
+        </div>
+        ${cfg.lastSyncSummary ? `<p class="small muted" style="margin-top:6px;">${esc(cfg.lastSyncSummary)}</p>` : ''}
+        ${cfg.lastError ? `<div class="login-error" style="margin-top:6px;">${esc(cfg.lastError)}</div>` : ''}
+        ${missingHtml}
+      </form>
+    </div>
+  `;
+}
+
+// aioo IoT Admin Console - only the login endpoint was confirmed (POST .../auth with
+// username/password, returns a token); the device-list endpoint wasn't provided, so it's a
+// configurable field here rather than guessed. Calibrates the same two-stage way the old
+// Grassfish sync did: raw sample first (read off Box ID Field/Status Field Name), then a raw
+// value histogram once Status Field Name is set (read off Offline Status Values).
+function renderIotApiCard(settings) {
+  const cfg = settings.iotApi || {};
+  const testing = STATE.testing_iotApi;
   const rawCounts = cfg.lastRawStatusCounts || {};
   const rawCountsHtml = Object.keys(rawCounts).length
-    ? `<div class="small muted" style="margin-top:6px;">Last raw "${esc(cfg.statusFieldName || '')}" counts (matched screens only): ${Object.keys(rawCounts).map((k) => `${esc(k)} (${rawCounts[k]}x)`).join(', ')}</div>`
+    ? `<div class="small muted" style="margin-top:6px;">Last raw "${esc(cfg.statusFieldName || '')}" counts (matched devices only): ${Object.keys(rawCounts).map((k) => `${esc(k)} (${rawCounts[k]}x)`).join(', ')}</div>`
     : '';
   const missingHtml = (cfg.lastMissingFromApi || []).length
-    ? `<div class="small muted" style="margin-top:2px;">${cfg.lastMissingFromApi.length} inventory Player Box ID(s) had no match in the API response last sync.</div>` : '';
+    ? `<div class="small muted" style="margin-top:2px;">${cfg.lastMissingFromApi.length} inventory Player Box ID(s) had no match in the device list last sync.</div>` : '';
   const sampleHtml = cfg.lastRawSample
     ? `<details style="margin-top:6px;"><summary class="small muted" style="cursor:pointer;">Last raw sample (read field names off this)</summary><pre style="font-size:11px;white-space:pre-wrap;background:#f7f6f4;border-radius:6px;padding:8px;margin-top:4px;">${esc(cfg.lastRawSample)}</pre></details>`
     : '';
   return `
     <div class="card">
-      <div class="card-head"><h3>Grassfish API</h3><div class="desc">locationlist/init sync, matched to Asset Inventory rows tagged Player Type "Grassfish" by Player Box ID.</div></div>
-      <form onsubmit="App.saveIntegrationForm(event,'grassfishApi')">
-        <div class="field"><label>Base URL</label><input id="int-grassfishApi-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://your-tenant.grassfish.tv"></div>
-        <div class="field"><label>API Key</label><input id="int-grassfishApi-apiKey" type="password" value="${esc(cfg.apiKey || '')}"></div>
+      <div class="card-head"><h3>IoT Admin Console (aioo)</h3><div class="desc">Logs in via POST /aioo_iot_admin_console/web_api/api/v1/auth, then pulls the device list, matched to Asset Inventory rows tagged Player Type "IoT" by Player Box ID. Shows on the IoT Panel below Grassfish Console.</div></div>
+      <form onsubmit="App.saveIntegrationForm(event,'iotApi')">
+        <div class="field"><label>Base URL</label><input id="int-iotApi-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://iotadmin.eu.aiootech.com"></div>
         <div class="grid2">
-          <div class="field"><label>Status Field Name</label>
-            <input id="int-grassfishApi-statusFieldName" value="${esc(cfg.statusFieldName || '')}" placeholder="e.g. Status">
-          </div>
-          <div class="field"><label>Offline Status Values</label>
-            <input id="int-grassfishApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. Offline,Error">
-          </div>
+          <div class="field"><label>Username</label><input id="int-iotApi-username" value="${esc(cfg.username || '')}"></div>
+          <div class="field"><label>Password</label><input id="int-iotApi-password" type="password" value="${esc(cfg.password || '')}"></div>
         </div>
-        <div class="small muted" style="margin-top:-6px;margin-bottom:10px;">Grassfish's response shape isn't published anywhere - leave both blank and run Test/Sync Now first. It logs a raw sample matched screen below so you can read off the real field name, then a raw value histogram once Status Field Name is set, so Offline Status Values can be set from real data instead of guessed.</div>
-        <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-grassfishApi-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
+        <div class="field"><label>Device List Path</label>
+          <input id="int-iotApi-devicePath" value="${esc(cfg.devicePath || '')}" placeholder="e.g. /aioo_iot_admin_console/web_api/api/v1/devices">
+          <div class="small muted" style="margin-top:4px;">The path that returns the device list once logged in - not published anywhere yet, so this has to be entered once it's known. Sent as GET with "Authorization: Bearer &lt;token&gt;".</div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Box ID Field</label><input id="int-iotApi-boxIdField" value="${esc(cfg.boxIdField || '')}" placeholder="e.g. box_id"></div>
+          <div class="field"><label>Status Field Name</label><input id="int-iotApi-statusFieldName" value="${esc(cfg.statusFieldName || '')}" placeholder="e.g. status"></div>
+        </div>
+        <div class="field"><label>Offline Status Values</label>
+          <input id="int-iotApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. Offline,Error">
+          <div class="small muted" style="margin-top:4px;">Leave Box ID Field/Status Field Name/Offline Status Values blank and run Test/Sync Now first - it logs a raw sample device below so you can read off the real field names, then a raw value histogram once Status Field Name is set.</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-iotApi-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <button class="btn btn-orange" type="submit">Save</button>
-          <button type="button" class="btn-outline btn-sm" ${testing ? 'disabled' : ''} onclick="App.testIntegration('grassfish-sync','grassfishApi')">${testing ? 'Testing...' : 'Test / Sync Now'}</button>
+          <button type="button" class="btn-outline btn-sm" ${testing ? 'disabled' : ''} onclick="App.testIntegration('iot-sync','iotApi')">${testing ? 'Testing...' : 'Test / Sync Now'}</button>
           ${cfg.lastSync ? `<span class="small muted">Last sync: ${esc(cfg.lastSync)}</span>` : ''}
         </div>
         ${cfg.lastSyncSummary ? `<p class="small muted" style="margin-top:6px;">${esc(cfg.lastSyncSummary)}</p>` : ''}
@@ -458,6 +498,83 @@ export async function saveAssetInventoryApiForm(event) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+// Brand logos (venue/contractor/campaign-client avatars) via Brandfetch's Search API - see
+// supabase/functions/brandfetch-lookup. The API key is entered here (masked, admin-only) and
+// never reaches the browser; lookups run server-side and cache into brand_logos, which
+// src/lib/brandLogo.js reads from on Locations/Contractors/Asset Inventory/Campaigns.
+function renderBrandfetchCard(settings) {
+  const cfg = settings.brandfetch || {};
+  const fetching = STATE.fetching_brandfetch;
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Brandfetch (Brand Logos)</h3><div class="desc">Looks up a brand logo per venue/contractor/campaign-client name and caches it. Free tier is capped at 100 requests/month, so use "Fetch Missing Logos" rather than fetching live on every page load.</div></div>
+      <form onsubmit="App.saveBrandfetchForm(event)">
+        <div class="field"><label>API Key</label><input id="int-brandfetch-apiKey" type="password" value="${esc(cfg.apiKey || '')}" placeholder="Brandfetch Client ID / API Key"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-brandfetch-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-orange" type="submit">Save</button>
+          <button type="button" class="btn-outline btn-sm" ${fetching ? 'disabled' : ''} onclick="App.runBrandfetchFetchMissing()">${fetching ? 'Fetching...' : 'Fetch Missing Logos'}</button>
+          ${cfg.lastRun ? `<span class="small muted">Last run: ${esc(cfg.lastRun)}</span>` : ''}
+        </div>
+        ${cfg.lastSummary ? `<p class="small muted" style="margin-top:6px;">${esc(cfg.lastSummary)}</p>` : ''}
+        ${cfg.lastError ? `<div class="login-error" style="margin-top:6px;">${esc(cfg.lastError)}</div>` : ''}
+      </form>
+    </div>
+  `;
+}
+
+export async function saveBrandfetchForm(event) {
+  event.preventDefault();
+  const settings = STATE.pageData.settings?.data || {};
+  const cfg = { ...(settings.brandfetch || {}) };
+  cfg.apiKey = document.getElementById('int-brandfetch-apiKey').value.trim();
+  cfg.enabled = document.getElementById('int-brandfetch-enabled').checked;
+  try {
+    await saveSetting('brandfetch', cfg);
+    await logAudit('Save integration settings', 'brandfetch');
+    invalidate('settings');
+    toast('Settings saved');
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// Gathers distinct brand-lookup-worthy names across the 4 places logos are shown (venues,
+// contractors, campaign clients - Asset Inventory reuses venue names so isn't a separate source),
+// skips ones already cached (found or a recorded miss), and looks up the rest in one batch,
+// capped per click to stay well under the free-tier monthly limit.
+const BRANDFETCH_BATCH_CAP = 25;
+
+export async function runBrandfetchFetchMissing() {
+  setState({ fetching_brandfetch: true });
+  try {
+    const [locations, contractors, campaigns, cached] = await Promise.all([
+      listLocations(), listContractors(), listCampaigns(), listBrandLogos(),
+    ]);
+    const cachedNames = new Set(cached.map((r) => r.name.toLowerCase()));
+    const candidateNames = new Set();
+    locations.forEach((l) => l.name && candidateNames.add(l.name.trim()));
+    contractors.forEach((c) => (c.company || c.name) && candidateNames.add((c.company || c.name).trim()));
+    campaigns.forEach((c) => c.client && candidateNames.add(c.client.trim()));
+
+    const missing = [...candidateNames].filter((n) => n && !cachedNames.has(n.toLowerCase()));
+    if (!missing.length) {
+      toast('No new brand names to look up - everything already cached.');
+      return;
+    }
+    const batch = missing.slice(0, BRANDFETCH_BATCH_CAP);
+    const result = await lookupBrandLogos(batch);
+    await logAudit('Fetch brand logos', result.summary);
+    invalidate('settings');
+    invalidate('brandLogos');
+    toast(`${result.summary}${missing.length > batch.length ? ` (${missing.length - batch.length} more left - click again to continue)` : ''}`);
+    setState({});
+  } catch (e) {
+    toast(e.message || 'Brand logo fetch failed', 'error');
+  } finally {
+    setState({ fetching_brandfetch: false });
+  }
+}
+
 export async function testIntegration(functionName, settingKey) {
   setState({ [`testing_${settingKey}`]: true });
   try {
@@ -483,7 +600,9 @@ function renderIntegrationsTab() {
     <div class="banner">API keys here are stored server-side and only readable by admins. Live syncs against Broadsign/Grassfish run through Edge Functions, never directly from the browser.</div>
     ${renderBroadsignApiCard(settings)}
     ${renderGrassfishApiCard(settings)}
+    ${renderIotApiCard(settings)}
     ${renderAssetInventoryApiCard(settings)}
+    ${renderBrandfetchCard(settings)}
     ${integrationField(settings, 'glpiFeed', 'GLPI CSV Feed', [
       { name: 'csvUrl', label: 'CSV URL' }, { name: 'autoRefreshMinutes', label: 'Auto-refresh (minutes)', type: 'number' },
     ])}

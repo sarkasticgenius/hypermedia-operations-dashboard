@@ -1,5 +1,5 @@
 import { supabase } from '../supabaseClient.js';
-import { openModal, closeModal, toast, invalidate, setState } from '../state.js';
+import { STATE, openModal, closeModal, toast, invalidate } from '../state.js';
 import { registerModal } from '../modals.js';
 import { parseSpreadsheetFile, mapImportRow } from '../lib/csv.js';
 import { saveAsset } from '../data/assets.js';
@@ -129,32 +129,70 @@ export function openBulkImport(entity) {
   openModal('bulkImport', { entity });
 }
 
-export async function runBulkImport(event, entity) {
+// Entities where an uploaded row can land on an *existing* record (matchKey configs) get a
+// staged review: the file is parsed and matched entirely in memory - nothing touches the real
+// tables - then the admin sees exactly what would change and approves or cancels it. This is the
+// safety net for hand-run imports against live inventory data until the generic Asset Inventory
+// API Sync (Settings > Integrations) is fully configured and pulling automatically; insert-only
+// entities (every row is unambiguously new) skip straight to import since there's no existing
+// data a bad row could clobber.
+export async function runBulkImportPreview(event, entity) {
   event.preventDefault();
   const config = IMPORT_CONFIGS[entity];
   const file = document.getElementById('bulk-file').files[0];
   if (!file || !config) return;
   try {
     const rows = await parseSpreadsheetFile(file);
-    const existing = config.list ? await config.list() : [];
-    let inserted = 0;
-    let updated = 0;
+    if (!rows.length) { toast('That file has no data rows.', 'error'); return; }
+    const existing = await config.list();
+    const inserts = [];
+    const updates = [];
+    let skipped = 0;
     for (const raw of rows) {
       const mapped = config.transform(mapImportRow(raw, config.aliases));
-      if (!mapped[config.required]) continue;
-      const match = config.matchKey ? config.matchKey(mapped, existing) : null;
+      if (!mapped[config.required]) { skipped++; continue; }
+      const match = config.matchKey(mapped, existing);
       if (match) {
-        const fields = config.updateFields ? config.updateFields(mapped) : {};
-        if (Object.keys(fields).length) {
-          const { error } = await supabase.from(config.table).update(fields).eq('id', match.id);
-          if (error) throw error;
-        }
-        updated++;
+        const fields = config.updateFields(mapped);
+        const changes = Object.entries(fields)
+          .filter(([k, v]) => String(match[k] ?? '') !== String(v ?? ''))
+          .map(([k, v]) => [k, match[k], v]);
+        if (changes.length) updates.push({ matchId: match.id, label: match.name || match.sim_number || mapped.name || '', changes });
       } else {
-        await config.save(mapped);
-        inserted++;
+        inserts.push({ mapped, label: mapped.name || '' });
       }
     }
+    if (!inserts.length && !updates.length) {
+      toast(skipped ? `No changes found - ${skipped} row(s) skipped (missing required field).` : 'No changes found - every row already matches what\'s on file.');
+      return;
+    }
+    openModal('bulkImport', { entity, inserts, updates, skipped });
+  } catch (e) {
+    toast(e.message || 'Import failed', 'error');
+  }
+}
+
+export async function approveBulkImport(entity) {
+  const config = IMPORT_CONFIGS[entity];
+  const data = STATE.modal?.data;
+  if (!config || !data) return;
+  const checkedInserts = [...document.querySelectorAll('[data-import-insert]:checked')].map((el) => Number(el.dataset.importInsert));
+  const checkedUpdates = [...document.querySelectorAll('[data-import-update]:checked')].map((el) => Number(el.dataset.importUpdate));
+  try {
+    let inserted = 0;
+    let updated = 0;
+    for (const i of checkedInserts) {
+      await config.save(data.inserts[i].mapped);
+      inserted++;
+    }
+    for (const i of checkedUpdates) {
+      const u = data.updates[i];
+      const fields = Object.fromEntries(u.changes.map(([k, , newVal]) => [k, newVal]));
+      const { error } = await supabase.from(config.table).update(fields).eq('id', u.matchId);
+      if (error) throw error;
+      updated++;
+    }
+    if (!inserted && !updated) { toast('Nothing selected to import.', 'error'); return; }
     await logAudit(`Bulk import ${config.label}`, `${inserted} new, ${updated} updated`);
     // Asset Inventory is the baseline every other workspace matches screens against, each with
     // its own independent cache - busting just this one key would leave the rest stale.
@@ -167,20 +205,78 @@ export async function runBulkImport(event, entity) {
   }
 }
 
+// Insert-only entities (assets/locations/campaigns/permits) - every valid row is unambiguously
+// new, so this still parses the whole file up front but applies it in one step rather than
+// staging a review nothing would actually be reviewing.
+export async function runBulkImport(event, entity) {
+  event.preventDefault();
+  const config = IMPORT_CONFIGS[entity];
+  const file = document.getElementById('bulk-file').files[0];
+  if (!file || !config) return;
+  try {
+    const rows = await parseSpreadsheetFile(file);
+    let inserted = 0;
+    for (const raw of rows) {
+      const mapped = config.transform(mapImportRow(raw, config.aliases));
+      if (!mapped[config.required]) continue;
+      await config.save(mapped);
+      inserted++;
+    }
+    await logAudit(`Bulk import ${config.label}`, `${inserted} new`);
+    invalidate(config.dataKey || entity);
+    closeModal();
+    toast(`Imported: ${inserted} new`);
+  } catch (e) {
+    toast(e.message || 'Import failed', 'error');
+  }
+}
+
+function fieldDiffHtml(changes) {
+  return changes.map(([k, oldVal, newVal]) => `<div><b>${esc(k)}:</b> ${oldVal ? `<span class="muted">${esc(oldVal)}</span> &rarr; ` : ''}<span style="color:#c0392b;">${esc(newVal)}</span></div>`).join('');
+}
+
 registerModal('bulkImport', (data) => {
   const config = IMPORT_CONFIGS[data.entity];
-  const matchNote = config.matchKey
-    ? `<p class="small muted">Rows matching an existing record (by ${data.entity === 'simCards' ? 'SIM number' : 'Asset ID or name+venue'}) update only the fields present in the sheet - blank cells never overwrite existing data. Unmatched rows are added as new.</p>`
+  const isStaged = !!config.matchKey;
+
+  if (isStaged && data.inserts) {
+    const { inserts, updates, skipped } = data;
+    const insertRows = inserts.map((r, i) => `
+      <tr><td><input type="checkbox" data-import-insert="${i}" checked></td><td>${esc(r.label)}</td></tr>
+    `).join('') || `<tr><td colspan="2"><div class="empty">None</div></td></tr>`;
+    const updateRows = updates.map((r, i) => `
+      <tr><td><input type="checkbox" data-import-update="${i}" checked></td><td>${esc(r.label)}</td><td class="small">${fieldDiffHtml(r.changes)}</td></tr>
+    `).join('') || `<tr><td colspan="3"><div class="empty">None</div></td></tr>`;
+    return `
+      <h3>Bulk Import - ${esc(config.label)}: Review Changes</h3>
+      <p class="small muted">Parsed and matched in memory only - nothing has been saved yet. Uncheck any row you don't want, then approve.${skipped ? ` ${skipped} row(s) skipped (missing required field).` : ''}</p>
+      ${inserts.length ? `
+        <h4 style="margin:14px 0 6px;">${inserts.length} New Row(s)</h4>
+        <table><thead><tr><th style="width:28px;"></th><th>Name</th></tr></thead><tbody>${insertRows}</tbody></table>
+      ` : ''}
+      ${updates.length ? `
+        <h4 style="margin:14px 0 6px;">${updates.length} Existing Row(s) With Changes</h4>
+        <table><thead><tr><th style="width:28px;"></th><th>Match</th><th>Changed Fields (new value)</th></tr></thead><tbody>${updateRows}</tbody></table>
+      ` : ''}
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+        <button type="button" class="btn btn-orange" onclick="App.approveBulkImport('${data.entity}')">Approve &amp; Import</button>
+      </div>
+    `;
+  }
+
+  const matchNote = isStaged
+    ? `<p class="small muted">Rows matching an existing record (by ${data.entity === 'simCards' ? 'SIM number' : 'Asset ID or name+venue'}) are compared field by field - you'll see exactly what would change before anything is saved. Unmatched rows show as new.</p>`
     : '';
   return `
     <h3>Bulk Import - ${esc(config.label)}</h3>
     <p class="small muted">Upload a CSV or Excel file. Column headers are matched flexibly regardless of order or casing.</p>
     ${matchNote}
-    <form onsubmit="App.runBulkImport(event, '${data.entity}')">
+    <form onsubmit="App.${isStaged ? 'runBulkImportPreview' : 'runBulkImport'}(event, '${data.entity}')">
       <div class="field"><label>File</label><input id="bulk-file" type="file" accept=".csv,.xlsx,.xls" required></div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
-        <button type="submit" class="btn btn-orange">Import</button>
+        <button type="submit" class="btn btn-orange">${isStaged ? 'Preview Changes' : 'Import'}</button>
       </div>
     </form>
   `;

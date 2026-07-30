@@ -11,6 +11,7 @@ export const PAGE_AREA = {
   locations: 'locations',
   broadsignPanel: 'locations',
   grassfishPanel: 'locations',
+  iotPanel: 'locations',
   permits: 'permits',
   metroPic: 'metroPic',
   tickets: 'tickets',

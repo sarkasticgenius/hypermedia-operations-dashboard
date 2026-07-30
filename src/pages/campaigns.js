@@ -5,6 +5,7 @@ import { listCampaigns, saveCampaign, deleteCampaign } from '../data/campaigns.j
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, fmtMoney } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
+import { brandLogoTag } from '../lib/brandLogo.js';
 
 const STATUS_BADGE = { Scheduled: 'b-blue', Online: 'b-green', Offline: 'b-red', Ended: 'b-gray' };
 
@@ -16,7 +17,7 @@ export function renderCampaigns() {
   const rows = campaigns.map((c) => `
     <tr>
       <td>${esc(c.name)}</td>
-      <td>${esc(c.client || '-')}</td>
+      <td>${c.client ? `${brandLogoTag(c.client, 18)} ` : ''}${esc(c.client || '-')}</td>
       <td>${fmtDate(c.start_date)} - ${fmtDate(c.end_date)}</td>
       <td>${fmtMoney(c.budget)}</td>
       <td><span class="badge ${STATUS_BADGE[c.status] || 'b-gray'}">${esc(c.status)}</span></td>

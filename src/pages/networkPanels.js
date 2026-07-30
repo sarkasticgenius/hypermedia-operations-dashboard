@@ -150,6 +150,95 @@ export function renderGrassfishPanel() {
   </div>` : `<div class="card"><div class="empty">No screens tagged Player Type = Grassfish in Asset Inventory yet. Set a screen's Player Type to "Grassfish" under Asset Inventory to have it show up here.</div></div>`}`;
 }
 
+// Until iot-sync has run at least once with Status Field Name/Offline Status Values calibrated
+// (see Settings > Integrations > IoT Admin Console), no location has a location_sub_assets row
+// sourced from IoT yet - same "fall back to an Asset Inventory view" pattern the Grassfish panel
+// uses, so this stays useful rather than permanently empty.
+export function renderIotPanel() {
+  const allLocations = loadData('locationsForNetworkPanel', listLocations);
+  if (allLocations === null) return loadingCard();
+  if (allLocations?.__error) return loadingCard(allLocations.__error);
+  const hasLiveData = allLocations.some((l) => (l.location_sub_assets || []).some((sa) => sa.source === 'iot'));
+  if (hasLiveData) {
+    return renderNetworkPanel('iot', 'iot_healthy_count', 'IoT Panel', 'iotApi', 'iot-sync');
+  }
+
+  const cfg = loadData('iotApi', () => getSetting('iotApi'));
+  const inventory = loadData('assetInventoryForIotPanel', listAssetInventory);
+  if (cfg === null || inventory === null) return loadingCard();
+  if (cfg?.__error) return loadingCard(cfg.__error);
+  if (inventory?.__error) return loadingCard(inventory.__error);
+
+  const admin = isAdmin();
+  const c = cfg || {};
+  const devices = inventory.filter((r) => r.player_type === 'IoT');
+  const byVenue = {};
+  devices.forEach((r) => {
+    const v = r.venue || 'Unassigned';
+    if (!byVenue[v]) byVenue[v] = [];
+    byVenue[v].push(r);
+  });
+  const venues = Object.keys(byVenue).sort((a, b) => a.localeCompare(b));
+  const search = (STATE.networkSearch || '').trim().toLowerCase();
+  const visibleVenues = search ? venues.filter((v) => v.toLowerCase().includes(search)) : venues;
+  const tiles = visibleVenues.map((v) => {
+    const list = byVenue[v];
+    return `<div style="background:#5a4fb0;border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openIotVenueModal(${jsonAttr(v)})' title="Click to see devices at this venue">
+      <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(v)}</div>
+      <div style="font-size:11px;opacity:.95;">${list.length} device${list.length === 1 ? '' : 's'}</div>
+    </div>`;
+  }).join('');
+
+  return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}.` : 'No live API configured yet.'} ${devices.length} IoT device${devices.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = IoT) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign/Grassfish Consoles use.</span>
+    <span style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn-sm" onclick="App.runNetworkSync('iotApi','iot-sync')" ${STATE.syncing === 'iotApi' ? 'disabled' : ''}>${STATE.syncing === 'iotApi' ? 'Syncing...' : 'Sync Now'}</button>
+      ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}
+    </span>
+  </div>
+  ${venues.length ? `<div class="card">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div><h3>Devices by Venue</h3><div class="desc">One tile per venue with at least one IoT device in Asset Inventory. Click a tile to see the individual devices and raise a ticket if needed.</div></div>
+      <input id="net-search" placeholder="Search by venue name..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+    </div>
+    ${visibleVenues.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No venue matches "${esc(STATE.networkSearch || '')}".</div>`}
+  </div>` : `<div class="card"><div class="empty">No devices tagged Player Type = IoT in Asset Inventory yet. Set a device's Player Type to "IoT" under Asset Inventory to have it show up here.</div></div>`}`;
+}
+
+export function openIotVenueModal(venue) {
+  openModal('iotVenueModal', { venue });
+}
+
+registerModal('iotVenueModal', (data) => {
+  const venue = data.venue || '';
+  const inventory = STATE.pageData.assetInventoryForIotPanel?.data || [];
+  const devices = inventory.filter((r) => r.player_type === 'IoT' && (r.venue || '') === venue);
+  const ticketAddOk = canAdd('tickets');
+  const rows = devices.map((r) => {
+    const prefill = {
+      title: `${venue} - ${r.name} Issue`,
+      location: venue,
+      description: `Device: ${r.name}${r.format ? ` (${r.format})` : ''}${r.player_box_id ? ` - Player Box ID: ${r.player_box_id}` : ''}`,
+      type: 'Issue',
+    };
+    return `<tr>
+      <td><b>${esc(r.name)}</b></td>
+      <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
+      <td>${esc(r.player_box_id || '-')}</td>
+      <td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="4"><div class="empty">No IoT devices at this venue.</div></td></tr>`;
+  return `
+    <h3>IoT - ${esc(venue)}</h3>
+    <div class="small muted" style="margin-bottom:8px;">${devices.length} device${devices.length === 1 ? '' : 's'} at this venue, pulled from Asset Inventory (Player Type = IoT).</div>
+    <table>
+      <thead><tr><th>Name</th><th>Format</th><th>Player Box ID</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
+  `;
+});
+
 export function openOfflineAssetsModal(opts) {
   openModal('offlineAssetsModal', opts);
 }
@@ -168,6 +257,7 @@ export async function runNetworkSync(settingKey, functionName) {
     invalidate(settingKey);
     invalidate('locationsForNetworkPanel');
     invalidate('assetInventoryForGrassfishPanel');
+    invalidate('assetInventoryForIotPanel');
     toast(data?.summary || 'Sync complete');
   } catch (e) {
     toast(e.message || 'Sync failed', 'error');

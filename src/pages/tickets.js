@@ -305,6 +305,46 @@ export function filterTicketsByLocation(loc) {
   setState({ ticketView: 'list', ticketStatusTab: 'All', ticketLocationFilter: loc });
 }
 
+// -------------------- per-screen ticket history --------------------
+// How many times a given screen (Asset Inventory row) has had a ticket raised against it, and
+// the history itself - surfaced on the ticket form so reporting/closing a ticket shows whether
+// this is a one-off or a screen that keeps coming back.
+function assetTicketHistory(assetInvId, tickets, excludeId) {
+  if (!assetInvId) return [];
+  return (tickets || [])
+    .filter((t) => t.asset_inv_id === assetInvId && t.id !== excludeId)
+    .sort((a, b) => (b.date_reported || '').localeCompare(a.date_reported || ''));
+}
+
+function renderTicketHistoryBlock(assetInvId, tickets, excludeId) {
+  if (!assetInvId) return '';
+  const history = assetTicketHistory(assetInvId, tickets, excludeId);
+  if (!history.length) return `<div class="small muted" style="margin:-6px 0 10px;">No prior tickets for this screen.</div>`;
+  const rows = history.map((t) => `
+    <tr>
+      <td>${fmtDate(t.date_reported)}</td>
+      <td>${esc(t.title)}</td>
+      <td><span class="badge ${STATUS_BADGE[t.status] || 'b-gray'}">${esc(t.status)}</span></td>
+    </tr>
+  `).join('');
+  return `
+    <details style="margin:-6px 0 10px;" ${history.length > 3 ? '' : 'open'}>
+      <summary class="small" style="cursor:pointer;font-weight:600;">${history.length} prior ticket${history.length === 1 ? '' : 's'} for this screen</summary>
+      <table style="margin-top:6px;"><thead><tr><th>Reported</th><th>Title</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+    </details>
+  `;
+}
+
+// Direct DOM update (not setState) - same reasoning as onTicketLocationChange: this fires from
+// inside an already-open modal and must not discard whatever else the admin has typed.
+export function onTicketScreenChange(value) {
+  const el = document.getElementById('tk-history');
+  if (!el) return;
+  const tickets = pageData()?.tickets || [];
+  const excludeId = STATE.modal?.data?.id || null;
+  el.innerHTML = renderTicketHistoryBlock(value || null, tickets, excludeId);
+}
+
 // -------------------- CRUD --------------------
 export function exportTicketsCsv() {
   const tickets = pageData()?.tickets || [];
@@ -329,6 +369,7 @@ export async function removeTicket(id) {
     await logAudit('Delete ticket', id);
     invalidate('ticketsPage');
     invalidate('opsOverviewV2');
+    invalidate('assetsInventoryPage');
     toast('Ticket deleted');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
@@ -345,6 +386,7 @@ export function onTicketLocationChange(value) {
   const screens = value ? assetInventoryForLocation(value, assetInventory) : [];
   screenSel.innerHTML = '<option value="">-</option>'
     + screens.map((s) => `<option value="${s.id}">${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('');
+  onTicketScreenChange('');
 }
 
 export async function viewTicketPhoto() {
@@ -389,6 +431,7 @@ export async function saveTicketForm(event) {
     await logAudit(id ? 'Edit ticket' : 'Add ticket', row.title);
     invalidate('ticketsPage');
     invalidate('opsOverviewV2');
+    invalidate('assetsInventoryPage');
     closeModal();
     toast('Ticket saved');
   } catch (e) { toast(e.message, 'error'); }
@@ -425,12 +468,13 @@ registerModal('ticket', (data) => {
           </select>
         </div>
         <div class="field"><label>Screen (optional)</label>
-          <select id="tk-screen">
+          <select id="tk-screen" onchange="App.onTicketScreenChange(this.value)">
             <option value="">-</option>
             ${screens.map((s) => `<option value="${s.id}" ${data.asset_inv_id === s.id ? 'selected' : ''}>${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('')}
           </select>
         </div>
       </div>
+      <div id="tk-history">${renderTicketHistoryBlock(data.asset_inv_id || null, pd?.tickets || [], data.id)}</div>
       <div class="field"><label>Description</label><textarea id="tk-description" rows="3">${esc(data.description || '')}</textarea></div>
       <div class="grid2">
         <div class="field"><label>Status</label>
