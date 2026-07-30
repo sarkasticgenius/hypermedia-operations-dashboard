@@ -3,7 +3,7 @@ import { loadingCard, registerModal } from '../modals.js';
 import { getSetting } from '../data/settings.js';
 import { listLocations } from '../data/locations.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
-import { hiddenMemberIds, sourceStats, heatmapColor } from '../data/locationStats.js';
+import { hiddenMemberIds, resolveMembers, sourceStats, heatmapColor } from '../data/locationStats.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
@@ -29,7 +29,11 @@ function renderNetworkPanel(source, healthyField, title, settingKey, syncFnName)
   const admin = isAdmin();
   const c = cfg || {};
   const hidden = hiddenMemberIds(allLocations);
-  const hasData = (l) => (l.location_sub_assets || []).some((sa) => sa.source === source) || !!l[healthyField];
+  const hasDataDirect = (l) => (l.location_sub_assets || []).some((sa) => sa.source === source) || !!l[healthyField];
+  // A combined/chain wrapper never carries location_sub_assets or a healthy-count of its own -
+  // those live on its members - so its presence in the heatmap has to be decided by whether any
+  // member has data, not by checking the wrapper row directly.
+  const hasData = (l) => (l.is_combined ? resolveMembers(l, allLocations).some(hasDataDirect) : hasDataDirect(l));
   const dataLocs = allLocations.filter((l) => !hidden.has(l.id) && hasData(l));
 
   // Chains (Metro Red Line, Metro Bridges, Nakheel Pavilions, etc.) merge into one tile
