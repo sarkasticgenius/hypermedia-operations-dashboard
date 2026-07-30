@@ -95,6 +95,7 @@ export function exportOrdersCsv() {
     { label: 'Warranty Expiry', value: (o) => assets.find((a) => a.id === o.asset_id)?.warranty_expiry },
     { label: 'Date of Rent', value: (o) => assets.find((a) => a.id === o.asset_id)?.date_of_rent },
     { label: 'Delivery Note', value: (o) => o.delivery_note_filename },
+    { label: 'Notes', value: (o) => o.notes },
   ], orders);
 }
 
@@ -164,11 +165,12 @@ export async function saveOrderForm(event) {
   const orderDate = document.getElementById('or-date').value || todayISO();
   const destination = document.getElementById('or-dest').value.trim();
   const status = document.getElementById('or-status').value;
+  const notes = document.getElementById('or-notes').value.trim();
   const asset = assets.find((a) => a.id === assetId);
   if (!asset || qty <= 0 || !destination) { toast('Please fill in all fields', 'error'); return; }
 
   try {
-    await saveOrder({ id, assetId, assetName: asset.name, qty, orderDate, destination, status });
+    await saveOrder({ id, assetId, assetName: asset.name, qty, orderDate, destination, status, notes });
 
     const rental = isRentalCategory(categories, asset.category);
     const warrantyPatch = rental
@@ -226,6 +228,7 @@ registerModal('orderForm', (data) => {
       <div class="field" id="or-warranty-group" style="display:${selectedAsset && !rental ? 'block' : 'none'};">
         <label>Warranty Expiry</label><input id="or-warranty" type="date" value="${selectedAsset ? (selectedAsset.warranty_expiry || '') : ''}">
       </div>
+      <div class="field"><label>Notes</label><textarea id="or-notes" rows="2" placeholder="Optional">${esc(data.notes || '')}</textarea></div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
         <button type="submit" class="btn btn-orange">${data.id ? 'Save' : 'Place Order'}</button>

@@ -11,7 +11,7 @@ export async function saveOrder(row, deliveryNoteFile) {
   const payload = {
     asset_id: row.assetId || null, asset_name: row.assetName || null, qty: row.qty || 1,
     order_date: row.orderDate || null, destination: row.destination || null,
-    status: row.status || 'Ordered',
+    status: row.status || 'Ordered', notes: row.notes || null,
   };
   if (deliveryNoteFile) {
     const uploaded = await uploadAttachment('delivery-notes', deliveryNoteFile);
