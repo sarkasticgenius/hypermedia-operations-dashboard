@@ -318,6 +318,7 @@ function renderBroadsignApiCard(settings) {
       <div class="card-head"><h3>Broadsign API</h3><div class="desc">Real monitor_poll/v2 sync, matched to Asset Inventory rows tagged Player Type "Broadsign" by Player Box ID.</div></div>
       <form onsubmit="App.saveIntegrationForm(event,'broadsignApi')">
         <div class="field"><label>Base URL</label><input id="int-broadsignApi-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://api.broadsign.com"></div>
+        <div class="small muted" style="margin:-6px 0 10px;font-family:monospace;">Endpoint called: GET ${esc((cfg.baseUrl || 'https://api.broadsign.com').replace(/\/+$/, ''))}/rest/monitor_poll/v2?domain_id=${cfg.domainId ? '••••••••' : '&lt;Domain ID&gt;'} (with an <code>authorization: Bearer &lt;API Key&gt;</code> header)</div>
         <div class="grid2">
           <div class="field"><label>API Key</label><input id="int-broadsignApi-apiKey" type="password" value="${esc(cfg.apiKey || '')}"></div>
           <div class="field"><label>Domain ID</label><input id="int-broadsignApi-domainId" type="password" autocomplete="off" value="${esc(cfg.domainId || '')}"></div>
