@@ -22,7 +22,12 @@ export function initRender(el, fn) {
 }
 
 // innerHTML replace on every render kills focus/caret position in whatever input the user is
-// typing in - this restores it by id, same trick the original app used.
+// typing in - this restores it by id, same trick the original app used. It also tears down and
+// rebuilds every DOM node, so any scrollable container snaps back to scrollTop 0 on every
+// setState() call - e.g. clicking "+ Add" partway down a long search-result list inside a modal
+// (Locations' asset-link search) kicked the whole modal back to the top. Captured/restored the
+// same way as focus: by selector rather than by scroll offset stored in STATE, since it's purely
+// a rendering artifact, not app state worth persisting.
 export function render() {
   if (!renderFn || !rootEl) return;
   const active = document.activeElement;
@@ -30,6 +35,11 @@ export function render() {
   const hasSelection = active && 'selectionStart' in active;
   const selStart = hasSelection ? active.selectionStart : null;
   const selEnd = hasSelection ? active.selectionEnd : null;
+
+  const modalEl = document.querySelector('.modal');
+  const modalScroll = modalEl ? modalEl.scrollTop : null;
+  const contentEl = document.querySelector('.content');
+  const contentScroll = contentEl ? contentEl.scrollTop : null;
 
   rootEl.innerHTML = renderFn();
 
@@ -41,6 +51,14 @@ export function render() {
         try { restored.setSelectionRange(selStart, selEnd); } catch (e) { /* not a text input */ }
       }
     }
+  }
+  if (modalScroll != null) {
+    const newModal = document.querySelector('.modal');
+    if (newModal) newModal.scrollTop = modalScroll;
+  }
+  if (contentScroll != null) {
+    const newContent = document.querySelector('.content');
+    if (newContent) newContent.scrollTop = contentScroll;
   }
 }
 
