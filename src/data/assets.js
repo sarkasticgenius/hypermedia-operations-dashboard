@@ -12,7 +12,7 @@ export async function saveAsset(row) {
     stock_available: row.stockAvailable || 0, stock_on_site: row.stockOnSite || 0,
     serial_number: row.serialNumber || null, warranty_expiry: row.warrantyExpiry || null,
     date_of_rent: row.dateOfRent || null, maintenance_location: row.maintenanceLocation || null,
-    maintenance_contractor: row.maintenanceContractor || null, status: row.status || 'Active',
+    maintenance_contractor: row.maintenanceContractor || null, status: row.status || 'Spare',
     notes: row.notes || null,
   };
   if (row.id) {
@@ -69,8 +69,12 @@ export async function deployAsset({ assetId, assetName, destinationName, qty, de
     await supabase.from('asset_locations').insert({ asset_id: assetId, location_name: destinationName, qty });
   }
 
+  // Deploying moves the row out of "Spare" into "Deployed" - it belongs in the Deployed folder
+  // from here on, not the main Inventory list - unless it's already flagged Faulty, which takes
+  // priority over the routine status change.
   await supabase.from('assets').update({
     stock_available: asset.stock_available - qty, stock_on_site: asset.stock_on_site + qty,
+    status: asset.status === 'Faulty' ? 'Faulty' : 'Deployed',
   }).eq('id', assetId);
 
   const { error } = await supabase.from('asset_assignments').insert({

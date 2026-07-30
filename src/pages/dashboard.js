@@ -26,7 +26,7 @@ export function renderDashboard() {
   const pendingOrders = orders.filter((o) => o.status !== 'Delivered').length;
 
   const kpis = [
-    { label: 'Hardware Assets', value: assets.length, sub: `${assets.filter((a) => a.status === 'Active').length} active` },
+    { label: 'Hardware Assets', value: assets.length, sub: `${assets.filter((a) => a.status === 'Spare' || a.status === 'Deployed').length} in service` },
     { label: 'Open Tickets', value: openTickets, sub: `${tickets.length} total` },
     { label: 'Digital Campaigns', value: activeCampaigns, sub: `${campaigns.length} total` },
     { label: 'Static Campaigns', value: activeStatic, sub: `${staticCampaigns.length} total` },

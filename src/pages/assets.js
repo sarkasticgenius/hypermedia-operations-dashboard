@@ -60,14 +60,23 @@ export function setAssetView(v) { setState({ assetView: v }); }
 export function setAssetCategoryTab(v) { setState({ assetCategoryTab: v }); }
 export function setAssetStatusTab(v) { setState({ assetStatusTab: v }); }
 
+function statusBadgeClass(status) {
+  return status === 'Spare' ? 'b-green' : status === 'Deployed' ? 'b-blue' : status === 'Faulty' ? 'b-red' : 'b-gray';
+}
+
 // -------------------- inventory view --------------------
+// Main/All page shows only spare stock still sitting in the warehouse - once any of a row's
+// stock is deployed it moves out of here entirely and only shows on the Deployed tab, per the
+// "main page shows only available spare assets" requirement.
 function renderInventoryView(data) {
   const { assets, categories } = data;
   const categoryTab = STATE.assetCategoryTab || 'All';
   const statusTab = STATE.assetStatusTab || 'All';
-  const faultyCount = assets.filter((a) => a.status === 'Faulty').length;
+  const spareAssets = assets.filter((a) => !isDeployed(a));
+  const faultyCount = spareAssets.filter((a) => a.status === 'Faulty').length;
+  const totalSpareQty = spareAssets.reduce((sum, a) => sum + (a.stock_available || 0), 0);
 
-  const visible = assets.filter((a) => {
+  const visible = spareAssets.filter((a) => {
     if (categoryTab !== 'All' && a.category !== categoryTab) return false;
     if (statusTab !== 'All' && a.status !== statusTab) return false;
     return true;
@@ -82,20 +91,17 @@ function renderInventoryView(data) {
       a.maintenance_contractor ? `Contractor: ${a.maintenance_contractor}` : null,
       a.source === 'glpi' ? '<span class="badge b-blue">GLPI</span>' : null,
     ].filter(Boolean).join(' · ');
-    const deployedLocs = (a.asset_locations || []).map((al) => `${al.location_name} (${al.qty})`).join(', ') || '-';
     return `
       <tr style="${a.status === 'Faulty' ? 'background:#fdecea;' : ''}">
         <td><div>${esc(a.name)}</div><div class="small muted">${esc(a.category)}${meta ? ' · ' + meta : ''}</div></td>
         <td>${fmtMoney(a.unit_price)}</td>
-        <td class="tright">${a.stock_available}</td>
-        <td class="tright">${a.stock_on_site}</td>
-        <td class="small">${esc(deployedLocs)}</td>
-        <td><span class="badge ${a.status === 'Active' ? 'b-green' : a.status === 'Faulty' ? 'b-red' : 'b-gray'}">${esc(a.status)}</span></td>
+        <td class="tright"><strong>${a.stock_available}</strong></td>
+        <td><span class="badge ${statusBadgeClass(a.status)}">${esc(a.status)}</span></td>
         <td>
           ${canEdit('assets') ? `<button class="btn-sm" onclick="App.editAsset('${a.id}')">Edit</button>` : ''}
           ${canEdit('assets') && a.stock_available > 0 ? `<button class="btn-sm" onclick="App.openDeployModal('${a.id}')">Deploy</button>` : ''}
           ${canEdit('assets') ? (a.status === 'Faulty'
-            ? `<button class="btn-sm" onclick="App.quickSetStatus('${a.id}','Active')">Mark Active</button>`
+            ? `<button class="btn-sm" onclick="App.quickSetStatus('${a.id}','Spare')">Mark Spare</button>`
             : `<button class="btn-sm" onclick="App.openMarkFaultyModal('${a.id}')">Mark Faulty</button>`) : ''}
           ${canDelete('assets') ? `<button class="btn-sm" onclick="App.removeAsset('${a.id}')">Delete</button>` : ''}
         </td>
@@ -105,6 +111,10 @@ function renderInventoryView(data) {
 
   return `
     ${faultyCount > 0 ? `<div class="banner">${faultyCount} item(s) marked Faulty - use the Faulty filter below to review, repair or retire them.</div>` : ''}
+    <div class="kpi-row">
+      <div class="kpi"><div class="label">Available Spare Qty</div><div class="value">${totalSpareQty}</div></div>
+      <div class="kpi"><div class="label">Spare Item Rows</div><div class="value">${spareAssets.length}</div></div>
+    </div>
     <div class="toolbar">
       <div class="tabs">
         <div class="tab ${categoryTab === 'All' ? 'active' : ''}" onclick="App.setAssetCategoryTab('All')">All</div>
@@ -113,7 +123,7 @@ function renderInventoryView(data) {
     </div>
     <div class="toolbar">
       <div class="tabs">
-        ${['All', 'Active', 'Retired', 'Faulty'].map((s) => `<div class="tab ${statusTab === s ? 'active' : ''}" onclick="App.setAssetStatusTab('${s}')">${s}${s === 'Faulty' && faultyCount ? ` (${faultyCount})` : ''}</div>`).join('')}
+        ${['All', 'Spare', 'Retired', 'Faulty'].map((s) => `<div class="tab ${statusTab === s ? 'active' : ''}" onclick="App.setAssetStatusTab('${s}')">${s}${s === 'Faulty' && faultyCount ? ` (${faultyCount})` : ''}</div>`).join('')}
       </div>
       <div class="toolbar-actions">
         ${canExportArea('assets') ? `<button class="btn-sm" onclick="App.exportAssetsCsv()">Export CSV</button>` : ''}
@@ -122,9 +132,9 @@ function renderInventoryView(data) {
       </div>
     </div>
     <div class="card">
-      ${visible.length === 0 ? '<div class="empty">No hardware assets match your filters.</div>' : `
+      ${visible.length === 0 ? '<div class="empty">No spare hardware assets match your filters.</div>' : `
         <table>
-          <thead><tr><th>Asset</th><th>Unit Price</th><th class="tright">Available</th><th class="tright">On Site</th><th>Deployed Locations</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Asset</th><th>Unit Price</th><th class="tright">Available (Spare)</th><th>Status</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -167,13 +177,14 @@ function renderDeployedView(data) {
       <tr style="${a.status === 'Faulty' ? 'background:#fdecea;' : ''}">
         <td><div>${esc(a.name)}</div><div class="small muted">${esc(a.category)}</div></td>
         <td class="tright">${a.stock_on_site}</td>
+        <td class="tright">${a.stock_available}</td>
         <td class="small">${esc(deployedLocs)}</td>
-        <td><span class="badge ${a.status === 'Active' ? 'b-green' : a.status === 'Faulty' ? 'b-red' : 'b-gray'}">${esc(a.status)}</span></td>
+        <td><span class="badge ${statusBadgeClass(a.status)}">${esc(a.status)}</span></td>
         <td>
           ${canEdit('assets') ? `<button class="btn-sm" onclick="App.editAsset('${a.id}')">Edit</button>` : ''}
           ${canEdit('assets') && a.stock_available > 0 ? `<button class="btn-sm" onclick="App.openDeployModal('${a.id}')">Deploy More</button>` : ''}
           ${canEdit('assets') ? (a.status === 'Faulty'
-            ? `<button class="btn-sm" onclick="App.quickSetStatus('${a.id}','Active')">Mark Active</button>`
+            ? `<button class="btn-sm" onclick="App.quickSetStatus('${a.id}','Deployed')">Mark Deployed</button>`
             : `<button class="btn-sm" onclick="App.openMarkFaultyModal('${a.id}')">Mark Faulty</button>`) : ''}
         </td>
       </tr>
@@ -192,7 +203,7 @@ function renderDeployedView(data) {
     <div class="card">
       ${deployed.length === 0 ? '<div class="empty">No assets have been deployed out of the warehouse yet.</div>' : `
         <table>
-          <thead><tr><th>Asset</th><th class="tright">On Site</th><th>Deployed Locations</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Asset</th><th class="tright">On Site</th><th class="tright">Available (Spare)</th><th>Deployed Locations</th><th>Status</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -421,7 +432,7 @@ registerModal('asset', (data) => {
         </div>
         <div class="field"><label>Status</label>
           <select id="asset-status">
-            ${['Active', 'Retired', 'Faulty'].map((s) => `<option value="${s}" ${data.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+            ${['Spare', 'Deployed', 'Retired', 'Faulty'].map((s) => `<option value="${s}" ${(data.status || 'Spare') === s ? 'selected' : ''}>${s}</option>`).join('')}
           </select>
         </div>
       </div>

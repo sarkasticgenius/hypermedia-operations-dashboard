@@ -32,7 +32,7 @@ const IMPORT_CONFIGS = {
       maintenanceContractor: ['Maintenance Contractor'], status: ['Status'], notes: ['Notes'],
     },
     required: 'name',
-    transform: (m) => ({ ...m, status: m.status || 'Active' }),
+    transform: (m) => ({ ...m, status: m.status || 'Spare' }),
     save: saveAsset,
     dataKey: 'assets',
   },
