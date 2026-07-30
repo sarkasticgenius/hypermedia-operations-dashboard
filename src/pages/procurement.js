@@ -2,8 +2,9 @@ import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } f
 import { loadingCard, registerModal } from '../modals.js';
 import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
 import { listOrders, saveOrder, deleteOrder, receiveOrder, uploadOrderDeliveryNote } from '../data/orders.js';
-import { listAssets } from '../data/assets.js';
+import { listAssets, updateAssetWarrantyOrRental } from '../data/assets.js';
 import { listLocations } from '../data/locations.js';
+import { listCategories } from '../data/categories.js';
 import { getSignedUrl } from '../lib/storage.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, todayISO } from '../lib/format.js';
@@ -12,11 +13,15 @@ import { exportToCsv } from '../lib/csv.js';
 const STATUS_BADGE = { Ordered: 'b-gray', 'In Transit': 'b-amber', Delivered: 'b-green' };
 
 async function loadProcurementData() {
-  const [orders, assets, locations] = await Promise.all([listOrders(), listAssets(), listLocations()]);
-  return { orders, assets, locations };
+  const [orders, assets, locations, categories] = await Promise.all([listOrders(), listAssets(), listLocations(), listCategories()]);
+  return { orders, assets, locations, categories };
 }
 
 function pageData() { return STATE.pageData.procurementPage?.data; }
+
+function isRentalCategory(categories, categoryName) {
+  return !!categories.find((c) => c.name.toLowerCase() === String(categoryName || '').toLowerCase())?.is_rental;
+}
 
 export function renderProcurement() {
   const data = loadData('procurementPage', loadProcurementData);
@@ -37,6 +42,7 @@ export function renderProcurement() {
       <td><span class="badge ${STATUS_BADGE[o.status] || 'b-gray'}">${esc(o.status)}</span></td>
       <td>${o.delivery_note_path ? `<span class="file-chip">FILE: ${esc(o.delivery_note_filename || 'delivery-note')}</span> <a href="#" onclick="App.viewDeliveryNote('${o.delivery_note_path}');return false;" class="link-btn" style="font-size:11px;">View</a>` : '<span class="muted small">-</span>'}</td>
       <td>
+        ${editOk ? `<button class="btn-sm" onclick="App.openEditOrderModal('${o.id}')">Edit</button>` : ''}
         ${o.status !== 'Delivered' && editOk ? `<button class="btn-sm" onclick="App.openReceiveModal('${o.id}')">Receive Delivery</button>` : ''}
         ${editOk ? `<button class="btn-sm" onclick="App.openUploadDeliveryNoteModal('${o.id}')">${o.delivery_note_path ? 'Replace' : 'Upload'} Delivery Note</button>` : ''}
         ${delOk ? `<button class="btn-sm" onclick="App.removeOrder('${o.id}')">Delete</button>` : ''}
@@ -93,47 +99,101 @@ export async function removeOrder(id) {
   }
 }
 
-// -------------------- New Order --------------------
-export function openNewOrderModal() { openModal('newOrder', {}); }
+// -------------------- New / Edit Order --------------------
+// One form for both: creating sets order date to today and status to Ordered by default (both
+// still editable), editing prefills everything including the linked asset's current warranty (or
+// rental) details, which this form can also update - the natural point to record warranty terms
+// is when the order's placed or its details are corrected, not only from Hardware Inventory.
+export function openNewOrderModal() { openModal('orderForm', {}); }
 
-export async function saveNewOrder(event) {
+export function openEditOrderModal(id) {
+  const order = (pageData()?.orders || []).find((o) => o.id === id);
+  if (order) openModal('orderForm', order);
+}
+
+// Redraws the modal so the Warranty/Rental section matches the newly-selected asset's category -
+// mirrors Hardware Inventory's own onAssetCategoryChange toggle.
+export function onOrderAssetChange(assetId) {
+  if (!STATE.modal) return;
+  STATE.modal.data = { ...STATE.modal.data, __assetId: assetId };
+  setState({});
+}
+
+export async function saveOrderForm(event) {
   event.preventDefault();
+  const id = document.getElementById('or-id').value || null;
   const assets = pageData()?.assets || [];
-  const assetId = document.getElementById('no-asset').value;
-  const qty = Number(document.getElementById('no-qty').value || 0);
-  const destination = document.getElementById('no-dest').value.trim();
+  const categories = pageData()?.categories || [];
+  const assetId = document.getElementById('or-asset').value;
+  const qty = Number(document.getElementById('or-qty').value || 0);
+  const orderDate = document.getElementById('or-date').value || todayISO();
+  const destination = document.getElementById('or-dest').value.trim();
+  const status = document.getElementById('or-status').value;
   const asset = assets.find((a) => a.id === assetId);
   if (!asset || qty <= 0 || !destination) { toast('Please fill in all fields', 'error'); return; }
+
   try {
-    await saveOrder({ assetId, assetName: asset.name, qty, destination, orderDate: todayISO(), status: 'Ordered' });
-    await logAudit('New order', `${asset.name} x${qty} to ${destination}`);
+    await saveOrder({ id, assetId, assetName: asset.name, qty, orderDate, destination, status });
+
+    const rental = isRentalCategory(categories, asset.category);
+    const warrantyPatch = rental
+      ? { date_of_rent: document.getElementById('or-date-of-rent')?.value || null, maintenance_location: document.getElementById('or-maint-location')?.value.trim() || null }
+      : { warranty_expiry: document.getElementById('or-warranty')?.value || null };
+    await updateAssetWarrantyOrRental(assetId, warrantyPatch);
+
+    await logAudit(id ? 'Edit order' : 'New order', `${asset.name} x${qty} to ${destination}`);
     invalidate('procurementPage');
+    invalidate('assets');
     closeModal();
-    toast('Order placed');
+    toast(id ? 'Order updated' : 'Order placed');
   } catch (e) { toast(e.message, 'error'); }
 }
 
-registerModal('newOrder', () => {
-  const data = pageData();
-  const assets = data?.assets || [];
-  const locations = data?.locations || [];
+registerModal('orderForm', (data) => {
+  const pd = pageData();
+  const assets = pd?.assets || [];
+  const locations = pd?.locations || [];
+  const categories = pd?.categories || [];
+  const selectedAssetId = data.__assetId !== undefined ? data.__assetId : (data.asset_id || '');
+  const selectedAsset = assets.find((a) => a.id === selectedAssetId);
+  const rental = selectedAsset ? isRentalCategory(categories, selectedAsset.category) : false;
+
   return `
-    <h3>New Purchase Order</h3>
-    <form onsubmit="App.saveNewOrder(event)">
+    <h3>${data.id ? 'Edit' : 'New'} Purchase Order</h3>
+    <form onsubmit="App.saveOrderForm(event)">
+      <input type="hidden" id="or-id" value="${esc(data.id || '')}">
       <div class="field"><label>Asset</label>
-        <select id="no-asset" required>
+        <select id="or-asset" onchange="App.onOrderAssetChange(this.value)" required>
           <option value="">-</option>
-          ${assets.map((a) => `<option value="${a.id}">${esc(a.name)} (${esc(a.category)})</option>`).join('')}
+          ${assets.map((a) => `<option value="${a.id}" ${selectedAssetId === a.id ? 'selected' : ''}>${esc(a.name)} (${esc(a.category)})</option>`).join('')}
         </select>
       </div>
-      <div class="field"><label>Quantity Ordered</label><input id="no-qty" type="number" min="1" required></div>
+      <div class="grid2">
+        <div class="field"><label>Quantity Ordered</label><input id="or-qty" type="number" min="1" value="${data.qty || 1}" required></div>
+        <div class="field"><label>Order Date</label><input id="or-date" type="date" value="${data.order_date || todayISO()}"></div>
+      </div>
       <div class="field"><label>Destination Location</label>
-        <input id="no-dest" list="proc-loc-list" placeholder="Where this stock is headed" required>
+        <input id="or-dest" list="proc-loc-list" placeholder="Where this stock is headed" value="${esc(data.destination || '')}" required>
         <datalist id="proc-loc-list">${locations.map((l) => `<option value="${esc(l.name)}">`).join('')}</datalist>
       </div>
+      ${data.id ? `
+        <div class="field"><label>Status</label>
+          <select id="or-status">
+            ${['Ordered', 'In Transit', 'Delivered'].map((s) => `<option value="${s}" ${(data.status || 'Ordered') === s ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </div>
+      ` : `<input type="hidden" id="or-status" value="Ordered">`}
+      ${selectedAsset ? (rental ? `
+        <div class="grid2">
+          <div class="field"><label>Date of Rent</label><input id="or-date-of-rent" type="date" value="${selectedAsset.date_of_rent || ''}"></div>
+          <div class="field"><label>Maintenance Location</label><input id="or-maint-location" value="${esc(selectedAsset.maintenance_location || '')}"></div>
+        </div>
+      ` : `
+        <div class="field"><label>Warranty Expiry</label><input id="or-warranty" type="date" value="${selectedAsset.warranty_expiry || ''}"></div>
+      `) : '<p class="small muted">Pick an asset to set its warranty (or rental) details here too.</p>'}
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
-        <button type="submit" class="btn btn-orange">Place Order</button>
+        <button type="submit" class="btn btn-orange">${data.id ? 'Save' : 'Place Order'}</button>
       </div>
     </form>
   `;

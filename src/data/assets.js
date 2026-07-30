@@ -80,6 +80,14 @@ export async function deployAsset({ assetId, assetName, destinationName, qty, de
   if (error) throw error;
 }
 
+// Targeted update for just the warranty/rental fields - used by Procurement & Delivery's order
+// form, which lets an order write the warranty (or rental) details straight through to the asset
+// it's for, without needing to fetch and resend the asset's other fields.
+export async function updateAssetWarrantyOrRental(assetId, patch) {
+  const { error } = await supabase.from('assets').update(patch).eq('id', assetId);
+  if (error) throw error;
+}
+
 export async function quickSetAssetStatus(id, status) {
   const { error } = await supabase.from('assets').update({ status }).eq('id', id);
   if (error) throw error;
