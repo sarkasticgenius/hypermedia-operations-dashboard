@@ -87,7 +87,7 @@ export function renderLocations() {
         ${canAdd('locations') ? `<button class="btn btn-orange" onclick="App.editLocation(null)">+ Add Location</button>` : ''}
       </div>
     </div>
-    ${view === 'list' ? renderLocationSelectionBanner() : ''}
+    ${(view === 'venues' || view === 'list') ? renderLocationSelectionBanner() : ''}
     ${body}
   `;
 }
@@ -109,7 +109,7 @@ export function setLocationEmirateFilter(v) { setState({ locationEmirateFilter: 
 export function setLocationChainFilter(v) { setState({ locationChainFilter: v }); }
 export function setLocationSearch(v) { setState({ locationSearch: v }); }
 
-// -------------------- bulk selection (List view) --------------------
+// -------------------- bulk selection (Venues + List views) --------------------
 export function toggleLocationSelection(id, checked) {
   const cur = new Set(STATE.locSelectedIds || []);
   if (checked) cur.add(id); else cur.delete(id);
@@ -169,17 +169,23 @@ function renderCharts(visible, allLocations, assetInventory) {
 // -------------------- venues (card grid, drag-drop) --------------------
 function renderVenuesView(filtered, venueTileOrder) {
   const editOk = canEdit('locations');
+  const bulkOk = canDelete('locations');
   const ordered = sortByTileOrder(filtered, venueTileOrder);
-  const cards = ordered.map((l) => venueCardHtml(l, editOk)).join('');
+  const selected = new Set(STATE.locSelectedIds || []);
+  const allSelected = ordered.length > 0 && ordered.every((l) => selected.has(l.id));
+  const cards = ordered.map((l) => venueCardHtml(l, editOk, bulkOk, selected.has(l.id))).join('');
   return `
-    ${editOk ? '<p class="small muted">Drag the ⋮⋮ handle on a tile to reorder Venues. Your order is saved automatically.</p>' : ''}
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+      ${editOk ? '<p class="small muted" style="margin:0;">Drag the ⋮⋮ handle on a tile to reorder Venues. Your order is saved automatically.</p>' : '<span></span>'}
+      ${bulkOk && ordered.length ? `<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--text-dim);"><input type="checkbox" style="width:auto;" ${allSelected ? 'checked' : ''} onchange="App.toggleLocationSelectGroup(${JSON.stringify(ordered.map((l) => l.id))}, this.checked)">Select all visible</label>` : ''}
+    </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">
       ${cards || '<div class="empty">No locations match your filters.</div>'}
     </div>
   `;
 }
 
-function venueCardHtml(l, editOk) {
+function venueCardHtml(l, editOk, bulkOk, isSelected) {
   const data = pageData();
   const screenCount = locationScreenCount(l, data.locations, data.assetInventory);
   const members = l.is_combined ? resolveMembers(l, data.locations) : [];
@@ -190,6 +196,7 @@ function venueCardHtml(l, editOk) {
     <div class="card" style="margin-bottom:0;cursor:pointer;" ${dragAttrs} onclick="App.openVenueDetail('${l.id}')">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
         <div>
+          ${bulkOk ? `<input type="checkbox" style="width:auto;margin-right:6px;" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation()" onchange="App.toggleLocationSelection('${l.id}', this.checked)">` : ''}
           ${editOk ? '<span style="cursor:grab;color:var(--text-dim);">⋮⋮</span> ' : ''}${brandLogoTag(l.name)} <strong>${esc(l.name)}</strong>
           ${l.is_combined ? ' <span class="badge b-blue">Combined</span>' : ''}
         </div>
