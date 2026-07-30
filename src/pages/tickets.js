@@ -334,10 +334,17 @@ export async function removeTicket(id) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+// Direct DOM manipulation, not a setState() re-render - a full re-render would rebuild the whole
+// form from `data` (captured once when the modal opened), discarding whatever the admin has
+// already typed into Title/Description/other fields since then. Matches the original app's
+// pattern for exactly this kind of "one field's change affects another field's options" case.
 export function onTicketLocationChange(value) {
-  if (!STATE.modal) return;
-  STATE.modal.data = { ...STATE.modal.data, location: value, asset_inv_id: null };
-  setState({});
+  const screenSel = document.getElementById('tk-screen');
+  if (!screenSel) return;
+  const assetInventory = pageData()?.assetInventory || [];
+  const screens = value ? assetInventoryForLocation(value, assetInventory) : [];
+  screenSel.innerHTML = '<option value="">-</option>'
+    + screens.map((s) => `<option value="${s.id}">${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('');
 }
 
 export async function viewTicketPhoto() {

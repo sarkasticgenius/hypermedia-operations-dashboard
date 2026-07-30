@@ -23,11 +23,24 @@ function isRentalCategory(categories, categoryName) {
   return !!categories.find((c) => c.name.toLowerCase() === String(categoryName || '').toLowerCase())?.is_rental;
 }
 
+// Warranty (or rental) details live on the linked Hardware Asset, not the order itself - this
+// looks it up for display on the main order list, same info the order form lets you edit.
+function warrantyLabel(order, assets, categories) {
+  const asset = assets.find((a) => a.id === order.asset_id);
+  if (!asset) return '<span class="muted small">-</span>';
+  if (isRentalCategory(categories, asset.category)) {
+    return asset.date_of_rent
+      ? `Rented ${esc(fmtDate(asset.date_of_rent))}${asset.maintenance_location ? ` · ${esc(asset.maintenance_location)}` : ''}`
+      : '<span class="muted small">No rental date set</span>';
+  }
+  return asset.warranty_expiry ? esc(fmtDate(asset.warranty_expiry)) : '<span class="muted small">No warranty date set</span>';
+}
+
 export function renderProcurement() {
   const data = loadData('procurementPage', loadProcurementData);
   if (data === null) return loadingCard();
   if (data.__error) return loadingCard(data.__error);
-  const { orders } = data;
+  const { orders, assets, categories } = data;
   const addOk = canAdd('orders');
   const editOk = canEdit('orders');
   const delOk = canDelete('orders');
@@ -40,6 +53,7 @@ export function renderProcurement() {
       <td>${fmtDate(o.order_date)}</td>
       <td>${esc(o.destination || '-')}</td>
       <td><span class="badge ${STATUS_BADGE[o.status] || 'b-gray'}">${esc(o.status)}</span></td>
+      <td class="small">${warrantyLabel(o, assets, categories)}</td>
       <td>${o.delivery_note_path ? `<span class="file-chip">FILE: ${esc(o.delivery_note_filename || 'delivery-note')}</span> <a href="#" onclick="App.viewDeliveryNote('${o.delivery_note_path}');return false;" class="link-btn" style="font-size:11px;">View</a>` : '<span class="muted small">-</span>'}</td>
       <td>
         ${editOk ? `<button class="btn-sm" onclick="App.openEditOrderModal('${o.id}')">Edit</button>` : ''}
@@ -62,7 +76,7 @@ export function renderProcurement() {
     <div class="card">
       ${orders.length === 0 ? '<div class="empty">No purchase orders yet.</div>' : `
         <table>
-          <thead><tr><th>Asset</th><th class="tright">Qty</th><th>Order Date</th><th>Destination</th><th>Status</th><th>Delivery Note</th><th></th></tr></thead>
+          <thead><tr><th>Asset</th><th class="tright">Qty</th><th>Order Date</th><th>Destination</th><th>Status</th><th>Warranty</th><th>Delivery Note</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -71,11 +85,16 @@ export function renderProcurement() {
 }
 
 export function exportOrdersCsv() {
-  const orders = pageData()?.orders || [];
+  const data = pageData();
+  const orders = data?.orders || [];
+  const assets = data?.assets || [];
   exportToCsv('orders.csv', [
     { label: 'Asset', value: (o) => o.asset_name }, { label: 'Qty', value: (o) => o.qty },
     { label: 'Order Date', value: (o) => o.order_date }, { label: 'Destination', value: (o) => o.destination },
-    { label: 'Status', value: (o) => o.status }, { label: 'Delivery Note', value: (o) => o.delivery_note_filename },
+    { label: 'Status', value: (o) => o.status },
+    { label: 'Warranty Expiry', value: (o) => assets.find((a) => a.id === o.asset_id)?.warranty_expiry },
+    { label: 'Date of Rent', value: (o) => assets.find((a) => a.id === o.asset_id)?.date_of_rent },
+    { label: 'Delivery Note', value: (o) => o.delivery_note_filename },
   ], orders);
 }
 
@@ -111,12 +130,28 @@ export function openEditOrderModal(id) {
   if (order) openModal('orderForm', order);
 }
 
-// Redraws the modal so the Warranty/Rental section matches the newly-selected asset's category -
-// mirrors Hardware Inventory's own onAssetCategoryChange toggle.
+// Direct DOM manipulation, not a setState() re-render - a full re-render would rebuild the whole
+// form from `data` (captured once when the modal opened), discarding Quantity/Order Date/
+// Destination if the admin already filled those in before picking (or changing) the Asset.
+// Mirrors Hardware Inventory's onAssetCategoryChange for the same reason.
 export function onOrderAssetChange(assetId) {
-  if (!STATE.modal) return;
-  STATE.modal.data = { ...STATE.modal.data, __assetId: assetId };
-  setState({});
+  const assets = pageData()?.assets || [];
+  const categories = pageData()?.categories || [];
+  const asset = assets.find((a) => a.id === assetId);
+  const rental = asset ? isRentalCategory(categories, asset.category) : false;
+
+  const hint = document.getElementById('or-asset-hint');
+  const rentalGroup = document.getElementById('or-rental-group');
+  const warrantyGroup = document.getElementById('or-warranty-group');
+  if (hint) hint.style.display = asset ? 'none' : 'block';
+  if (rentalGroup) rentalGroup.style.display = asset && rental ? 'grid' : 'none';
+  if (warrantyGroup) warrantyGroup.style.display = asset && !rental ? 'block' : 'none';
+  if (asset && rental) {
+    document.getElementById('or-date-of-rent').value = asset.date_of_rent || '';
+    document.getElementById('or-maint-location').value = asset.maintenance_location || '';
+  } else if (asset) {
+    document.getElementById('or-warranty').value = asset.warranty_expiry || '';
+  }
 }
 
 export async function saveOrderForm(event) {
@@ -154,7 +189,7 @@ registerModal('orderForm', (data) => {
   const assets = pd?.assets || [];
   const locations = pd?.locations || [];
   const categories = pd?.categories || [];
-  const selectedAssetId = data.__assetId !== undefined ? data.__assetId : (data.asset_id || '');
+  const selectedAssetId = data.asset_id || '';
   const selectedAsset = assets.find((a) => a.id === selectedAssetId);
   const rental = selectedAsset ? isRentalCategory(categories, selectedAsset.category) : false;
 
@@ -183,14 +218,14 @@ registerModal('orderForm', (data) => {
           </select>
         </div>
       ` : `<input type="hidden" id="or-status" value="Ordered">`}
-      ${selectedAsset ? (rental ? `
-        <div class="grid2">
-          <div class="field"><label>Date of Rent</label><input id="or-date-of-rent" type="date" value="${selectedAsset.date_of_rent || ''}"></div>
-          <div class="field"><label>Maintenance Location</label><input id="or-maint-location" value="${esc(selectedAsset.maintenance_location || '')}"></div>
-        </div>
-      ` : `
-        <div class="field"><label>Warranty Expiry</label><input id="or-warranty" type="date" value="${selectedAsset.warranty_expiry || ''}"></div>
-      `) : '<p class="small muted">Pick an asset to set its warranty (or rental) details here too.</p>'}
+      <p id="or-asset-hint" class="small muted" style="display:${selectedAsset ? 'none' : 'block'};">Pick an asset to set its warranty (or rental) details here too.</p>
+      <div class="grid2" id="or-rental-group" style="display:${selectedAsset && rental ? 'grid' : 'none'};">
+        <div class="field"><label>Date of Rent</label><input id="or-date-of-rent" type="date" value="${selectedAsset ? (selectedAsset.date_of_rent || '') : ''}"></div>
+        <div class="field"><label>Maintenance Location</label><input id="or-maint-location" value="${selectedAsset ? esc(selectedAsset.maintenance_location || '') : ''}"></div>
+      </div>
+      <div class="field" id="or-warranty-group" style="display:${selectedAsset && !rental ? 'block' : 'none'};">
+        <label>Warranty Expiry</label><input id="or-warranty" type="date" value="${selectedAsset ? (selectedAsset.warranty_expiry || '') : ''}">
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
         <button type="submit" class="btn btn-orange">${data.id ? 'Save' : 'Place Order'}</button>

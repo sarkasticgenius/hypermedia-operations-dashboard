@@ -178,11 +178,17 @@ export function exportAssetsCsv() {
   ], assets);
 }
 
+// Direct DOM manipulation, not a setState() re-render - a full re-render would rebuild the whole
+// form from `data` (captured once when the modal opened), discarding whatever else the admin has
+// already typed into Name/Price/Serial/Notes/etc. since then. Matches the original's
+// toggleAssetCategoryFields(), which does the same show/hide-in-place instead of a redraw.
 export function onAssetCategoryChange(value) {
-  if (STATE.modal) {
-    STATE.modal.data = { ...STATE.modal.data, category: value };
-    setState({});
-  }
+  const categories = pageData()?.categories || [];
+  const rental = isRental(categories, value);
+  const rentalGroup = document.getElementById('asset-rental-group');
+  const warrantyGroup = document.getElementById('asset-warranty-group');
+  if (rentalGroup) rentalGroup.style.display = rental ? 'grid' : 'none';
+  if (warrantyGroup) warrantyGroup.style.display = rental ? 'none' : 'block';
 }
 
 export function editAsset(id) {
@@ -301,14 +307,13 @@ registerModal('asset', (data) => {
         <div class="field"><label>Stock (On Site)</label><input id="asset-stock-site" type="number" value="${data.stock_on_site || 0}"></div>
       </div>
       ${!data.id ? `<p class="small muted" style="margin:-10px 0 12px;">If you enter more than one serial number above, the Stock fields are ignored - each serial number becomes its own row with 1 unit in Warehouse stock instead.</p>` : ''}
-      ${rental ? `
-        <div class="grid2">
-          <div class="field"><label>Date of Rent</label><input id="asset-date-of-rent" type="date" value="${data.date_of_rent || ''}"></div>
-          <div class="field"><label>Maintenance Location</label><input id="asset-maint-location" value="${esc(data.maintenance_location || '')}"></div>
-        </div>
-      ` : `
-        <div class="field"><label>Warranty Expiry</label><input id="asset-warranty" type="date" value="${data.warranty_expiry || ''}"></div>
-      `}
+      <div class="grid2" id="asset-rental-group" style="display:${rental ? 'grid' : 'none'};">
+        <div class="field"><label>Date of Rent</label><input id="asset-date-of-rent" type="date" value="${data.date_of_rent || ''}"></div>
+        <div class="field"><label>Maintenance Location</label><input id="asset-maint-location" value="${esc(data.maintenance_location || '')}"></div>
+      </div>
+      <div class="field" id="asset-warranty-group" style="display:${rental ? 'none' : 'block'};">
+        <label>Warranty Expiry</label><input id="asset-warranty" type="date" value="${data.warranty_expiry || ''}">
+      </div>
       <div class="field"><label>Maintenance Contractor</label><input id="asset-contractor" value="${esc(data.maintenance_contractor || '')}"></div>
       <div class="field"><label>Notes</label><textarea id="asset-notes" rows="2">${esc(data.notes || '')}</textarea></div>
       <div class="modal-actions">
@@ -326,10 +331,16 @@ export function openDeployModal(assetId) {
   if (asset) openModal('deploy', { asset });
 }
 
+// Direct DOM manipulation, not a setState() re-render - this fires on every keystroke (oninput),
+// so a full re-render here would repeatedly rebuild the whole form from stale `data`, wiping out
+// the Quantity field (and anything else) on every character typed into Destination.
 export function onDeployDestinationChange(value) {
-  if (!STATE.modal) return;
-  STATE.modal.data = { ...STATE.modal.data, __destination: value };
-  setState({});
+  const screenSel = document.getElementById('deploy-screen');
+  if (!screenSel) return;
+  const assetInventory = pageData()?.assetInventory || [];
+  const screens = value ? assetInventoryForLocation(value, assetInventory) : [];
+  screenSel.innerHTML = '<option value="">-</option>'
+    + screens.map((s) => `<option value="${s.id}">${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('');
 }
 
 export async function saveDeployForm(event) {
@@ -356,14 +367,12 @@ export async function saveDeployForm(event) {
 registerModal('deploy', (data) => {
   const pd = pageData();
   const locations = pd?.locations || [];
-  const destination = data.__destination ?? '';
-  const screens = destination ? assetInventoryForLocation(destination, pd?.assetInventory || []) : [];
   return `
     <h3>Deploy ${esc(data.asset.name)}</h3>
     <p class="small muted">Available in warehouse: ${data.asset.stock_available}</p>
     <form onsubmit="App.saveDeployForm(event)">
       <div class="field"><label>Destination Location</label>
-        <input id="deploy-destination" list="deploy-location-list" value="${esc(destination)}" oninput="App.onDeployDestinationChange(this.value)" required>
+        <input id="deploy-destination" list="deploy-location-list" oninput="App.onDeployDestinationChange(this.value)" required>
         <datalist id="deploy-location-list">
           ${locations.map((l) => `<option value="${esc(l.name)}">`).join('')}
         </datalist>

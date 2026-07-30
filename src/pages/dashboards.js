@@ -31,19 +31,25 @@ export function renderDashboards() {
 
   const groupTitle = NAV_GROUP_LABELS[activeSection.nav_group || 'dashboards'] || 'Dashboards';
 
-  return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;flex-shrink:0;">
-    <span>Links are managed from the sidebar under Workspace.${admin ? ' Click Edit next to a link there to update its name or URL.' : ''} If a link shows blank, its site may block embedding - use "Open in new tab" as a fallback.</span>
-    ${admin ? `<button class="btn-sm" style="white-space:nowrap;" onclick='App.addDashLink("${activeSection.id}")'>+ Add Link to ${esc(groupTitle)}</button>` : ''}
-  </div>
-  <div class="dash-frame-wrap">
-    ${active && active.url ? `
-      <div class="dash-frame-head">
-        <b>${esc(active.name)}</b>
-        <a href="${esc(active.url)}" target="_blank" rel="noopener" class="link-btn">Open in new tab</a>
-      </div>
-      <iframe class="dash-iframe" src="${esc(active.url)}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
-    ` : active ? `<div class="empty">No URL set for "${esc(active.name)}" yet.${admin ? ' Click Edit in the sidebar to add one.' : ''}</div>`
-      : `<div class="empty">No links added to ${esc(groupTitle)} yet.${admin ? ' Use "+ Add Link" above.' : ''}</div>`}
+  // A plain block wouldn't give .dash-frame-wrap's flex:1 anything to grow against - .content
+  // itself stretches to fill the page (flex:1 under .main's column), but isn't a flex container,
+  // so without this wrapper the iframe area only sized itself to its own content, leaving a gap
+  // below whenever the page was taller than the iframe wanted to be.
+  return `<div style="display:flex;flex-direction:column;height:100%;">
+    <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;flex-shrink:0;">
+      <span>Links are managed from the sidebar under Workspace.${admin ? ' Click Edit next to a link there to update its name or URL.' : ''} If a link shows blank, its site may block embedding - use "Open in new tab" as a fallback.</span>
+      ${admin ? `<button class="btn-sm" style="white-space:nowrap;" onclick='App.addDashLink("${activeSection.id}")'>+ Add Link to ${esc(groupTitle)}</button>` : ''}
+    </div>
+    <div class="dash-frame-wrap">
+      ${active && active.url ? `
+        <div class="dash-frame-head">
+          <b>${esc(active.name)}</b>
+          <a href="${esc(active.url)}" target="_blank" rel="noopener" class="link-btn">Open in new tab</a>
+        </div>
+        <iframe class="dash-iframe" src="${esc(active.url)}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+      ` : active ? `<div class="empty">No URL set for "${esc(active.name)}" yet.${admin ? ' Click Edit in the sidebar to add one.' : ''}</div>`
+        : `<div class="empty">No links added to ${esc(groupTitle)} yet.${admin ? ' Use "+ Add Link" above.' : ''}</div>`}
+    </div>
   </div>`;
 }
 

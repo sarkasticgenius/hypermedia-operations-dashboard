@@ -152,7 +152,7 @@ tr:hover td{background:#fbfbfa;}
 
 /* dashboards - the section/link list lives in the sidebar (see .nav-subitem); this page just
    shows the selected link's iframe full-height below the banner. */
-.dash-frame-wrap{height:calc(100vh - 230px);min-height:320px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#fff;display:flex;flex-direction:column;}
+.dash-frame-wrap{flex:1;min-height:320px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#fff;display:flex;flex-direction:column;}
 .dash-frame-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;flex-shrink:0;}
 iframe.dash-iframe{width:100%;flex:1;border:none;display:block;}
 
