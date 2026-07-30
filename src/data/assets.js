@@ -93,6 +93,48 @@ export async function quickSetAssetStatus(id, status) {
   if (error) throw error;
 }
 
+// Marks only `qty` units faulty, not the whole row's stock - splits that quantity out of the
+// chosen bucket (warehouse or on-site) into a separate Faulty-status row for the same name/
+// category (reusing one if it already exists, same "don't duplicate item metadata" idea Deploy
+// already uses for its per-location breakdown), instead of flipping the entire asset to Faulty
+// and losing track of how much good stock is actually left. If the quantity covers everything
+// left in both buckets, this just flips the row's own status instead of splitting off a
+// zero-stock sibling.
+export async function markAssetFaulty(assetId, bucket, qty) {
+  const field = bucket === 'onsite' ? 'stock_on_site' : 'stock_available';
+  const otherField = bucket === 'onsite' ? 'stock_available' : 'stock_on_site';
+
+  const { data: asset, error: fetchErr } = await supabase.from('assets').select('*').eq('id', assetId).single();
+  if (fetchErr) throw fetchErr;
+  const current = asset[field] || 0;
+  if (!qty || qty <= 0) throw new Error('Quantity must be greater than 0');
+  if (qty > current) throw new Error(`Only ${current} available in that bucket`);
+
+  if (qty === current && (asset[otherField] || 0) === 0) {
+    const { error } = await supabase.from('assets').update({ [field]: 0, status: 'Faulty' }).eq('id', assetId);
+    if (error) throw error;
+    return;
+  }
+
+  const { error: decErr } = await supabase.from('assets').update({ [field]: current - qty }).eq('id', assetId);
+  if (decErr) throw decErr;
+
+  const { data: existingFaulty } = await supabase.from('assets')
+    .select('*').eq('name', asset.name).eq('category', asset.category).eq('status', 'Faulty').neq('id', assetId).maybeSingle();
+  if (existingFaulty) {
+    const { error } = await supabase.from('assets').update({ [field]: (existingFaulty[field] || 0) + qty }).eq('id', existingFaulty.id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from('assets').insert({
+      name: asset.name, category: asset.category, unit_price: asset.unit_price,
+      stock_available: field === 'stock_available' ? qty : 0,
+      stock_on_site: field === 'stock_on_site' ? qty : 0,
+      status: 'Faulty', maintenance_contractor: asset.maintenance_contractor, notes: asset.notes,
+    });
+    if (error) throw error;
+  }
+}
+
 export async function listAssetAssignments() {
   const { data, error } = await supabase.from('asset_assignments').select('*').order('date', { ascending: false });
   if (error) throw error;

@@ -25,17 +25,31 @@ const NAV_ITEMS_BOTTOM = [
   { page: 'staticCampaigns', label: 'Static Campaigns' },
 ];
 
+// A small icon per workspace, keyed by nav label/key so it stays attached even as pages get
+// renamed - purely visual, doesn't affect routing.
+const NAV_ICONS = {
+  'Live Ops Overview': '📊', Home: '🏠', 'Asset Inventory': '🖥️', 'Hardware Inventory': '📦',
+  'Procurement & Delivery': '🚚', Locations: '📍', Permits: '📄', 'Metro PIC': '🚇',
+  Tickets: '🎫', 'SIM Cards': '📶', 'Static Campaigns': '🖼️',
+  'Digital Campaigns Panel': '📢', 'pDOOH Campaign Panel': '📺', 'Maintenance Panel': '🛠️',
+  Administration: '🛡️', Settings: '⚙️', 'My Account': '👤',
+};
+function navIcon(label) {
+  const icon = NAV_ICONS[label];
+  return icon ? `<span aria-hidden="true" style="margin-right:8px;">${icon}</span>` : '';
+}
+
 function navItem(page, label) {
   if (!canViewPage(page)) return '';
   const active = STATE.page === page ? ' active' : '';
-  return `<div class="nav-item${active}" onclick="App.setPage('${page}')">${esc(label)}</div>`;
+  return `<div class="nav-item${active}" onclick="App.setPage('${page}')">${navIcon(label)}${esc(label)}</div>`;
 }
 
 // An expandable nav group header: clicking the label navigates (onclickJs), clicking the
 // arrow only toggles expansion (stopPropagation keeps the two independent).
 function navParent(label, isActive, expanded, toggleKey, onclickJs) {
   return `<div class="nav-item${isActive ? ' active' : ''}" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
-    <span style="flex:1;" onclick="${onclickJs}">${esc(label)}</span>
+    <span style="flex:1;" onclick="${onclickJs}">${navIcon(label)}${esc(label)}</span>
     <span class="nav-arrow${expanded ? ' open' : ''}" onclick="event.stopPropagation();App.toggleNavExpand('${toggleKey}')">&#8250;</span>
   </div>`;
 }

@@ -2,7 +2,7 @@ import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } f
 import { loadingCard, registerModal } from '../modals.js';
 import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
 import {
-  listAssets, saveAsset, deleteAsset, deployAsset, quickSetAssetStatus, listAssetAssignments,
+  listAssets, saveAsset, deleteAsset, deployAsset, quickSetAssetStatus, markAssetFaulty, listAssetAssignments,
 } from '../data/assets.js';
 import { listCategories } from '../data/categories.js';
 import { listLocations } from '../data/locations.js';
@@ -81,7 +81,7 @@ function renderInventoryView(data) {
           ${canEdit('assets') && a.stock_available > 0 ? `<button class="btn-sm" onclick="App.openDeployModal('${a.id}')">Deploy</button>` : ''}
           ${canEdit('assets') ? (a.status === 'Faulty'
             ? `<button class="btn-sm" onclick="App.quickSetStatus('${a.id}','Active')">Mark Active</button>`
-            : `<button class="btn-sm" onclick="App.quickSetStatus('${a.id}','Faulty')">Mark Faulty</button>`) : ''}
+            : `<button class="btn-sm" onclick="App.openMarkFaultyModal('${a.id}')">Mark Faulty</button>`) : ''}
           ${canDelete('assets') ? `<button class="btn-sm" onclick="App.removeAsset('${a.id}')">Delete</button>` : ''}
         </td>
       </tr>
@@ -206,6 +206,52 @@ export async function quickSetStatus(id, status) {
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }
+
+// Marking Faulty asks how many units, rather than instantly flipping the whole row's stock -
+// splits just that quantity out into a separate Faulty-status row for the same item.
+export function openMarkFaultyModal(id) {
+  const assets = pageData()?.assets || [];
+  const asset = assets.find((a) => a.id === id);
+  if (asset) openModal('markFaulty', { asset });
+}
+
+export async function saveMarkFaultyForm(event) {
+  event.preventDefault();
+  const asset = STATE.modal.data.asset;
+  const bucket = document.getElementById('mf-bucket').value;
+  const qty = Number(document.getElementById('mf-qty').value || 0);
+  try {
+    await markAssetFaulty(asset.id, bucket, qty);
+    await logAudit('Mark asset faulty', `${asset.name} x${qty} (${bucket === 'onsite' ? 'on-site' : 'warehouse'})`);
+    invalidate('assets');
+    closeModal();
+    toast(`${qty} unit(s) marked Faulty`);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+registerModal('markFaulty', (data) => {
+  const asset = data.asset;
+  return `
+    <h3>Mark Faulty - ${esc(asset.name)}</h3>
+    <p class="small muted">Warehouse: ${asset.stock_available} available &middot; On Site: ${asset.stock_on_site} deployed</p>
+    <form onsubmit="App.saveMarkFaultyForm(event)">
+      <div class="grid2">
+        <div class="field"><label>From</label>
+          <select id="mf-bucket">
+            <option value="available" ${asset.stock_available > 0 ? '' : 'disabled'}>Warehouse (${asset.stock_available})</option>
+            <option value="onsite" ${asset.stock_on_site > 0 ? '' : 'disabled'}>On Site (${asset.stock_on_site})</option>
+          </select>
+        </div>
+        <div class="field"><label>Quantity Faulty</label><input id="mf-qty" type="number" min="1" value="1" required></div>
+      </div>
+      <p class="small muted">Only this many units move to Faulty status - the rest of the stock stays as-is.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-orange">Mark Faulty</button>
+      </div>
+    </form>
+  `;
+});
 
 export async function removeAsset(id) {
   if (!confirm('Delete this asset?')) return;
@@ -381,8 +427,8 @@ registerModal('deploy', (data) => {
       <div class="field"><label>Sub-Asset / Screen (optional)</label>
         <select id="deploy-screen">
           <option value="">-</option>
-          ${screens.map((s) => `<option value="${s.id}">${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('')}
         </select>
+        <p class="small muted" style="margin-top:4px;">Populated once you type a Destination Location above.</p>
       </div>
       <div class="field"><label>Quantity to Deploy</label><input id="deploy-qty" type="number" min="1" max="${data.asset.stock_available}" value="1" required></div>
       <div class="modal-actions">
