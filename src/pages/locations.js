@@ -83,17 +83,57 @@ export function renderLocations() {
         ${canAdd('locations') ? `<button class="btn-sm" onclick="App.openBulkImport('locations')">Bulk Import</button>` : ''}
         ${canEdit('locations') ? `<button class="btn-sm" onclick="App.openCombineLocationsModal()">+ Combine Locations</button>` : ''}
         ${canAdd('locations') ? `<button class="btn-sm" onclick="App.openUnassignedAssetsModal()">Unassigned Assets</button>` : ''}
+        ${canAdd('locations') ? `<button class="btn-sm" onclick="App.openBulkAddLocationsModal()">+ Bulk Add Locations</button>` : ''}
         ${canAdd('locations') ? `<button class="btn btn-orange" onclick="App.editLocation(null)">+ Add Location</button>` : ''}
       </div>
     </div>
+    ${view === 'list' ? renderLocationSelectionBanner() : ''}
     ${body}
   `;
+}
+
+function renderLocationSelectionBanner() {
+  const count = (STATE.locSelectedIds || []).length;
+  if (!count) return '';
+  return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+    <span><b>${count}</b> location${count === 1 ? '' : 's'} selected</span>
+    <div style="display:flex;gap:8px;">
+      ${canDelete('locations') ? `<button class="btn-sm" style="color:#c0392b;" onclick="App.bulkDeleteLocations()">Delete Selected</button>` : ''}
+      <button class="btn-sm" onclick="App.clearLocationSelection()">Clear Selection</button>
+    </div>
+  </div>`;
 }
 
 export function setLocationView(v) { setState({ locationView: v }); }
 export function setLocationEmirateFilter(v) { setState({ locationEmirateFilter: v }); }
 export function setLocationChainFilter(v) { setState({ locationChainFilter: v }); }
 export function setLocationSearch(v) { setState({ locationSearch: v }); }
+
+// -------------------- bulk selection (List view) --------------------
+export function toggleLocationSelection(id, checked) {
+  const cur = new Set(STATE.locSelectedIds || []);
+  if (checked) cur.add(id); else cur.delete(id);
+  setState({ locSelectedIds: [...cur] });
+}
+export function toggleLocationSelectGroup(ids, checked) {
+  const cur = new Set(STATE.locSelectedIds || []);
+  ids.forEach((id) => { if (checked) cur.add(id); else cur.delete(id); });
+  setState({ locSelectedIds: [...cur] });
+}
+export function clearLocationSelection() { setState({ locSelectedIds: [] }); }
+
+export async function bulkDeleteLocations() {
+  const ids = STATE.locSelectedIds || [];
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} location(s)? This cannot be undone.`)) return;
+  try {
+    for (const id of ids) await deleteLocation(id);
+    await logAudit('Bulk delete locations', `${ids.length} location(s)`);
+    invalidate('locationsPage');
+    setState({ locSelectedIds: [] });
+    toast(`${ids.length} location(s) deleted`);
+  } catch (e) { toast(e.message, 'error'); }
+}
 
 // -------------------- charts --------------------
 function renderCharts(visible, allLocations, assetInventory) {
@@ -213,6 +253,8 @@ function renderHeatmapView(filtered, allLocations, assetInventory) {
 
 // -------------------- list view --------------------
 function renderListView(filtered, allLocations, assetInventory) {
+  const bulkOk = canDelete('locations');
+  const selected = new Set(STATE.locSelectedIds || []);
   const grouped = {};
   for (const l of filtered) {
     const em = guessEmirate(l);
@@ -225,18 +267,24 @@ function renderListView(filtered, allLocations, assetInventory) {
       address: (l) => l.address || '',
       screens: (l) => locationScreenCount(l, allLocations, assetInventory),
     });
+    const groupIds = rows.map((l) => l.id);
+    const allGroupSelected = groupIds.length > 0 && groupIds.every((id) => selected.has(id));
     return `
       <details open class="card">
         <summary style="cursor:pointer;font-weight:700;">${esc(em)} (${grouped[em].length})</summary>
         <table style="margin-top:10px;">
-          <thead><tr>${sortTh('locationsList', 'name', 'Venue')}${sortTh('locationsList', 'address', 'Address')}${sortTh('locationsList', 'screens', 'Screens')}<th></th></tr></thead>
+          <thead><tr>${bulkOk ? `<th style="width:28px;"><input type="checkbox" ${allGroupSelected ? 'checked' : ''} onchange="App.toggleLocationSelectGroup(${JSON.stringify(groupIds)}, this.checked)" title="Select all in ${esc(em)}"></th>` : ''}${sortTh('locationsList', 'name', 'Venue')}${sortTh('locationsList', 'address', 'Address')}${sortTh('locationsList', 'screens', 'Screens')}<th></th></tr></thead>
           <tbody>
             ${rows.map((l) => `
               <tr>
+                ${bulkOk ? `<td><input type="checkbox" ${selected.has(l.id) ? 'checked' : ''} onchange="App.toggleLocationSelection('${l.id}', this.checked)"></td>` : ''}
                 <td>${esc(l.name)}</td>
                 <td>${esc(l.address || '-')}</td>
                 <td class="tright">${locationScreenCount(l, allLocations, assetInventory)}</td>
-                <td>${canEdit('locations') ? `<button class="btn-sm" onclick="App.editLocation('${l.id}')">Edit</button>` : ''}</td>
+                <td>
+                  ${canEdit('locations') ? `<button class="btn-sm" onclick="App.editLocation('${l.id}')">Edit</button>` : ''}
+                  ${canDelete('locations') ? `<button class="btn-sm" onclick="App.removeLocation('${l.id}')">Delete</button>` : ''}
+                </td>
               </tr>
             `).join('')}
           </tbody>
@@ -347,6 +395,56 @@ registerModal('combineLocations', () => {
     </form>
   `;
 });
+
+// -------------------- bulk add --------------------
+export function openBulkAddLocationsModal() {
+  openModal('bulkAddLocations', {});
+}
+
+export async function saveBulkAddLocationsForm(event) {
+  event.preventDefault();
+  const names = document.getElementById('bal-names').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  const type = document.getElementById('bal-type').value;
+  const emirate = document.getElementById('bal-emirate').value;
+  const chain = document.getElementById('bal-chain').value.trim();
+  if (!names.length) { toast('Enter at least one location name', 'error'); return; }
+  try {
+    for (const name of [...new Set(names)]) {
+      await saveLocation({ name, type, emirate, chain });
+    }
+    await logAudit('Bulk add locations', `${names.length} location(s)`);
+    invalidate('locationsPage');
+    closeModal();
+    toast(`${names.length} location(s) added`);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+registerModal('bulkAddLocations', () => `
+  <h3>Bulk Add Locations</h3>
+  <p class="small muted">One location name per line. Type/Emirate/Chain below apply to every line - edit individually afterward if they differ.</p>
+  <form onsubmit="App.saveBulkAddLocationsForm(event)">
+    <div class="field"><label>Location Names</label><textarea id="bal-names" rows="8" placeholder="Mall of the Emirates&#10;Dubai Mall&#10;City Centre Deira" required></textarea></div>
+    <div class="grid2">
+      <div class="field"><label>Type</label>
+        <select id="bal-type">
+          <option value="Planned">Planned</option>
+          <option value="Installed">Installed</option>
+        </select>
+      </div>
+      <div class="field"><label>Emirate</label>
+        <select id="bal-emirate">
+          <option value="">-</option>
+          ${EMIRATES_ORDER.filter((e) => e !== 'Unspecified').map((e) => `<option value="${e}">${e}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>Chain (optional)</label><input id="bal-chain"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+      <button type="submit" class="btn btn-orange">Add All</button>
+    </div>
+  </form>
+`);
 
 // -------------------- unassigned assets --------------------
 function unassignedAssetGroups(assetInventory, locations) {

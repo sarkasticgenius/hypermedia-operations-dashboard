@@ -235,12 +235,26 @@ function fieldDiffHtml(changes) {
   return changes.map(([k, oldVal, newVal]) => `<div><b>${esc(k)}:</b> ${oldVal ? `<span class="muted">${esc(oldVal)}</span> &rarr; ` : ''}<span style="color:#c0392b;">${esc(newVal)}</span></div>`).join('');
 }
 
+// Ticks/unticks every checkbox in one section (inserts or updates) at once - the header checkbox
+// in each table. Direct DOM, no re-render, so it doesn't disturb anything else on the modal.
+export function toggleImportSection(kind, checked) {
+  document.querySelectorAll(`[data-import-${kind}]`).forEach((el) => { el.checked = checked; });
+}
+
+// One click to select (or clear) every proposed change across both sections at once - the bulk
+// approval control, on top of the per-row checkboxes for fine-grained review.
+export function toggleImportAll(checked) {
+  toggleImportSection('insert', checked);
+  toggleImportSection('update', checked);
+}
+
 registerModal('bulkImport', (data) => {
   const config = IMPORT_CONFIGS[data.entity];
   const isStaged = !!config.matchKey;
 
   if (isStaged && data.inserts) {
     const { inserts, updates, skipped } = data;
+    const total = inserts.length + updates.length;
     const insertRows = inserts.map((r, i) => `
       <tr><td><input type="checkbox" data-import-insert="${i}" checked></td><td>${esc(r.label)}</td></tr>
     `).join('') || `<tr><td colspan="2"><div class="empty">None</div></td></tr>`;
@@ -250,17 +264,24 @@ registerModal('bulkImport', (data) => {
     return `
       <h3>Bulk Import - ${esc(config.label)}: Review Changes</h3>
       <p class="small muted">Parsed and matched in memory only - nothing has been saved yet. Uncheck any row you don't want, then approve.${skipped ? ` ${skipped} row(s) skipped (missing required field).` : ''}</p>
+      <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+        <span>${total} change${total === 1 ? '' : 's'} proposed</span>
+        <span style="display:flex;gap:8px;">
+          <button type="button" class="btn-sm" onclick="App.toggleImportAll(true)">Select All</button>
+          <button type="button" class="btn-sm" onclick="App.toggleImportAll(false)">Deselect All</button>
+        </span>
+      </div>
       ${inserts.length ? `
         <h4 style="margin:14px 0 6px;">${inserts.length} New Row(s)</h4>
-        <table><thead><tr><th style="width:28px;"></th><th>Name</th></tr></thead><tbody>${insertRows}</tbody></table>
+        <table><thead><tr><th style="width:28px;"><input type="checkbox" checked onchange="App.toggleImportSection('insert', this.checked)"></th><th>Name</th></tr></thead><tbody>${insertRows}</tbody></table>
       ` : ''}
       ${updates.length ? `
         <h4 style="margin:14px 0 6px;">${updates.length} Existing Row(s) With Changes</h4>
-        <table><thead><tr><th style="width:28px;"></th><th>Match</th><th>Changed Fields (new value)</th></tr></thead><tbody>${updateRows}</tbody></table>
+        <table><thead><tr><th style="width:28px;"><input type="checkbox" checked onchange="App.toggleImportSection('update', this.checked)"></th><th>Match</th><th>Changed Fields (new value)</th></tr></thead><tbody>${updateRows}</tbody></table>
       ` : ''}
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
-        <button type="button" class="btn btn-orange" onclick="App.approveBulkImport('${data.entity}')">Approve &amp; Import</button>
+        <button type="button" class="btn btn-orange" onclick="App.approveBulkImport('${data.entity}')">Approve &amp; Import Selected</button>
       </div>
     `;
   }
