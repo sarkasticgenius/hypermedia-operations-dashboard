@@ -20,6 +20,7 @@ import * as adminPage from './pages/admin.js';
 import * as settingsPage from './pages/settings.js';
 import * as networkPanelsPage from './pages/networkPanels.js';
 import * as bulkImportPage from './pages/bulkImport.js';
+import * as recycleBinPage from './pages/recycleBin.js';
 import { initContractorPortal, renderContractorPortal, bindContractorPortalForm } from './pages/contractorPortal.js';
 import { renderShell, goToPage, doLogout, goToDashGroup, goToDashLink, toggleNavExpand, stopImpersonating } from './shell.js';
 import { registerPage, renderPage } from './router.js';
@@ -60,6 +61,7 @@ registerPage('staticCampaigns', staticCampaignsPage.renderStaticCampaigns);
 registerPage('dashboards', dashboardsPage.renderDashboards);
 registerPage('admin', adminPage.renderAdmin);
 registerPage('settings', settingsPage.renderSettings);
+registerPage('recycleBin', recycleBinPage.renderRecycleBin);
 registerPage('broadsignPanel', networkPanelsPage.renderBroadsignPanel);
 registerPage('grassfishPanel', networkPanelsPage.renderGrassfishPanel);
 registerPage('iotPanel', networkPanelsPage.renderIotPanel);
@@ -97,6 +99,7 @@ window.App = {
   ...settingsPage,
   ...networkPanelsPage,
   ...bulkImportPage,
+  ...recycleBinPage,
 };
 
 function rootRender() {

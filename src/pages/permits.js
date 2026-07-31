@@ -67,7 +67,7 @@ export function editPermit(id) {
 }
 
 export async function removePermit(id) {
-  if (!confirm('Delete this permit?')) return;
+  if (!confirm('Move this permit to the Recycle Bin?')) return;
   try {
     await deletePermit(id);
     await logAudit('Delete permit', id);

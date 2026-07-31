@@ -350,7 +350,7 @@ registerModal('markFaulty', (data) => {
 });
 
 export async function removeAsset(id) {
-  if (!confirm('Delete this asset?')) return;
+  if (!confirm('Move this asset to the Recycle Bin?')) return;
   try {
     await deleteAsset(id);
     await logAudit('Delete asset', id);

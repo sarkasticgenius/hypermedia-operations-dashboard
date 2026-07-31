@@ -1,7 +1,8 @@
 import { supabase } from '../supabaseClient.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listContractors() {
-  const { data, error } = await supabase.from('contractors').select('*').order('name');
+  const { data, error } = await supabase.from('contractors').select('*').is('deleted_at', null).order('name');
   if (error) throw error;
   return data;
 }
@@ -21,7 +22,7 @@ export async function saveContractor(row) {
   return data;
 }
 
-export async function deleteContractor(id) {
-  const { error } = await supabase.from('contractors').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteContractor(id) { return softDeleteRow('contractors', id); }
+export async function restoreContractor(id) { return restoreRow('contractors', id); }
+export async function permanentlyDeleteContractor(id) { return permanentlyDeleteRow('contractors', id); }
+export async function listDeletedContractors() { return listDeletedRows('contractors'); }

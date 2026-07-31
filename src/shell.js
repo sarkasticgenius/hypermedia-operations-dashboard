@@ -33,7 +33,7 @@ const NAV_ICONS = {
   'Procurement & Delivery': '🚚', Locations: '📍', Permits: '📄', 'Metro PIC': '🚇',
   Tickets: '🎫', 'SIM Cards': '📶', 'Static Campaigns': '🖼️',
   'Digital Campaigns Panel': '📢', 'pDOOH Campaign Panel': '📺', 'Maintenance Panel': '🛠️',
-  Administration: '🛡️', Settings: '⚙️', 'My Account': '👤',
+  Administration: '🛡️', Settings: '⚙️', 'My Account': '👤', 'Recycle Bin': '🗑️',
 };
 function navIcon(label) {
   const icon = NAV_ICONS[label];
@@ -121,7 +121,7 @@ function renderSidebar(allSections) {
     : '';
 
   const bottomItems = NAV_ITEMS_BOTTOM.map((n) => navItem(n.page, n.label)).join('');
-  const adminLinks = admin ? navItem('admin', 'Administration') + navItem('settings', 'Settings') : '';
+  const adminLinks = admin ? navItem('admin', 'Administration') + navItem('settings', 'Settings') + navItem('recycleBin', 'Recycle Bin') : '';
 
   return `
     <div class="sidebar">
@@ -172,6 +172,7 @@ const PAGE_TITLES = {
   dashboards: 'Maintenance Panel',
   admin: 'Administration',
   settings: 'Settings',
+  recycleBin: 'Recycle Bin',
   account: 'My Account',
 };
 

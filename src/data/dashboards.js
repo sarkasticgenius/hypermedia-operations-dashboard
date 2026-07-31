@@ -1,4 +1,5 @@
 import { supabase } from '../supabaseClient.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listDashboardSections() {
   const { data, error } = await supabase
@@ -6,7 +7,9 @@ export async function listDashboardSections() {
     .select('*, dashboards(*)')
     .order('sort_order');
   if (error) throw error;
-  return data;
+  // dashboards(*) is an embedded resource - filtering it inline via PostgREST's dotted-path
+  // syntax isn't worth the fragility here, so soft-deleted links are just dropped client-side.
+  return data.map((s) => ({ ...s, dashboards: (s.dashboards || []).filter((d) => !d.deleted_at) }));
 }
 
 export async function addDashboardSection(name, navGroup) {
@@ -39,7 +42,7 @@ export async function saveDashboardLink(id, name, url) {
   if (error) throw error;
 }
 
-export async function deleteDashboardLink(id) {
-  const { error } = await supabase.from('dashboards').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteDashboardLink(id) { return softDeleteRow('dashboards', id); }
+export async function restoreDashboardLink(id) { return restoreRow('dashboards', id); }
+export async function permanentlyDeleteDashboardLink(id) { return permanentlyDeleteRow('dashboards', id); }
+export async function listDeletedDashboardLinks() { return listDeletedRows('dashboards'); }

@@ -1,5 +1,6 @@
 import { supabase } from '../supabaseClient.js';
 import { ensureNetwork } from './networks.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 const PAGE_SIZE = 1000;
 
@@ -12,6 +13,7 @@ export async function listAssetInventory() {
     const { data, error } = await supabase
       .from('asset_inventory')
       .select('*, asset_inventory_networks(network_id, networks(name))')
+      .is('deleted_at', null)
       .order('name')
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
@@ -79,7 +81,7 @@ export async function bulkPatchAssetInventory(ids, patch) {
   if (error) throw error;
 }
 
-export async function deleteAssetInventory(id) {
-  const { error } = await supabase.from('asset_inventory').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteAssetInventory(id) { return softDeleteRow('asset_inventory', id); }
+export async function restoreAssetInventory(id) { return restoreRow('asset_inventory', id); }
+export async function permanentlyDeleteAssetInventory(id) { return permanentlyDeleteRow('asset_inventory', id); }
+export async function listDeletedAssetInventory() { return listDeletedRows('asset_inventory'); }

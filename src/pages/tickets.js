@@ -363,7 +363,7 @@ export function editTicket(id) {
 }
 
 export async function removeTicket(id) {
-  if (!confirm('Delete this ticket?')) return;
+  if (!confirm('Move this ticket to the Recycle Bin?')) return;
   try {
     await deleteTicket(id);
     await logAudit('Delete ticket', id);

@@ -107,7 +107,7 @@ export async function viewDeliveryNote(path) {
 }
 
 export async function removeOrder(id) {
-  if (!confirm('Delete this order?')) return;
+  if (!confirm('Move this order to the Recycle Bin?')) return;
   try {
     await deleteOrder(id);
     await logAudit('Delete order', id);

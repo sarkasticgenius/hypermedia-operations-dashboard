@@ -1,7 +1,8 @@
 import { supabase } from '../supabaseClient.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listAssets() {
-  const { data, error } = await supabase.from('assets').select('*, asset_locations(*)').order('name').range(0, 9999);
+  const { data, error } = await supabase.from('assets').select('*, asset_locations(*)').is('deleted_at', null).order('name').range(0, 9999);
   if (error) throw error;
   return data;
 }
@@ -25,10 +26,10 @@ export async function saveAsset(row) {
   return data;
 }
 
-export async function deleteAsset(id) {
-  const { error } = await supabase.from('assets').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteAsset(id) { return softDeleteRow('assets', id); }
+export async function restoreAsset(id) { return restoreRow('assets', id); }
+export async function permanentlyDeleteAsset(id) { return permanentlyDeleteRow('assets', id); }
+export async function listDeletedAssets() { return listDeletedRows('assets'); }
 
 export async function setAssetLocations(assetId, breakdown) {
   await supabase.from('asset_locations').delete().eq('asset_id', assetId);

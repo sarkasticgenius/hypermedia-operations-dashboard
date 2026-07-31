@@ -159,7 +159,7 @@ export function editSimCard(id) {
 }
 
 export async function removeSimCard(id) {
-  if (!confirm('Delete this SIM card?')) return;
+  if (!confirm('Move this SIM card to the Recycle Bin?')) return;
   try {
     await deleteSimCard(id);
     await logAudit('Delete SIM card', id);

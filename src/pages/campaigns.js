@@ -65,7 +65,7 @@ export function editCampaign(id) {
 }
 
 export async function removeCampaign(id) {
-  if (!confirm('Delete this campaign?')) return;
+  if (!confirm('Move this campaign to the Recycle Bin?')) return;
   try {
     await deleteCampaign(id);
     await logAudit('Delete campaign', id);

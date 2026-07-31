@@ -1,7 +1,8 @@
 import { supabase } from '../supabaseClient.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listSimCards() {
-  const { data, error } = await supabase.from('sim_cards').select('*').order('sim_number').range(0, 9999);
+  const { data, error } = await supabase.from('sim_cards').select('*').is('deleted_at', null).order('sim_number').range(0, 9999);
   if (error) throw error;
   return data;
 }
@@ -50,10 +51,10 @@ export async function deploySimCard(id, { locationId, locationName, assetInvId, 
   return { ...data, autoReturned };
 }
 
-export async function deleteSimCard(id) {
-  const { error } = await supabase.from('sim_cards').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteSimCard(id) { return softDeleteRow('sim_cards', id); }
+export async function restoreSimCard(id) { return restoreRow('sim_cards', id); }
+export async function permanentlyDeleteSimCard(id) { return permanentlyDeleteRow('sim_cards', id); }
+export async function listDeletedSimCards() { return listDeletedRows('sim_cards'); }
 
 export async function returnSimToStock(id) {
   const { error } = await supabase.from('sim_cards').update({

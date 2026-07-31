@@ -1,10 +1,12 @@
 import { supabase } from '../supabaseClient.js';
 import { uploadAttachment } from '../lib/storage.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listMetroPics() {
   const { data, error } = await supabase
     .from('metro_pics')
     .select('*, metro_pic_renewals(*)')
+    .is('deleted_at', null)
     .order('validity_end');
   if (error) throw error;
   return data;
@@ -58,7 +60,7 @@ export async function renewMetroPic(id, current, next, renewedBy) {
   return data;
 }
 
-export async function deleteMetroPic(id) {
-  const { error } = await supabase.from('metro_pics').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteMetroPic(id) { return softDeleteRow('metro_pics', id); }
+export async function restoreMetroPic(id) { return restoreRow('metro_pics', id); }
+export async function permanentlyDeleteMetroPic(id) { return permanentlyDeleteRow('metro_pics', id); }
+export async function listDeletedMetroPics() { return listDeletedRows('metro_pics'); }

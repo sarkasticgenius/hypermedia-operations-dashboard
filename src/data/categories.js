@@ -1,7 +1,8 @@
 import { supabase } from '../supabaseClient.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listCategories() {
-  const { data, error } = await supabase.from('categories').select('*').order('name');
+  const { data, error } = await supabase.from('categories').select('*').is('deleted_at', null).order('name');
   if (error) throw error;
   return data;
 }
@@ -32,7 +33,7 @@ export async function updateCategory(id, name, isRental) {
   return data;
 }
 
-export async function deleteCategory(id) {
-  const { error } = await supabase.from('categories').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteCategory(id) { return softDeleteRow('categories', id); }
+export async function restoreCategory(id) { return restoreRow('categories', id); }
+export async function permanentlyDeleteCategory(id) { return permanentlyDeleteRow('categories', id); }
+export async function listDeletedCategories() { return listDeletedRows('categories'); }

@@ -156,7 +156,7 @@ export function editStaticCampaign(id) {
 }
 
 export async function removeStaticCampaign(id) {
-  if (!confirm('Delete this static campaign?')) return;
+  if (!confirm('Move this static campaign to the Recycle Bin?')) return;
   try {
     await deleteStaticCampaign(id);
     await logAudit('Delete static campaign', id);
@@ -232,7 +232,7 @@ export function editStaticMachine(id) {
 }
 
 export async function removeStaticMachine(id) {
-  if (!confirm('Delete this machine?')) return;
+  if (!confirm('Move this machine to the Recycle Bin?')) return;
   try {
     await deleteStaticMachine(id);
     await logAudit('Delete static machine', id);
@@ -304,7 +304,7 @@ export function editStaticBooking(id) {
 }
 
 export async function removeStaticBooking(id) {
-  if (!confirm('Delete this booking?')) return;
+  if (!confirm('Move this booking to the Recycle Bin?')) return;
   try {
     await deleteStaticBooking(id);
     await logAudit('Delete static booking', id);

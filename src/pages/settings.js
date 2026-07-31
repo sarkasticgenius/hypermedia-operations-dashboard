@@ -81,7 +81,7 @@ export async function saveCategoryForm(event) {
 }
 
 export async function removeCategory(id) {
-  if (!confirm('Delete this category?')) return;
+  if (!confirm('Move this category to the Recycle Bin?')) return;
   try {
     await deleteCategory(id);
     await logAudit('Delete category', id);
@@ -168,8 +168,8 @@ export async function saveContractorForm(event) {
 export async function removeContractorRow(id, screenCount) {
   const count = Number(screenCount) || 0;
   const msg = count > 0
-    ? `This contractor is assigned to ${count} screen(s) in Asset Inventory - deleting will clear that assignment on all of them. Continue?`
-    : 'Delete this contractor?';
+    ? `This contractor is assigned to ${count} screen(s) in Asset Inventory - moving it to the Recycle Bin will clear that assignment on all of them. Continue?`
+    : 'Move this contractor to the Recycle Bin?';
   if (!confirm(msg)) return;
   try {
     await deleteContractor(id);
@@ -250,8 +250,8 @@ export async function removeNetworkRow(id) {
   try {
     const count = await countNetworkUsage(id);
     const msg = count > 0
-      ? `${count} screen(s) in Asset Inventory are tagged with this network - deleting will remove that tag from all of them. Continue?`
-      : 'Delete this network?';
+      ? `${count} screen(s) in Asset Inventory are tagged with this network - moving it to the Recycle Bin will remove that tag from all of them. Continue?`
+      : 'Move this network to the Recycle Bin?';
     if (!confirm(msg)) return;
     await deleteNetwork(id);
     await logAudit('Delete network', `${id} (${count} screens untagged)`);

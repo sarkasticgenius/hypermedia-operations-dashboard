@@ -72,7 +72,7 @@ export function renewMetroPicRow(id) {
 }
 
 export async function removeMetroPic(id) {
-  if (!confirm('Delete this PIC record?')) return;
+  if (!confirm('Move this PIC record to the Recycle Bin?')) return;
   try {
     await deleteMetroPic(id);
     await logAudit('Delete Metro PIC', id);

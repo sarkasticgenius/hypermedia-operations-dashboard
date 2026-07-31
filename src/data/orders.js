@@ -1,8 +1,9 @@
 import { supabase } from '../supabaseClient.js';
 import { uploadAttachment } from '../lib/storage.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listOrders() {
-  const { data, error } = await supabase.from('orders').select('*').order('order_date', { ascending: false });
+  const { data, error } = await supabase.from('orders').select('*').is('deleted_at', null).order('order_date', { ascending: false });
   if (error) throw error;
   return data;
 }
@@ -29,10 +30,10 @@ export async function saveOrder(row, deliveryNoteFile) {
   return data;
 }
 
-export async function deleteOrder(id) {
-  const { error } = await supabase.from('orders').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteOrder(id) { return softDeleteRow('orders', id); }
+export async function restoreOrder(id) { return restoreRow('orders', id); }
+export async function permanentlyDeleteOrder(id) { return permanentlyDeleteRow('orders', id); }
+export async function listDeletedOrders() { return listDeletedRows('orders'); }
 
 // Marks an order Delivered and rolls the received quantity into the linked asset's warehouse
 // stock - matches the original's confirmReceive() (qty received bumps asset.stockAvailable; the

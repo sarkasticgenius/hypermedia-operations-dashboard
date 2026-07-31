@@ -1,7 +1,8 @@
 import { supabase } from '../supabaseClient.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listNetworks() {
-  const { data, error } = await supabase.from('networks').select('*').order('name');
+  const { data, error } = await supabase.from('networks').select('*').is('deleted_at', null).order('name');
   if (error) throw error;
   return data;
 }
@@ -9,7 +10,7 @@ export async function listNetworks() {
 export async function ensureNetwork(name) {
   const trimmed = String(name || '').trim();
   if (!trimmed) return null;
-  const { data: existing } = await supabase.from('networks').select('*').ilike('name', trimmed).maybeSingle();
+  const { data: existing } = await supabase.from('networks').select('*').ilike('name', trimmed).is('deleted_at', null).maybeSingle();
   if (existing) return existing;
   const { data, error } = await supabase.from('networks').insert({ name: trimmed }).select().single();
   if (error) throw error;
@@ -30,7 +31,7 @@ export async function countNetworkUsage(id) {
   return count || 0;
 }
 
-export async function deleteNetwork(id) {
-  const { error } = await supabase.from('networks').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteNetwork(id) { return softDeleteRow('networks', id); }
+export async function restoreNetwork(id) { return restoreRow('networks', id); }
+export async function permanentlyDeleteNetwork(id) { return permanentlyDeleteRow('networks', id); }
+export async function listDeletedNetworks() { return listDeletedRows('networks'); }

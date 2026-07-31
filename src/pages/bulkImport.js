@@ -1,7 +1,7 @@
 import { supabase } from '../supabaseClient.js';
 import { STATE, openModal, closeModal, toast, invalidate } from '../state.js';
 import { registerModal } from '../modals.js';
-import { parseSpreadsheetFile, mapImportRow } from '../lib/csv.js';
+import { parseSpreadsheetFile, mapImportRow, parseImportDate } from '../lib/csv.js';
 import { saveAsset } from '../data/assets.js';
 import { saveLocation } from '../data/locations.js';
 import { saveCampaign } from '../data/campaigns.js';
@@ -34,6 +34,7 @@ const IMPORT_CONFIGS = {
     },
     required: 'name',
     transform: (m) => ({ ...m, status: m.status || 'Spare' }),
+    dateFields: ['warrantyExpiry', 'dateOfRent'],
     save: saveAsset,
     dataKey: 'assets',
   },
@@ -53,6 +54,7 @@ const IMPORT_CONFIGS = {
     },
     required: 'name',
     transform: (m) => ({ ...m, status: 'Scheduled' }),
+    dateFields: ['startDate', 'endDate'],
     save: saveCampaign,
     dataKey: 'campaigns',
   },
@@ -64,6 +66,7 @@ const IMPORT_CONFIGS = {
     },
     required: 'title',
     transform: (m) => m,
+    dateFields: ['issueDate', 'expiryDate'],
     save: savePermit,
     dataKey: 'permits',
   },
@@ -77,6 +80,7 @@ const IMPORT_CONFIGS = {
     },
     required: 'station',
     transform: (m) => m,
+    dateFields: ['validityStart', 'validityEnd'],
     save: saveMetroPic,
     dataKey: 'metroPics',
   },
@@ -143,6 +147,21 @@ export function openBulkImport(entity) {
   openModal('bulkImport', { entity });
 }
 
+// Normalizes every field listed in config.dateFields to ISO before it ever reaches Supabase -
+// see parseImportDate() in lib/csv.js for why this is needed. Unparseable values are dropped
+// (field left blank) rather than sent through, since garbage would 500 the whole row.
+function normalizeImportDates(mapped, dateFields) {
+  if (dateFields) {
+    for (const f of dateFields) {
+      if (mapped[f] !== undefined) {
+        const iso = parseImportDate(mapped[f]);
+        if (iso) mapped[f] = iso; else delete mapped[f];
+      }
+    }
+  }
+  return mapped;
+}
+
 // Entities where an uploaded row can land on an *existing* record (matchKey configs) get a
 // staged review: the file is parsed and matched entirely in memory - nothing touches the real
 // tables - then the admin sees exactly what would change and approves or cancels it. This is the
@@ -163,7 +182,7 @@ export async function runBulkImportPreview(event, entity) {
     const updates = [];
     let skipped = 0;
     for (const raw of rows) {
-      const mapped = config.transform(mapImportRow(raw, config.aliases));
+      const mapped = normalizeImportDates(config.transform(mapImportRow(raw, config.aliases)), config.dateFields);
       if (!mapped[config.required]) { skipped++; continue; }
       const match = config.matchKey(mapped, existing);
       if (match) {
@@ -231,7 +250,7 @@ export async function runBulkImport(event, entity) {
     const rows = await parseSpreadsheetFile(file);
     let inserted = 0;
     for (const raw of rows) {
-      const mapped = config.transform(mapImportRow(raw, config.aliases));
+      const mapped = normalizeImportDates(config.transform(mapImportRow(raw, config.aliases)), config.dateFields);
       if (!mapped[config.required]) continue;
       await config.save(mapped);
       inserted++;

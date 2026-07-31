@@ -125,7 +125,7 @@ export function clearLocationSelection() { setState({ locSelectedIds: [] }); }
 export async function bulkDeleteLocations() {
   const ids = STATE.locSelectedIds || [];
   if (!ids.length) return;
-  if (!confirm(`Delete ${ids.length} location(s)? This cannot be undone.`)) return;
+  if (!confirm(`Move ${ids.length} location(s) to the Recycle Bin?`)) return;
   try {
     for (const id of ids) await deleteLocation(id);
     await logAudit('Bulk delete locations', `${ids.length} location(s)`);
@@ -533,7 +533,7 @@ export function editLocation(id) {
 }
 
 export async function removeLocation(id) {
-  if (!confirm('Delete this location?')) return;
+  if (!confirm('Move this location to the Recycle Bin?')) return;
   try {
     await deleteLocation(id);
     await logAudit('Delete location', id);

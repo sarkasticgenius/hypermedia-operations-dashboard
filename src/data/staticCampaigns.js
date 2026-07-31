@@ -1,10 +1,12 @@
 import { supabase } from '../supabaseClient.js';
 import { uploadAttachment } from '../lib/storage.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listStaticCampaigns() {
   const { data, error } = await supabase
     .from('static_campaigns')
     .select('*, static_installations(*)')
+    .is('deleted_at', null)
     .order('start_date', { ascending: false });
   if (error) throw error;
   return data;
@@ -26,10 +28,10 @@ export async function saveStaticCampaign(row) {
   return data;
 }
 
-export async function deleteStaticCampaign(id) {
-  const { error } = await supabase.from('static_campaigns').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteStaticCampaign(id) { return softDeleteRow('static_campaigns', id); }
+export async function restoreStaticCampaign(id) { return restoreRow('static_campaigns', id); }
+export async function permanentlyDeleteStaticCampaign(id) { return permanentlyDeleteRow('static_campaigns', id); }
+export async function listDeletedStaticCampaigns() { return listDeletedRows('static_campaigns'); }
 
 export async function saveInstallation(row, installFile, roadClosureFile) {
   const payload = {
@@ -63,7 +65,7 @@ export async function deleteInstallation(id) {
 }
 
 export async function listStaticMachines() {
-  const { data, error } = await supabase.from('static_machines').select('*').order('name');
+  const { data, error } = await supabase.from('static_machines').select('*').is('deleted_at', null).order('name');
   if (error) throw error;
   return data;
 }
@@ -80,13 +82,13 @@ export async function saveStaticMachine(row) {
   return data;
 }
 
-export async function deleteStaticMachine(id) {
-  const { error } = await supabase.from('static_machines').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteStaticMachine(id) { return softDeleteRow('static_machines', id); }
+export async function restoreStaticMachine(id) { return restoreRow('static_machines', id); }
+export async function permanentlyDeleteStaticMachine(id) { return permanentlyDeleteRow('static_machines', id); }
+export async function listDeletedStaticMachines() { return listDeletedRows('static_machines'); }
 
 export async function listStaticBookings() {
-  const { data, error } = await supabase.from('static_bookings').select('*').order('start_date');
+  const { data, error } = await supabase.from('static_bookings').select('*').is('deleted_at', null).order('start_date');
   if (error) throw error;
   return data;
 }
@@ -117,7 +119,7 @@ export async function saveStaticBooking(row) {
   return data;
 }
 
-export async function deleteStaticBooking(id) {
-  const { error } = await supabase.from('static_bookings').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteStaticBooking(id) { return softDeleteRow('static_bookings', id); }
+export async function restoreStaticBooking(id) { return restoreRow('static_bookings', id); }
+export async function permanentlyDeleteStaticBooking(id) { return permanentlyDeleteRow('static_bookings', id); }
+export async function listDeletedStaticBookings() { return listDeletedRows('static_bookings'); }

@@ -1,9 +1,11 @@
 import { supabase } from '../supabaseClient.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listLocations() {
   const { data, error } = await supabase
     .from('locations')
     .select('*, location_sub_assets(*)')
+    .is('deleted_at', null)
     .order('name')
     .range(0, 9999);
   if (error) throw error;
@@ -27,10 +29,10 @@ export async function saveLocation(row) {
   return data;
 }
 
-export async function deleteLocation(id) {
-  const { error } = await supabase.from('locations').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteLocation(id) { return softDeleteRow('locations', id); }
+export async function restoreLocation(id) { return restoreRow('locations', id); }
+export async function permanentlyDeleteLocation(id) { return permanentlyDeleteRow('locations', id); }
+export async function listDeletedLocations() { return listDeletedRows('locations'); }
 
 export async function saveSubAsset(row) {
   const payload = { location_id: row.locationId, name: row.name, status: row.status || 'Offline', notes: row.notes || null, source: row.source || null };

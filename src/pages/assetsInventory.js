@@ -214,7 +214,7 @@ export function clearAssetInvSelection() { setState({ aiSelectedIds: [] }); }
 export async function bulkDeleteAssetInv() {
   const ids = STATE.aiSelectedIds || [];
   if (!ids.length) return;
-  if (!confirm(`Delete ${ids.length} selected screen(s) from Asset Inventory? This cannot be undone.`)) return;
+  if (!confirm(`Move ${ids.length} selected screen(s) from Asset Inventory to the Recycle Bin?`)) return;
   try {
     await Promise.all(ids.map((id) => deleteAssetInventory(id)));
     await logAudit('Bulk-delete asset inventory items', `${ids.length} item(s)`);

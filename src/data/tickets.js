@@ -1,8 +1,9 @@
 import { supabase } from '../supabaseClient.js';
 import { uploadAttachment } from '../lib/storage.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listTickets() {
-  const { data, error } = await supabase.from('tickets').select('*').order('date_reported', { ascending: false }).range(0, 9999);
+  const { data, error } = await supabase.from('tickets').select('*').is('deleted_at', null).order('date_reported', { ascending: false }).range(0, 9999);
   if (error) throw error;
   return data;
 }
@@ -31,7 +32,7 @@ export async function saveTicket(row, photoFile) {
   return data;
 }
 
-export async function deleteTicket(id) {
-  const { error } = await supabase.from('tickets').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deleteTicket(id) { return softDeleteRow('tickets', id); }
+export async function restoreTicket(id) { return restoreRow('tickets', id); }
+export async function permanentlyDeleteTicket(id) { return permanentlyDeleteRow('tickets', id); }
+export async function listDeletedTickets() { return listDeletedRows('tickets'); }

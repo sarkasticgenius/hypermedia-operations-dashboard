@@ -65,7 +65,7 @@ export function editDashLink(id, sectionId) {
 }
 
 export async function removeDashLink(id) {
-  if (!confirm('Delete this dashboard link?')) return;
+  if (!confirm('Move this dashboard link to the Recycle Bin?')) return;
   try {
     await deleteDashboardLink(id);
     await logAudit('Delete dashboard link', id);

@@ -1,8 +1,9 @@
 import { supabase } from '../supabaseClient.js';
 import { uploadAttachment } from '../lib/storage.js';
+import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
 
 export async function listPermits() {
-  const { data, error } = await supabase.from('permits').select('*').order('expiry_date');
+  const { data, error } = await supabase.from('permits').select('*').is('deleted_at', null).order('expiry_date');
   if (error) throw error;
   return data;
 }
@@ -38,7 +39,7 @@ export async function savePermit(row, file) {
   return data;
 }
 
-export async function deletePermit(id) {
-  const { error } = await supabase.from('permits').delete().eq('id', id);
-  if (error) throw error;
-}
+export async function deletePermit(id) { return softDeleteRow('permits', id); }
+export async function restorePermit(id) { return restoreRow('permits', id); }
+export async function permanentlyDeletePermit(id) { return permanentlyDeleteRow('permits', id); }
+export async function listDeletedPermits() { return listDeletedRows('permits'); }

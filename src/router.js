@@ -22,6 +22,7 @@ export const PAGE_AREA = {
   dashboards: 'dashboards',
   admin: 'admin',
   settings: 'admin',
+  recycleBin: 'admin',
   account: null,
 };
 
