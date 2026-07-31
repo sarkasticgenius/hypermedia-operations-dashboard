@@ -6,6 +6,7 @@ import { saveAsset } from '../data/assets.js';
 import { saveLocation } from '../data/locations.js';
 import { saveCampaign } from '../data/campaigns.js';
 import { savePermit } from '../data/permits.js';
+import { saveMetroPic } from '../data/metroPics.js';
 import { saveSimCard, listSimCards } from '../data/simCards.js';
 import { saveAssetInventory, listAssetInventory } from '../data/assetsInventory.js';
 import { invalidateAssetInventoryCaches } from './assetsInventory.js';
@@ -65,6 +66,19 @@ const IMPORT_CONFIGS = {
     transform: (m) => m,
     save: savePermit,
     dataKey: 'permits',
+  },
+  metroPic: {
+    label: 'Metro PIC',
+    aliases: {
+      station: ['Company Name', 'Station', 'Station Name'], picName: ['PIC Name', 'Name'],
+      designation: ['Designation'], phone: ['Phone'], email: ['Email'],
+      validityStart: ['Validity Start'], validityEnd: ['Validity End'],
+      eidNumber: ['EID Number', 'Emirates ID Number'], notes: ['Notes'],
+    },
+    required: 'station',
+    transform: (m) => m,
+    save: saveMetroPic,
+    dataKey: 'metroPics',
   },
   simCards: {
     label: 'SIM Cards',

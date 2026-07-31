@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import { listCampaigns, saveCampaign, deleteCampaign } from '../data/campaigns.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, fmtMoney } from '../lib/format.js';
@@ -33,7 +33,7 @@ export function renderCampaigns() {
       <div class="tabs"><div class="tab active">All Campaigns (${campaigns.length})</div></div>
       <div class="toolbar-actions">
         ${canExportArea('campaigns') ? `<button class="btn-sm" onclick="App.exportCampaignsCsv()">Export CSV</button>` : ''}
-        ${canAdd('campaigns') ? `<button class="btn-sm" onclick="App.openBulkImport('campaigns')">Bulk Import</button>` : ''}
+        ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('campaigns')">Bulk Import</button>` : ''}
         ${canAdd('campaigns') ? `<button class="btn btn-orange" onclick="App.editCampaign(null)">+ New Campaign</button>` : ''}
       </div>
     </div>

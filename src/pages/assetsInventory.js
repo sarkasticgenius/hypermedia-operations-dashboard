@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import {
   listAssetInventory, saveAssetInventory, deleteAssetInventory, quickAddNetwork, bulkPatchAssetInventory,
 } from '../data/assetsInventory.js';
@@ -163,7 +163,7 @@ export function renderAssetsInventory() {
       <div class="toolbar-actions">
         ${exportOk ? `<button class="btn-sm" onclick="App.exportAssetInvCsv(false)" title="Every row, ignoring current search/filters">Download Full CSV</button>` : ''}
         ${exportOk ? `<button class="btn-sm" onclick="App.exportAssetInvCsv(true)" title="Just the rows matching your current search/filters">Download Filtered CSV (${list.length})</button>` : ''}
-        ${addOk ? `<button class="btn-sm" onclick="App.openBulkImport('assetsInventory')">Bulk Import</button>` : ''}
+        ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('assetsInventory')">Bulk Import</button>` : ''}
         ${addOk ? `<button class="btn btn-orange" onclick="App.editAssetInv(null)">+ Add Screen</button>` : ''}
       </div>
     </div>

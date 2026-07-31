@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import {
   listAssets, saveAsset, deleteAsset, deployAsset, quickSetAssetStatus, markAssetFaulty, listAssetAssignments,
 } from '../data/assets.js';
@@ -127,7 +127,7 @@ function renderInventoryView(data) {
       </div>
       <div class="toolbar-actions">
         ${canExportArea('assets') ? `<button class="btn-sm" onclick="App.exportAssetsCsv()">Export CSV</button>` : ''}
-        ${canAdd('assets') ? `<button class="btn-sm" onclick="App.openBulkImport('assets')">Bulk Import</button>` : ''}
+        ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('assets')">Bulk Import</button>` : ''}
         ${canAdd('assets') ? `<button class="btn btn-orange" onclick="App.editAsset(null)">+ Add Asset</button>` : ''}
       </div>
     </div>

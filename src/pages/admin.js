@@ -5,6 +5,7 @@ import { listUsers, createUser, updateUserProfile, updateUserPermissions, setUse
 import { listAuditLog } from '../data/auditLog.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
+import { startImpersonation } from '../impersonate.js';
 
 const TABS = [{ key: 'users', label: 'Users' }, { key: 'audit', label: 'Audit Log' }];
 
@@ -35,6 +36,7 @@ function renderUsersTab() {
         <td>
           <button class="btn-sm" onclick="App.editUser('${u.id}')">Edit</button>
           <button class="btn-sm" onclick="App.toggleUserActive('${u.id}', ${u.active})">${u.active ? 'Deactivate' : 'Activate'}</button>
+          ${u.id !== STATE.user?.id && u.active ? `<button class="btn-sm" onclick="App.impersonateUser('${u.id}')">Impersonate</button>` : ''}
         </td>
       </tr>
     `;
@@ -93,6 +95,14 @@ export async function toggleUserActive(id, currentlyActive) {
     invalidate('users');
     toast('User updated');
     setState({});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+export async function impersonateUser(id) {
+  if (!confirm("Impersonate this user? You'll see and use the app exactly as they do, with their permissions, until you return to your admin session.")) return;
+  try {
+    await startImpersonation(id);
+    toast('Now viewing as this user - use "Return to Admin" at the top to switch back');
   } catch (e) { toast(e.message, 'error'); }
 }
 

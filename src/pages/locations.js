@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import {
   listLocations, saveLocation, deleteLocation, setManualAssetInventoryIds, combineLocations,
 } from '../data/locations.js';
@@ -80,7 +80,7 @@ export function renderLocations() {
         ` : ''}
         <input id="loc-search" placeholder="Search locations..." value="${esc(STATE.locationSearch || '')}" oninput="App.setLocationSearch(this.value)">
         ${canExportArea('locations') ? `<button class="btn-sm" onclick="App.exportLocationsCsv()">Export CSV</button>` : ''}
-        ${canAdd('locations') ? `<button class="btn-sm" onclick="App.openBulkImport('locations')">Bulk Import</button>` : ''}
+        ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('locations')">Bulk Import</button>` : ''}
         ${canEdit('locations') ? `<button class="btn-sm" onclick="App.openCombineLocationsModal()">+ Combine Locations</button>` : ''}
         ${canAdd('locations') ? `<button class="btn-sm" onclick="App.openUnassignedAssetsModal()">Unassigned Assets</button>` : ''}
         ${canAdd('locations') ? `<button class="btn-sm" onclick="App.openBulkAddLocationsModal()">+ Bulk Add Locations</button>` : ''}

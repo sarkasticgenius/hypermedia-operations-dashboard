@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import { listPermits, savePermit, deletePermit, permitStatus } from '../data/permits.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate } from '../lib/format.js';
@@ -35,7 +35,7 @@ export function renderPermits() {
       <div class="tabs"><div class="tab active">All Permits (${permits.length})</div></div>
       <div class="toolbar-actions">
         ${canExportArea('permits') ? `<button class="btn-sm" onclick="App.exportPermitsCsv()">Export CSV</button>` : ''}
-        ${canAdd('permits') ? `<button class="btn-sm" onclick="App.openBulkImport('permits')">Bulk Import</button>` : ''}
+        ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('permits')">Bulk Import</button>` : ''}
         ${canAdd('permits') ? `<button class="btn btn-orange" onclick="App.editPermit(null)">+ Add Permit</button>` : ''}
       </div>
     </div>

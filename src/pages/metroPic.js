@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import { listMetroPics, saveMetroPic, deleteMetroPic, renewMetroPic } from '../data/metroPics.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, daysUntilInfo } from '../lib/format.js';
@@ -34,13 +34,14 @@ export function renderMetroPic() {
       <div class="tabs"><div class="tab active">All PICs (${pics.length})</div></div>
       <div class="toolbar-actions">
         ${canExportArea('metroPic') ? `<button class="btn-sm" onclick="App.exportMetroPicCsv()">Export CSV</button>` : ''}
+        ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('metroPic')">Bulk Import</button>` : ''}
         ${canAdd('metroPic') ? `<button class="btn btn-orange" onclick="App.editMetroPic(null)">+ Add PIC</button>` : ''}
       </div>
     </div>
     <div class="card">
       ${pics.length === 0 ? '<div class="empty">No Metro PICs yet.</div>' : `
         <table>
-          <thead><tr><th>Station</th><th>PIC Name</th><th>Phone</th><th>Valid Until</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Company Name</th><th>PIC Name</th><th>Phone</th><th>Valid Until</th><th>Status</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -51,7 +52,7 @@ export function renderMetroPic() {
 export function exportMetroPicCsv() {
   const pics = STATE.pageData.metroPics?.data || [];
   exportToCsv('metro-pic.csv', [
-    { label: 'Station', value: (m) => m.station }, { label: 'PIC Name', value: (m) => m.pic_name },
+    { label: 'Company Name', value: (m) => m.station }, { label: 'PIC Name', value: (m) => m.pic_name },
     { label: 'Designation', value: (m) => m.designation }, { label: 'Phone', value: (m) => m.phone },
     { label: 'Email', value: (m) => m.email }, { label: 'Validity Start', value: (m) => m.validity_start },
     { label: 'Validity End', value: (m) => m.validity_end }, { label: 'EID Number', value: (m) => m.eid_number },
@@ -137,7 +138,7 @@ registerModal('metroPic', (data) => `
   <h3>${data.id ? 'Edit' : 'Add'} Metro PIC</h3>
   <form onsubmit="App.saveMetroPicForm(event)">
     <input type="hidden" id="mp-id" value="${esc(data.id || '')}">
-    <div class="field"><label>Station</label><input id="mp-station" value="${esc(data.station || '')}" required></div>
+    <div class="field"><label>Company Name</label><input id="mp-station" value="${esc(data.station || '')}" required></div>
     <div class="grid2">
       <div class="field"><label>PIC Name</label><input id="mp-name" value="${esc(data.pic_name || '')}"></div>
       <div class="field"><label>Designation</label><input id="mp-designation" value="${esc(data.designation || '')}"></div>

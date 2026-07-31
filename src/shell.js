@@ -1,9 +1,10 @@
-import { STATE, setState, loadData } from './state.js';
+import { STATE, setState, loadData, toast } from './state.js';
 import { canViewPage } from './router.js';
 import { isAdmin, canView, logout } from './auth.js';
 import { listDashboardSections } from './data/dashboards.js';
 import { LOGO_IMG } from './logo.js';
 import { esc } from './lib/format.js';
+import { isImpersonating, impersonationAdminName, stopImpersonation } from './impersonate.js';
 
 // Display labels for the three dashboard_sections.nav_group values - shown both as the
 // expandable sidebar group label and as the Dashboards page's dynamic topbar title.
@@ -183,10 +184,21 @@ function pageTitle(allSections) {
   return PAGE_TITLES[STATE.page] || '';
 }
 
+function renderImpersonationBanner() {
+  if (!isImpersonating()) return '';
+  return `
+    <div style="background:#c0392b;color:#fff;padding:8px 16px;display:flex;align-items:center;justify-content:center;gap:14px;font-size:13px;font-weight:600;flex-wrap:wrap;">
+      <span>Impersonating <strong>${esc(STATE.user?.name || STATE.user?.username || '')}</strong> - signed in by ${esc(impersonationAdminName() || 'an admin')}</span>
+      <button class="btn-sm" style="background:#fff;color:#c0392b;border:none;" onclick="App.stopImpersonating()">Return to Admin</button>
+    </div>
+  `;
+}
+
 export function renderShell(innerHtml) {
   const allSections = loadData('dashboardSections', listDashboardSections) || [];
   const title = pageTitle(allSections);
   return `
+    ${renderImpersonationBanner()}
     <div class="shell">
       ${renderSidebar(allSections)}
       <div class="main">
@@ -198,6 +210,13 @@ export function renderShell(innerHtml) {
       </div>
     </div>
   `;
+}
+
+export async function stopImpersonating() {
+  try {
+    await stopImpersonation();
+    toast('Back to your admin session');
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 export function goToPage(page) {

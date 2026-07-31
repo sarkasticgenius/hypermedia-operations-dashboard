@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
+import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import {
   listSimCards, saveSimCard, deleteSimCard, deploySimCard, returnSimToStock, markMismatchResolved,
   simLocationDuplicateCounts, isDuplicateLocationSim,
@@ -97,7 +97,7 @@ export function renderSimCards() {
       <div class="toolbar-actions">
         <input id="sim-search" placeholder="Search SIM cards..." value="${esc(STATE.simSearch || '')}" oninput="App.setSimSearch(this.value)">
         ${canExportArea('simCards') ? `<button class="btn-sm" onclick="App.exportSimCardsCsv()">Export CSV</button>` : ''}
-        ${canAdd('simCards') ? `<button class="btn-sm" onclick="App.openBulkImport('simCards')">Bulk Import</button>` : ''}
+        ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('simCards')">Bulk Import</button>` : ''}
         ${canAdd('simCards') ? `<button class="btn btn-orange" onclick="App.editSimCard(null)">+ Add SIM</button>` : ''}
       </div>
     </div>

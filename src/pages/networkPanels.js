@@ -13,6 +13,8 @@ import { esc } from '../lib/format.js';
 // Top-of-page "last pulled" stat strip, shared by every network console page - shows when the
 // last sync ran and what it found, with a View Sync Log button for reviewing mismatches over
 // time (integration_sync_logs) instead of just the single most recent summary.
+// Admin-only - "pulled from inventory / matched" is integration-internal detail, not something a
+// team member needs (or should be able to use to infer inventory/API configuration details).
 function syncStatBar(c, settingKey, integration) {
   const lastSync = c.lastSync ? new Date(c.lastSync).toLocaleString() : 'Never';
   return `
@@ -24,6 +26,25 @@ function syncStatBar(c, settingKey, integration) {
     </div>
     <div style="margin:-4px 0 12px;">
       <button class="btn-sm" onclick="App.openSyncLogModal('${integration}')">View Sync Log</button>
+    </div>
+  `;
+}
+
+// Everyone (not just admins) gets a plain online/offline screen count - this is operational
+// status, not integration/API detail. Sums sourceStats() across every location with data for this
+// source; combined locations resolve their members internally so nothing double-counts.
+function onlineOfflineSummary(dataLocs, allLocations, source, healthyField) {
+  let offline = 0; let total = 0;
+  for (const l of dataLocs) {
+    const stats = sourceStats(l, allLocations, source, healthyField);
+    offline += stats.offline; total += stats.total;
+  }
+  const online = total - offline;
+  return `
+    <div class="kpi-row" style="margin-bottom:12px;">
+      <div class="kpi"><div class="label">Online</div><div class="value" style="color:#1f9d55;">${online}</div></div>
+      <div class="kpi"><div class="label">Offline</div><div class="value" style="color:#c0392b;">${offline}</div></div>
+      <div class="kpi"><div class="label">Total Tracked</div><div class="value">${total}</div></div>
     </div>
   `;
 }
@@ -129,7 +150,8 @@ function renderNetworkPanel(source, healthyField, title, settingKey, syncFnName)
   const visibleTiles = search ? allTiles.filter((t) => t.name.toLowerCase().includes(search)) : allTiles;
   const tiles = visibleTiles.map((t) => t.html).join('');
 
-  return `${syncStatBar(c, settingKey, source)}
+  return `${onlineOfflineSummary(dataLocs, allLocations, source, healthyField)}
+  ${admin ? syncStatBar(c, settingKey, source) : ''}
   <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
     <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)}).` : 'No live API configured yet.'} ${dataLocs.length ? `Showing the last imported snapshot for ${dataLocs.length} location(s), pulled from Locations.` : 'No data imported for this source yet.'}</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -192,7 +214,7 @@ export function renderGrassfishPanel() {
     </div>`;
   }).join('');
 
-  return `${syncStatBar(c, 'grassfishApi', 'grassfish')}
+  return `${admin ? syncStatBar(c, 'grassfishApi', 'grassfish') : ''}
   <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
     <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)}).` : 'No live API configured yet.'} ${screens.length} Grassfish screen${screens.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = Grassfish) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign Console uses.</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
