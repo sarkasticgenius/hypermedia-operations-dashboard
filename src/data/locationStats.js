@@ -45,7 +45,10 @@ export function locationOfflineStats(loc, allLocations) {
       total++;
       if (sa.status === 'Offline') offline++;
     }
+    // Both networks' online counts pad the total - this used to only add broadsign_healthy_count,
+    // so every Grassfish-online screen was silently missing from Network Health entirely.
     if (l.broadsign_healthy_count) total += l.broadsign_healthy_count;
+    if (l.grassfish_healthy_count) total += l.grassfish_healthy_count;
   }
   return { offline, total };
 }
@@ -141,6 +144,20 @@ export function inventoryFaceTotals(assetInventory) {
     }
   }
   return { totalScreens, totalFaces, networkedScreens, networkedFaces };
+}
+
+// Same "straight from Asset Inventory" approach as inventoryFaceTotals(), scoped to rows linked to
+// any network whose name contains "MAF" (Majid Al Futtaim malls) - same convention the Asset
+// Inventory page's "MAF Malls only" filter already uses.
+export function mafInventoryTotals(assetInventory) {
+  let screens = 0;
+  let faces = 0;
+  for (const r of assetInventory) {
+    if (!(r.networkNames || []).some((n) => n.toUpperCase().includes('MAF'))) continue;
+    screens += r.screens || 1;
+    faces += r.faces || 1;
+  }
+  return { screens, faces };
 }
 
 export function locationScreenCount(loc, allLocations, assetInventory) {

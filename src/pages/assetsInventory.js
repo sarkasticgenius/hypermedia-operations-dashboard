@@ -13,7 +13,25 @@ import { esc, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE_OPTIONS = [50, 100, 150, 200];
+const DEFAULT_PAGE_SIZE = 50;
+function currentPageSize() {
+  return PAGE_SIZE_OPTIONS.includes(STATE.aiPageSize) ? STATE.aiPageSize : DEFAULT_PAGE_SIZE;
+}
+
+// Summary tiles above the table - deliberately scoped to whatever's currently filtered (`rows`
+// here is already the post-search/post-filter list), so the tiles answer "what am I looking at"
+// rather than always restating the whole table's totals regardless of the active filter.
+function summarizeInventory(rows) {
+  const summary = { screens: 0, faces: 0, byPlayerType: {} };
+  for (const r of rows) {
+    summary.screens += r.screens || 1;
+    summary.faces += r.faces || 1;
+    const type = r.player_type || 'Unassigned';
+    summary.byPlayerType[type] = (summary.byPlayerType[type] || 0) + 1;
+  }
+  return summary;
+}
 
 // Every field a free-text search matches against - mirrors the original's ASSET_INV_SEARCH_FIELDS.
 const SEARCH_FIELDS = ['name', 'venue', 'location', 'category', 'format', 'player_type', 'player_box_id', 'anydesk_id', 'teamviewer_id', 'sensor_id', 'source_asset_id'];
@@ -109,10 +127,12 @@ export function renderAssetsInventory() {
   const networkOptions = ['All', ...new Set(rows.flatMap((r) => r.networkNames || []))].sort((a, b) => (a === 'All' ? -1 : b === 'All' ? 1 : a.localeCompare(b)));
 
   const list = sortedAndFiltered(rows, contractors);
-  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const pageSize = currentPageSize();
+  const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
   const curPage = Math.min(Math.max(1, STATE.aiPage || 1), totalPages);
-  const pageItems = list.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
+  const pageItems = list.slice((curPage - 1) * pageSize, curPage * pageSize);
   const selectedIds = new Set(STATE.aiSelectedIds || []);
+  const summary = summarizeInventory(list);
   const pageIds = pageItems.map((r) => r.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
 
@@ -134,14 +154,27 @@ export function renderAssetsInventory() {
     </tr>
   `).join('') || `<tr><td colspan="${bulkOk ? 10 : 9}"><div class="empty">No screens match this filter.</div></td></tr>`;
 
-  const pager = totalPages > 1 ? `<div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:10px 4px;">
-      <span class="small muted">${list.length} screen(s) - page ${curPage} of ${totalPages}</span>
-      <button class="btn-sm" ${curPage <= 1 ? 'disabled' : ''} onclick="App.setAssetInvPage(${curPage - 1})">Prev</button>
-      <button class="btn-sm" ${curPage >= totalPages ? 'disabled' : ''} onclick="App.setAssetInvPage(${curPage + 1})">Next</button>
-    </div>` : `<div class="small muted" style="padding:10px 4px;">${list.length} screen(s)</div>`;
+  const pageSizeSelect = `<select onchange="App.setAssetInvPageSize(this.value)" title="Rows per page" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;">${PAGE_SIZE_OPTIONS.map((n) => `<option value="${n}" ${pageSize === n ? 'selected' : ''}>${n} / page</option>`).join('')}</select>`;
+  const pager = `<div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:10px 4px;flex-wrap:wrap;">
+      <span class="small muted">${list.length} screen(s)${totalPages > 1 ? ` - page ${curPage} of ${totalPages}` : ''}</span>
+      ${pageSizeSelect}
+      ${totalPages > 1 ? `<button class="btn-sm" ${curPage <= 1 ? 'disabled' : ''} onclick="App.setAssetInvPage(${curPage - 1})">Prev</button>
+      <button class="btn-sm" ${curPage >= totalPages ? 'disabled' : ''} onclick="App.setAssetInvPage(${curPage + 1})">Next</button>` : ''}
+    </div>`;
+
+  const summaryTiles = [
+    { label: 'Screens (filtered)', value: summary.screens },
+    { label: 'Faces (filtered)', value: summary.faces },
+    { label: 'Broadsign', value: summary.byPlayerType.Broadsign || 0 },
+    { label: 'Grassfish', value: summary.byPlayerType.Grassfish || 0 },
+    { label: 'IoT', value: summary.byPlayerType.IoT || 0 },
+  ];
 
   return `
     <div class="banner">This is the deployed-screen/player list (one row per physical screen). Player Box ID doubles as the Broadsign client_resource_id used by the Broadsign sync. ${editOk ? '' : 'You can view this table; ask an Admin for edit permission to change it.'}</div>
+    <div class="kpi-row">
+      ${summaryTiles.map((t) => `<div class="kpi"><div class="label">${esc(t.label)}</div><div class="value">${t.value}</div></div>`).join('')}
+    </div>
     <div class="toolbar">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <input id="ai-search" placeholder="Search anything - name, venue, location, category, player, IDs, networks..." value="${esc(STATE.aiSearch || '')}" oninput="App.setAssetInvSearch(this.value)" style="min-width:260px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
@@ -193,6 +226,7 @@ export function setAssetInvSearch(value) { setState({ aiSearch: value, aiPage: 1
 export function setAssetInvFilter(key, value) { setState({ [key]: value, aiPage: 1 }); }
 export function setAssetInvMafOnly(checked) { setState({ aiMafOnly: checked, aiPage: 1 }); }
 export function setAssetInvPage(page) { setState({ aiPage: page }); }
+export function setAssetInvPageSize(size) { setState({ aiPageSize: Number(size), aiPage: 1 }); }
 
 export function toggleAssetInvSelection(id, checked) {
   const cur = new Set(STATE.aiSelectedIds || []);
@@ -204,9 +238,10 @@ export function toggleAssetInvSelectAllOnPage(checked) {
   const data = pageData();
   if (!data) return;
   const list = sortedAndFiltered(data.rows, data.contractors);
-  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const pageSize = currentPageSize();
+  const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
   const curPage = Math.min(Math.max(1, STATE.aiPage || 1), totalPages);
-  const pageIds = list.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE).map((r) => r.id);
+  const pageIds = list.slice((curPage - 1) * pageSize, curPage * pageSize).map((r) => r.id);
   const cur = new Set(STATE.aiSelectedIds || []);
   if (checked) pageIds.forEach((id) => cur.add(id));
   else pageIds.forEach((id) => cur.delete(id));

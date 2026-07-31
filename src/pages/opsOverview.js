@@ -6,7 +6,7 @@ import { listPermits, permitStatus } from '../data/permits.js';
 import { listMetroPics, metroPicStatus } from '../data/metroPics.js';
 import { listSimCards, simLocationDuplicateCounts, isDuplicateLocationSim } from '../data/simCards.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
-import { hiddenMemberIds, locationOfflineStats, locationManualStats, sourceStats, inventoryFaceTotals } from '../data/locationStats.js';
+import { hiddenMemberIds, locationOfflineStats, locationManualStats, sourceStats, inventoryFaceTotals, mafInventoryTotals } from '../data/locationStats.js';
 import { svgGroupedBarChart, svgDonutChart } from '../lib/charts.js';
 import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
@@ -183,6 +183,13 @@ export function renderOpsOverview() {
   const ageBuckets = ticketAgeBuckets(openTickets);
   const visibleOffline = filteredOfflineAssets(offlineAssets);
   const inventoryTotals = inventoryFaceTotals(assetInventory);
+  const mafTotals = mafInventoryTotals(assetInventory);
+  // Broadsign+Grassfish online = everything in the full inventory for those two networks minus
+  // whatever's currently known offline from live sync data - same "total minus offline" base
+  // inventoryFaceTotals already uses, just split into online/offline instead of one static figure.
+  const offlineNetworkedScreens = offlineAssets.filter((o) => o.kind === 'source').length;
+  const onlineNetworkedScreens = Math.max(0, inventoryTotals.networkedScreens - offlineNetworkedScreens);
+  const onlineNetworkedFaces = Math.max(0, inventoryTotals.networkedFaces - networkedOfflineFaces);
 
   const kpis = [
     { key: 'tickets', label: 'Open Tickets', value: openTickets.length },
@@ -215,7 +222,15 @@ export function renderOpsOverview() {
       </div>
       <div class="kpi-row" style="margin-top:16px;">
         <div class="kpi"><div class="label">Total Screens (full inventory)</div><div class="value">${inventoryTotals.totalScreens}</div><div class="sub">${inventoryTotals.totalFaces} faces</div></div>
-        <div class="kpi"><div class="label">Broadsign + Grassfish Faces</div><div class="value">${inventoryTotals.networkedFaces}</div><div class="sub">${inventoryTotals.networkedScreens} screens</div></div>
+        <div class="kpi"><div class="label">MAF Mall Screens</div><div class="value">${mafTotals.screens}</div></div>
+        <div class="kpi"><div class="label">MAF Mall Faces</div><div class="value">${mafTotals.faces}</div></div>
+      </div>
+      <div class="card-head" style="margin-top:16px;margin-bottom:8px;"><h3 style="font-size:13.5px;">Broadsign + Grassfish, combined</h3></div>
+      <div class="kpi-row">
+        <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Online Screens</div><div class="value">${onlineNetworkedScreens}</div></div>
+        <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline Screens</div><div class="value">${offlineNetworkedScreens}</div></div>
+        <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Online Faces</div><div class="value">${onlineNetworkedFaces}</div></div>
+        <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline Faces</div><div class="value">${networkedOfflineFaces}</div></div>
       </div>
     </div>
 

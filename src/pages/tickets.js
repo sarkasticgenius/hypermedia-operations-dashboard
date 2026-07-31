@@ -45,6 +45,21 @@ function filteredTickets(tickets) {
   });
 }
 
+// Global Created/Solved/Pending summary, deliberately computed off the full unfiltered ticket
+// list (same as renderCharts()) so it reads as a stable "state of all tickets" figure regardless
+// of whatever type/status/search filter happens to be active on the List view right now, and stays
+// visible across List/Calendar/Heatmap instead of only appearing inside the Calendar tab.
+function createdSolvedPendingSummary(tickets) {
+  const created = tickets.length;
+  const solved = tickets.filter((t) => t.status === 'Closed' || t.status === 'Resolved').length;
+  const pending = tickets.filter((t) => t.status === 'Open' || t.status === 'In Progress').length;
+  return `<div class="kpi-row">
+    <div class="kpi"><div class="label">Created</div><div class="value">${created}</div></div>
+    <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Solved</div><div class="value">${solved}</div></div>
+    <div class="kpi" style="border-left:4px solid #e0a13a;"><div class="label">Pending</div><div class="value">${pending}</div></div>
+  </div>`;
+}
+
 export function renderTickets() {
   const data = loadData('ticketsPage', loadTicketsData);
   if (data === null) return loadingCard();
@@ -64,6 +79,7 @@ export function renderTickets() {
   else body = renderListView(visible);
 
   return `
+    ${createdSolvedPendingSummary(tickets)}
     ${renderCharts(tickets)}
     ${STATE.ticketLocationFilter ? `<div class="banner">Filtered to location: <strong>${esc(STATE.ticketLocationFilter)}</strong> <button class="link-btn" onclick="App.clearTicketLocationFilter()">Clear filter</button></div>` : ''}
     <div class="toolbar">
