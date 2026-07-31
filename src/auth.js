@@ -2,9 +2,13 @@ import { supabase } from './supabaseClient.js';
 import { STATE, setState, render } from './state.js';
 import { logAudit } from './lib/audit.js';
 
-// Same 12 areas / 5-flag model as the original app's PERMISSION_AREAS + PERM_NONE/PERM_FULL.
+// Same 5-flag model as the original app's PERM_NONE/PERM_FULL. 'maintenancePanels' (the Broadsign/
+// Grassfish/IoT console pages) used to share the 'locations' area with the Locations page itself -
+// split into its own area (migration 0021) so an admin can grant one without the other; every
+// existing user's 'maintenancePanels' permission was backfilled to match their 'locations'
+// permission at split time, so this alone doesn't change anyone's access.
 export const PERMISSION_AREAS = [
-  'assets', 'assetsInventory', 'orders', 'locations', 'campaigns', 'staticCampaigns',
+  'assets', 'assetsInventory', 'orders', 'locations', 'maintenancePanels', 'campaigns', 'staticCampaigns',
   'permits', 'metroPic', 'tickets', 'simCards', 'pdooh', 'dashboards',
 ];
 

@@ -92,7 +92,7 @@ function renderSidebar(allSections) {
   const maintenanceSection = allSections.find((s) => s.lock_key === 'maintenance') || allSections.find((s) => (s.nav_group || 'dashboards') === 'dashboards');
   const pdoohSection = allSections.find((s) => s.lock_key === 'pdooh') || allSections.find((s) => (s.nav_group || 'dashboards') === 'pdooh');
 
-  const consoleLinksHtml = canView('locations')
+  const consoleLinksHtml = canView('maintenancePanels')
     ? navSubItem('Broadsign Console', STATE.page === 'broadsignPanel', 'broadsignPanel')
       + navSubItem('Grassfish Console', STATE.page === 'grassfishPanel', 'grassfishPanel')
       + navSubItem('IoT Panel', STATE.page === 'iotPanel', 'iotPanel')
@@ -115,7 +115,7 @@ function renderSidebar(allSections) {
       + (pdoohExpanded ? pdoohLinksHtml || '<div class="empty small" style="padding-left:34px;">No links yet.</div>' : '')
     : '';
 
-  const maintenanceGroup = (canView('dashboards') || canView('locations'))
+  const maintenanceGroup = (canView('dashboards') || canView('maintenancePanels'))
     ? navParent(NAV_GROUP_LABELS.dashboards, (STATE.page === 'dashboards' && activeGroup === 'dashboards') || STATE.page === 'broadsignPanel' || STATE.page === 'grassfishPanel' || STATE.page === 'iotPanel', dashExpanded, 'dashboards', maintenanceSection ? `App.goToDashGroup('${maintenanceSection.id}')` : "App.setPage('dashboards')")
       + (dashExpanded ? consoleLinksHtml + dashLinksHtml : '')
     : '';
