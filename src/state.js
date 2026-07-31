@@ -95,14 +95,32 @@ export function setState(patch) {
 // HTML-string render function: first call kicks off the load and returns null (page shows a
 // loading placeholder); once the promise resolves the data is cached and render() re-runs, so
 // this call then returns the cached value. Call invalidate(key) after any mutation to refetch.
-export function loadData(key, loaderFn) {
+//
+// Caching layer: entries never used to expire on their own - a page left open (or switched away
+// from and back to) kept showing whatever was fetched on its first visit until something
+// explicitly called invalidate(), or the whole tab reloaded. Every cached entry now carries a TTL;
+// once it's stale, loadData() still returns the cached value immediately (no loading flicker, no
+// re-fetch-storm from rapid nav) but kicks off ONE background refetch - render() picks up the
+// fresh data as soon as it lands. A failed background refresh just leaves the stale data in place
+// rather than surfacing an error over data the user can already see.
+const DEFAULT_TTL_MS = 2 * 60 * 1000;
+
+export function loadData(key, loaderFn, ttlMs = DEFAULT_TTL_MS) {
   const entry = STATE.pageData[key];
-  if (entry && entry.status === 'ready') return entry.data;
+  if (entry && entry.status === 'ready') {
+    if (!entry.revalidating && Date.now() - entry.fetchedAt > ttlMs) {
+      entry.revalidating = true;
+      loaderFn()
+        .then((data) => { STATE.pageData[key] = { status: 'ready', data, fetchedAt: Date.now() }; render(); })
+        .catch(() => { entry.revalidating = false; });
+    }
+    return entry.data;
+  }
   if (entry && entry.status === 'error') return { __error: entry.message };
   if (!entry) {
     STATE.pageData[key] = { status: 'loading' };
     loaderFn()
-      .then((data) => { STATE.pageData[key] = { status: 'ready', data }; render(); })
+      .then((data) => { STATE.pageData[key] = { status: 'ready', data, fetchedAt: Date.now() }; render(); })
       .catch((err) => { STATE.pageData[key] = { status: 'error', message: err.message || String(err) }; render(); });
   }
   return null;

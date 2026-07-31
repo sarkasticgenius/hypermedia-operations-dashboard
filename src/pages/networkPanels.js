@@ -153,7 +153,7 @@ function renderNetworkPanel(source, healthyField, title, settingKey, syncFnName)
   return `${onlineOfflineSummary(dataLocs, allLocations, source, healthyField)}
   ${admin ? syncStatBar(c, settingKey, source) : ''}
   <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)}).` : 'No live API configured yet.'} ${dataLocs.length ? `Showing the last imported snapshot for ${dataLocs.length} location(s), pulled from Locations.` : 'No data imported for this source yet.'}</span>
+    <span>${c.baseUrl ? `API configured${admin ? ` (${esc(c.baseUrl)})` : ''}.` : 'No live API configured yet.'} ${dataLocs.length ? `Showing the last imported snapshot for ${dataLocs.length} location(s), pulled from Locations.` : 'No data imported for this source yet.'}</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-sm" onclick="App.runNetworkSync('${settingKey}','${syncFnName}')" ${STATE.syncing === settingKey ? 'disabled' : ''}>${STATE.syncing === settingKey ? 'Syncing...' : 'Sync Now'}</button>
       ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}
@@ -216,7 +216,7 @@ export function renderGrassfishPanel() {
 
   return `${admin ? syncStatBar(c, 'grassfishApi', 'grassfish') : ''}
   <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)}).` : 'No live API configured yet.'} ${screens.length} Grassfish screen${screens.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = Grassfish) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign Console uses.</span>
+    <span>${c.baseUrl ? `API configured${admin ? ` (${esc(c.baseUrl)})` : ''}.` : 'No live API configured yet.'} ${screens.length} Grassfish screen${screens.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = Grassfish) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign Console uses.</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-sm" onclick="App.runNetworkSync('grassfishApi','grassfish-sync')" ${STATE.syncing === 'grassfishApi' ? 'disabled' : ''}>${STATE.syncing === 'grassfishApi' ? 'Syncing...' : 'Sync Now'}</button>
       ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}
@@ -271,7 +271,7 @@ export function renderIotPanel() {
   }).join('');
 
   return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}.` : 'No live API configured yet.'} ${devices.length} IoT device${devices.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = IoT) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign/Grassfish Consoles use.</span>
+    <span>${c.baseUrl ? `API configured${admin ? ` (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}` : ''}.` : 'No live API configured yet.'} ${devices.length} IoT device${devices.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = IoT) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign/Grassfish Consoles use.</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-sm" onclick="App.runNetworkSync('iotApi','iot-sync')" ${STATE.syncing === 'iotApi' ? 'disabled' : ''}>${STATE.syncing === 'iotApi' ? 'Syncing...' : 'Sync Now'}</button>
       ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}
@@ -295,6 +295,7 @@ registerModal('iotVenueModal', (data) => {
   const inventory = STATE.pageData.assetInventoryForIotPanel?.data || [];
   const devices = inventory.filter((r) => r.player_type === 'IoT' && (r.venue || '') === venue);
   const ticketAddOk = canAdd('tickets');
+  const admin = isAdmin();
   const rows = devices.map((r) => {
     const prefill = {
       title: `${venue} - ${r.name} Issue`,
@@ -305,15 +306,15 @@ registerModal('iotVenueModal', (data) => {
     return `<tr>
       <td><b>${esc(r.name)}</b></td>
       <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
-      <td>${esc(r.player_box_id || '-')}</td>
+      ${admin ? `<td>${esc(r.player_box_id || '-')}</td>` : ''}
       <td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="4"><div class="empty">No IoT devices at this venue.</div></td></tr>`;
+  }).join('') || `<tr><td colspan="${admin ? 4 : 3}"><div class="empty">No IoT devices at this venue.</div></td></tr>`;
   return `
     <h3>IoT - ${esc(venue)}</h3>
     <div class="small muted" style="margin-bottom:8px;">${devices.length} device${devices.length === 1 ? '' : 's'} at this venue, pulled from Asset Inventory (Player Type = IoT).</div>
     <table>
-      <thead><tr><th>Name</th><th>Format</th><th>Player Box ID</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Format</th>${admin ? '<th>Player Box ID</th>' : ''}<th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
@@ -406,6 +407,7 @@ registerModal('grassfishVenueModal', (data) => {
   const inventory = STATE.pageData.assetInventoryForGrassfishPanel?.data || [];
   const screens = inventory.filter((r) => r.player_type === 'Grassfish' && (r.venue || '') === venue);
   const ticketAddOk = canAdd('tickets');
+  const admin = isAdmin();
   const rows = screens.map((r) => {
     const prefill = {
       title: `${venue} - ${r.name} Issue`,
@@ -416,15 +418,15 @@ registerModal('grassfishVenueModal', (data) => {
     return `<tr>
       <td><b>${esc(r.name)}</b></td>
       <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
-      <td>${esc(r.player_box_id || '-')}</td>
+      ${admin ? `<td>${esc(r.player_box_id || '-')}</td>` : ''}
       <td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="4"><div class="empty">No Grassfish screens at this venue.</div></td></tr>`;
+  }).join('') || `<tr><td colspan="${admin ? 4 : 3}"><div class="empty">No Grassfish screens at this venue.</div></td></tr>`;
   return `
     <h3>Grassfish - ${esc(venue)}</h3>
     <div class="small muted" style="margin-bottom:8px;">${screens.length} screen${screens.length === 1 ? '' : 's'} at this venue, pulled from Asset Inventory (Player Type = Grassfish).</div>
     <table>
-      <thead><tr><th>Name</th><th>Format</th><th>Player Box ID</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Format</th>${admin ? '<th>Player Box ID</th>' : ''}<th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
