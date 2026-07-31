@@ -19,7 +19,7 @@ const NAV_ITEMS_TOP = [
   { page: 'locations', label: 'Locations' },
   { page: 'permits', label: 'Permits' },
   { page: 'metroPic', label: 'Metro PIC' },
-  { page: 'tickets', label: 'Tickets' },
+  { page: 'tickets', label: 'Ticketing' },
   { page: 'simCards', label: 'SIM Cards' },
 ];
 const NAV_ITEMS_BOTTOM = [
@@ -31,7 +31,7 @@ const NAV_ITEMS_BOTTOM = [
 const NAV_ICONS = {
   'Live Ops Overview': '📊', Home: '🏠', 'Asset Inventory': '🖥️', 'Hardware Inventory': '📦',
   'Procurement & Delivery': '🚚', Locations: '📍', Permits: '📄', 'Metro PIC': '🚇',
-  Tickets: '🎫', 'SIM Cards': '📶', 'Static Campaigns': '🖼️',
+  Ticketing: '🎫', 'SIM Cards': '📶', 'Static Campaigns': '🖼️',
   'Digital Campaigns Panel': '📢', 'pDOOH Campaign Panel': '📺', 'Maintenance Panel': '🛠️',
   Administration: '🛡️', Settings: '⚙️', 'My Account': '👤', 'Recycle Bin': '🗑️',
 };
@@ -164,7 +164,7 @@ const PAGE_TITLES = {
   iotPanel: 'IoT Panel',
   permits: 'Permits',
   metroPic: 'Metro PIC',
-  tickets: 'Tickets',
+  tickets: 'Ticketing',
   simCards: 'SIM Cards',
   campaigns: 'Digital Campaigns',
   gantt: 'Campaign Calendar',
