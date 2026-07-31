@@ -28,6 +28,16 @@ export function initRender(el, fn) {
 // (Locations' asset-link search) kicked the whole modal back to the top. Captured/restored the
 // same way as focus: by selector rather than by scroll offset stored in STATE, since it's purely
 // a rendering artifact, not app state worth persisting.
+//
+// Same root problem, worse symptom: every modal form field is uncontrolled (its value lives only
+// in the DOM, read via document.getElementById(...).value at submit time) and its markup is
+// generated from STATE.modal.data - a snapshot taken once when the modal opened. setState() gets
+// called constantly for reasons that have nothing to do with the form itself (toggling one checkbox
+// in the same modal, an unrelated background auto-refresh elsewhere on the page, another field's
+// own onchange handler) - each one blows away and regenerates the whole modal from that stale
+// snapshot, silently reverting every other field the user had already typed into. Fixed the same
+// way as focus/scroll above: snapshot every field's live value by id right before the innerHTML
+// replace, then write it back afterwards for any id that still exists in the new markup.
 export function render() {
   if (!renderFn || !rootEl) return;
   const active = document.activeElement;
@@ -41,7 +51,21 @@ export function render() {
   const contentEl = document.querySelector('.content');
   const contentScroll = contentEl ? contentEl.scrollTop : null;
 
+  const fieldSnapshot = {};
+  if (modalEl) {
+    modalEl.querySelectorAll('input[id], select[id], textarea[id]').forEach((el) => {
+      fieldSnapshot[el.id] = (el.type === 'checkbox' || el.type === 'radio') ? { checked: el.checked } : { value: el.value };
+    });
+  }
+
   rootEl.innerHTML = renderFn();
+
+  for (const [id, snap] of Object.entries(fieldSnapshot)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if ('checked' in snap) el.checked = snap.checked;
+    else el.value = snap.value;
+  }
 
   if (activeId) {
     const restored = document.getElementById(activeId);

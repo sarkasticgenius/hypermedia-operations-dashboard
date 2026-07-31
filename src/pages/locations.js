@@ -13,6 +13,7 @@ import {
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { heatmapGrid } from '../lib/heatmapGrid.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
+import { renderTabs } from '../lib/tabs.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 import { exportToCsv } from '../lib/csv.js';
 import { logAudit } from '../lib/audit.js';
@@ -53,9 +54,9 @@ export function renderLocations() {
     return true;
   });
 
-  const tabsHtml = ['venues', 'list', 'heatmap'].map((v) =>
-    `<div class="tab ${view === v ? 'active' : ''}" onclick="App.setLocationView('${v}')">${v === 'venues' ? 'Venues' : v === 'list' ? 'List' : 'Heatmap'}</div>`
-  ).join('');
+  const tabsHtml = renderTabs([
+    { key: 'venues', label: 'Venues' }, { key: 'list', label: 'List' }, { key: 'heatmap', label: 'Heatmap' },
+  ], view, 'App.setLocationView');
 
   let body;
   if (view === 'list') body = renderListView(filtered, locations, assetInventory);
@@ -66,7 +67,7 @@ export function renderLocations() {
     ${renderCharts(visible, locations, assetInventory)}
     <div class="banner">Online/offline network health has moved to the dedicated Broadsign and Grassfish Console pages — this heatmap reflects screen density from Asset Inventory.</div>
     <div class="toolbar">
-      <div class="tabs">${tabsHtml}</div>
+      ${tabsHtml}
       <div class="toolbar-actions">
         <select onchange="App.setLocationEmirateFilter(this.value)">
           <option value="">All Emirates</option>

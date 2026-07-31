@@ -5,17 +5,19 @@ import { listTickets } from '../data/tickets.js';
 import { listPermits, permitStatus } from '../data/permits.js';
 import { listMetroPics, metroPicStatus } from '../data/metroPics.js';
 import { listSimCards, simLocationDuplicateCounts, isDuplicateLocationSim } from '../data/simCards.js';
-import { hiddenMemberIds, locationOfflineStats, locationManualStats, sourceStats } from '../data/locationStats.js';
+import { listAssetInventory } from '../data/assetsInventory.js';
+import { hiddenMemberIds, locationOfflineStats, locationManualStats, sourceStats, inventoryFaceTotals } from '../data/locationStats.js';
 import { svgGroupedBarChart, svgDonutChart } from '../lib/charts.js';
+import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
 
 let refreshTimer = null;
 
 async function loadOverview() {
-  const [locations, tickets, permits, metroPics, simCards] = await Promise.all([
-    listLocations(), listTickets(), listPermits(), listMetroPics(), listSimCards(),
+  const [locations, tickets, permits, metroPics, simCards, assetInventory] = await Promise.all([
+    listLocations(), listTickets(), listPermits(), listMetroPics(), listSimCards(), listAssetInventory(),
   ]);
-  return { locations, tickets, permits, metroPics, simCards };
+  return { locations, tickets, permits, metroPics, simCards, assetInventory };
 }
 
 function ensureAutoRefresh() {
@@ -39,17 +41,27 @@ function urgentOpenTickets(tickets) {
     .sort((a, b) => b.daysOpen - a.daysOpen);
 }
 
+// Combines Manual + Broadsign + Grassfish offline items into one list (Grassfish was previously
+// missing here entirely - only Manual/Broadsign were tallied). Also returns the combined
+// Broadsign+Grassfish offline-faces total (sourceStats' offlineFaces), since that's a materially
+// different number from "how many screen rows are offline" whenever any offline screen has more
+// than one face.
 function allOfflineAssets(locations) {
   const hidden = hiddenMemberIds(locations);
   const visible = locations.filter((l) => !hidden.has(l.id));
   const items = [];
+  let networkedOfflineFaces = 0;
   for (const loc of visible) {
     const manual = locationManualStats(loc, locations);
     for (const item of manual.offlineItems) items.push({ ...item, kind: 'manual' });
     const bs = sourceStats(loc, locations, 'broadsign', 'broadsign_healthy_count');
     for (const item of bs.offlineItems) items.push({ ...item, kind: 'source', source: 'Broadsign' });
+    networkedOfflineFaces += bs.offlineFaces;
+    const gf = sourceStats(loc, locations, 'grassfish', 'grassfish_healthy_count');
+    for (const item of gf.offlineItems) items.push({ ...item, kind: 'source', source: 'Grassfish' });
+    networkedOfflineFaces += gf.offlineFaces;
   }
-  return items;
+  return { items, networkedOfflineFaces };
 }
 
 function allSimIssues(simCards) {
@@ -127,6 +139,11 @@ function filteredOfflineAssets(items) {
   return items.filter((i) => i.kind === 'source' && i.source === filter);
 }
 
+const OFFLINE_FILTER_TABS = [
+  { key: 'All', label: 'All' }, { key: 'Manual', label: 'Manual' },
+  { key: 'Broadsign', label: 'Broadsign' }, { key: 'Grassfish', label: 'Grassfish' },
+];
+
 export function setOpsOfflineFilter(f) { setState({ opsOfflineFilter: f }); }
 export function scrollToOpsCard(key) {
   const el = document.getElementById(`ops-card-${key}`);
@@ -157,30 +174,33 @@ export function renderOpsOverview() {
   if (data === null) return loadingCard();
   if (data.__error) return loadingCard(data.__error);
 
-  const { locations, tickets, permits, metroPics, simCards } = data;
+  const { locations, tickets, permits, metroPics, simCards, assetInventory } = data;
   const openTickets = urgentOpenTickets(tickets);
-  const offlineAssets = allOfflineAssets(locations);
+  const { items: offlineAssets, networkedOfflineFaces } = allOfflineAssets(locations);
   const simIssues = allSimIssues(simCards);
   const compliance = complianceDueItems(permits, metroPics);
   const health = networkHealth(locations);
   const ageBuckets = ticketAgeBuckets(openTickets);
   const visibleOffline = filteredOfflineAssets(offlineAssets);
+  const inventoryTotals = inventoryFaceTotals(assetInventory);
 
   const kpis = [
     { key: 'tickets', label: 'Open Tickets', value: openTickets.length },
-    { key: 'offline', label: 'Offline Assets', value: offlineAssets.length },
+    { key: 'offline', label: 'Offline Screens', value: offlineAssets.length },
+    { key: 'offlineFaces', label: 'Offline Faces', value: networkedOfflineFaces, sub: 'Broadsign + Grassfish' },
     { key: 'sims', label: 'SIM Issues', value: simIssues.length },
     { key: 'compliance', label: 'Compliance Due', value: compliance.length },
   ];
 
   return `
-    <div class="banner"><span class="live-pulse-dot"></span>Live — updated ${new Date().toLocaleTimeString()}</div>
+    <div class="banner"><span class="live-pulse-dot"></span>Live — updated ${new Date().toLocaleTimeString()}. This page auto-refreshes and only surfaces what needs attention right now. For a broader daily snapshot across every workspace, see <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('dashboard')">Home</a>.</div>
 
     <div class="kpi-row">
       ${kpis.map((k) => `
-        <div class="kpi" style="border-left:4px solid ${k.value > 0 ? '#c0392b' : '#1f9d55'};cursor:pointer;" onclick="App.scrollToOpsCard('${k.key}')">
+        <div class="kpi" style="border-left:4px solid ${k.value > 0 ? '#c0392b' : '#1f9d55'};cursor:pointer;" onclick="App.scrollToOpsCard('${k.key === 'offlineFaces' ? 'offline' : k.key}')">
           <div class="label">${esc(k.label)}</div>
           <div class="value">${k.value}</div>
+          ${k.sub ? `<div class="sub">${esc(k.sub)}</div>` : ''}
         </div>
       `).join('')}
     </div>
@@ -190,8 +210,12 @@ export function renderOpsOverview() {
       <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
         ${svgDonutChart(health.healthPct, donutColor(health.offline, health.total), 130, health.healthPct + '%', 'Online')}
         <div style="flex:1;min-width:220px;">
-          ${svgGroupedBarChart(['Manual', 'Broadsign'], [{ name: 'Offline', color: '#c0392b', values: [offlineAssets.filter((o) => o.kind === 'manual').length, offlineAssets.filter((o) => o.kind === 'source').length] }], { width: 300, height: 130 })}
+          ${svgGroupedBarChart(['Manual', 'Broadsign', 'Grassfish'], [{ name: 'Offline', color: '#c0392b', values: [offlineAssets.filter((o) => o.kind === 'manual').length, offlineAssets.filter((o) => o.kind === 'source' && o.source === 'Broadsign').length, offlineAssets.filter((o) => o.kind === 'source' && o.source === 'Grassfish').length] }], { width: 300, height: 130 })}
         </div>
+      </div>
+      <div class="kpi-row" style="margin-top:16px;">
+        <div class="kpi"><div class="label">Total Screens (full inventory)</div><div class="value">${inventoryTotals.totalScreens}</div><div class="sub">${inventoryTotals.totalFaces} faces</div></div>
+        <div class="kpi"><div class="label">Broadsign + Grassfish Faces</div><div class="value">${inventoryTotals.networkedFaces}</div><div class="sub">${inventoryTotals.networkedScreens} screens</div></div>
       </div>
     </div>
 
@@ -207,10 +231,8 @@ export function renderOpsOverview() {
     </div>
 
     <div id="ops-card-offline" class="card">
-      <div class="card-head"><h3>Offline Assets <span class="badge b-red">${offlineAssets.length}</span></h3></div>
-      <div class="tabs" style="margin-bottom:10px;">
-        ${['All', 'Manual', 'Broadsign'].map((f) => `<div class="tab ${(STATE.opsOfflineFilter || 'All') === f ? 'active' : ''}" onclick="App.setOpsOfflineFilter('${f}')">${f}</div>`).join('')}
-      </div>
+      <div class="card-head"><h3>Offline Screens <span class="badge b-red">${offlineAssets.length}</span></h3><div class="desc">${networkedOfflineFaces} faces offline across Broadsign + Grassfish</div></div>
+      ${renderTabs(OFFLINE_FILTER_TABS, STATE.opsOfflineFilter || 'All', 'App.setOpsOfflineFilter')}
       ${opsListRows(visibleOffline.slice(0, 8), (o) => ({ main: o.name, sub: o.location, tag: o.kind === 'manual' ? 'Manual' : o.source, tagClass: 'b-gray' }))}
       ${visibleOffline.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${visibleOffline.length - 8} more</div>` : ''}
       <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('locations')">View all</button>

@@ -79,7 +79,7 @@ async function fetchAllInventory(adminClient: any, playerType: string) {
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await adminClient
       .from('asset_inventory')
-      .select('id, name, venue, player_box_id')
+      .select('id, name, venue, player_box_id, faces')
       .eq('player_type', playerType)
       .not('player_box_id', 'is', null)
       .order('id', { ascending: true })
@@ -194,14 +194,14 @@ Deno.serve(async (req) => {
       const { data: locations } = await adminClient.from('locations').select('id, name');
       const locByName = new Map((locations || []).map((l) => [l.name.toLowerCase(), l.id]));
 
-      const rowsByLocation = new Map<string, { assetName: string; clientResourceId: string; offline: boolean }[]>();
+      const rowsByLocation = new Map<string, { assetName: string; clientResourceId: string; offline: boolean; faces: number }[]>();
       let unmatchedLocation = 0;
       for (const { asset, row } of matchedRows) {
         const locId = asset.venue ? locByName.get(String(asset.venue).toLowerCase()) : null;
         if (!locId) { unmatchedLocation++; continue; }
         const offline = offlineSet.has(String(row.monitor_status));
         if (!rowsByLocation.has(locId)) rowsByLocation.set(locId, []);
-        rowsByLocation.get(locId).push({ assetName: asset.name, clientResourceId: String(row.client_resource_id), offline });
+        rowsByLocation.get(locId).push({ assetName: asset.name, clientResourceId: String(row.client_resource_id), offline, faces: asset.faces || 1 });
       }
 
       for (const [locId, rows] of rowsByLocation.entries()) {
@@ -209,7 +209,7 @@ Deno.serve(async (req) => {
         await adminClient.from('location_sub_assets').delete().eq('location_id', locId).eq('source', 'broadsign');
         if (offlineRows.length) {
           await adminClient.from('location_sub_assets').insert(offlineRows.map((r) => ({
-            location_id: locId, name: r.assetName, status: 'Offline', source: 'broadsign',
+            location_id: locId, name: r.assetName, status: 'Offline', source: 'broadsign', faces: r.faces,
             notes: `Broadsign ID: ${r.clientResourceId} - raw monitor_status logged in Settings`,
           })));
         }

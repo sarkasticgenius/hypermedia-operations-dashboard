@@ -13,6 +13,7 @@ import { esc, fmtMoney, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
+import { renderTabs } from '../lib/tabs.js';
 
 function isRental(categories, name) {
   return !!categories.find((c) => c.name.toLowerCase() === String(name || '').toLowerCase())?.is_rental;
@@ -34,10 +35,11 @@ export function renderAssets() {
 
   const view = STATE.assetView || 'inventory';
   const deployedCount = data.assets.filter(isDeployed).length;
-  const VIEW_LABELS = { inventory: 'Inventory', deployed: `Deployed${deployedCount ? ` (${deployedCount})` : ''}`, history: 'Deployment History' };
-  const viewTabs = ['inventory', 'deployed', 'history'].map((v) =>
-    `<div class="tab ${view === v ? 'active' : ''}" onclick="App.setAssetView('${v}')">${VIEW_LABELS[v]}</div>`
-  ).join('');
+  const viewTabs = [
+    { key: 'inventory', label: 'Inventory' },
+    { key: 'deployed', label: 'Deployed', count: deployedCount || null },
+    { key: 'history', label: 'Deployment History' },
+  ];
 
   let body;
   if (view === 'history') body = renderHistoryView(data);
@@ -45,7 +47,7 @@ export function renderAssets() {
   else body = renderInventoryView(data);
 
   return `
-    <div class="toolbar"><div class="tabs">${viewTabs}</div><div></div></div>
+    <div class="toolbar">${renderTabs(viewTabs, view, 'App.setAssetView')}<div></div></div>
     ${body}
   `;
 }
@@ -121,15 +123,10 @@ function renderInventoryView(data) {
       <div class="kpi"><div class="label">Spare Item Rows</div><div class="value">${spareAssets.length}</div></div>
     </div>
     <div class="toolbar">
-      <div class="tabs">
-        <div class="tab ${categoryTab === 'All' ? 'active' : ''}" onclick="App.setAssetCategoryTab('All')">All</div>
-        ${categories.map((c) => `<div class="tab ${categoryTab === c.name ? 'active' : ''}" onclick="App.setAssetCategoryTab('${esc(c.name)}')">${esc(c.name)}</div>`).join('')}
-      </div>
+      ${renderTabs([{ key: 'All', label: 'All' }, ...categories.map((c) => ({ key: c.name, label: c.name }))], categoryTab, 'App.setAssetCategoryTab')}
     </div>
     <div class="toolbar">
-      <div class="tabs">
-        ${['All', 'Spare', 'Retired', 'Faulty'].map((s) => `<div class="tab ${statusTab === s ? 'active' : ''}" onclick="App.setAssetStatusTab('${s}')">${s}${s === 'Faulty' && faultyCount ? ` (${faultyCount})` : ''}</div>`).join('')}
-      </div>
+      ${renderTabs(['All', 'Spare', 'Retired', 'Faulty'].map((s) => ({ key: s, label: s, count: s === 'Faulty' ? (faultyCount || null) : null })), statusTab, 'App.setAssetStatusTab')}
       <div class="toolbar-actions">
         ${canExportArea('assets') ? `<button class="btn-sm" onclick="App.exportAssetsCsv()">Export CSV</button>` : ''}
         ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('assets')">Bulk Import</button>` : ''}

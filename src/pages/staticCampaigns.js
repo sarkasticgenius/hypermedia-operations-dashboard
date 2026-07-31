@@ -10,6 +10,7 @@ import { listContractors } from '../data/contractors.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, fmtMoney } from '../lib/format.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
+import { renderTabs } from '../lib/tabs.js';
 
 const TABS = [
   { key: 'list', label: 'Campaigns' },
@@ -19,12 +20,11 @@ const TABS = [
 
 export function renderStaticCampaigns() {
   const tab = STATE.staticTab || 'list';
-  const tabsHtml = TABS.map((t) => `<div class="tab ${tab === t.key ? 'active' : ''}" onclick="App.setStaticTab('${t.key}')">${t.label}</div>`).join('');
   let body;
   if (tab === 'machines') body = renderMachinesTab();
   else if (tab === 'bookings') body = renderBookingsTab();
   else body = renderListTab();
-  return `<div class="tabs">${tabsHtml}</div>${body}`;
+  return `${renderTabs(TABS, tab, 'App.setStaticTab')}${body}`;
 }
 
 export function setStaticTab(tab) {

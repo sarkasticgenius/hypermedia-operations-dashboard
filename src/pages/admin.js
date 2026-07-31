@@ -7,13 +7,13 @@ import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 import { startImpersonation } from '../impersonate.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
+import { renderTabs } from '../lib/tabs.js';
 
 const TABS = [{ key: 'users', label: 'Users' }, { key: 'audit', label: 'Audit Log' }];
 
 export function renderAdmin() {
   const tab = STATE.adminTab || 'users';
-  const tabsHtml = TABS.map((t) => `<div class="tab ${tab === t.key ? 'active' : ''}" onclick="App.setAdminTab('${t.key}')">${t.label}</div>`).join('');
-  return `<div class="tabs">${tabsHtml}</div>${tab === 'audit' ? renderAuditTab() : renderUsersTab()}`;
+  return `${renderTabs(TABS, tab, 'App.setAdminTab')}${tab === 'audit' ? renderAuditTab() : renderUsersTab()}`;
 }
 
 export function setAdminTab(tab) {

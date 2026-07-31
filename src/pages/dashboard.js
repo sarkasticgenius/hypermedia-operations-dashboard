@@ -34,6 +34,7 @@ export function renderDashboard() {
   ];
 
   return `
+    <div class="banner">A quick daily snapshot across every workspace - counts as of your last page load, not live. For continuously-refreshing operational status (what's open or offline right now), see <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('opsOverview')">Live Ops Overview</a>.</div>
     <div class="kpi-row">
       ${kpis.map((k) => `
         <div class="kpi">

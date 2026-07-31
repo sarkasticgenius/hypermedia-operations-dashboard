@@ -71,21 +71,25 @@ export function locationManualStats(loc, allLocations) {
 }
 
 // Same shape, filtered to one source only ('broadsign' | 'grassfish') - used
-// by the dedicated network console panels.
+// by the dedicated network console panels. Also tallies offlineFaces (sum of each offline row's
+// faces, defaulting to 1 for historical rows synced before that column existed) so callers can
+// show a faces-based count alongside the plain screen count without a second pass.
 export function sourceStats(loc, allLocations, source, healthyField) {
   let offline = 0;
   let total = 0;
+  let offlineFaces = 0;
   const offlineItems = [];
   for (const l of effectiveLocations(loc, allLocations)) {
     const subs = (l.location_sub_assets || []).filter((sa) => sa.source === source);
     for (const sa of subs) {
       total++;
       offline++;
+      offlineFaces += sa.faces || 1;
       offlineItems.push({ location: l.name, name: sa.name, detail: sa.notes || '' });
     }
     if (l[healthyField]) total += l[healthyField];
   }
-  return { offline, total, offlineItems };
+  return { offline, total, offlineFaces, offlineItems };
 }
 
 // Offline-ratio thresholds, ported exactly from the original's heatmapColor().
@@ -112,6 +116,31 @@ export function screenDensityColor(count, maxCount) {
 export function assetInventoryForLocation(locName, assetInventory) {
   const key = (locName || '').toLowerCase();
   return assetInventory.filter((r) => (r.venue || '').toLowerCase() === key);
+}
+
+// Total screens/faces straight from Asset Inventory - deliberately NOT filtered to locations with
+// live sync data (unlike sourceStats/locationOfflineStats, which only count what a Broadsign/
+// Grassfish sync has matched to a Location by venue name). This counts every physical screen the
+// business tracks, online or offline, matched-to-a-location or not - "faces" and "screens" both
+// default to 1 per row when unset, so a row always counts as at least one of each. Also breaks out
+// the Broadsign+Grassfish subtotal specifically, since those are the two networked sources callers
+// want combined into one number rather than reported separately.
+export function inventoryFaceTotals(assetInventory) {
+  let totalScreens = 0;
+  let totalFaces = 0;
+  let networkedScreens = 0;
+  let networkedFaces = 0;
+  for (const r of assetInventory) {
+    const screens = r.screens || 1;
+    const faces = r.faces || 1;
+    totalScreens += screens;
+    totalFaces += faces;
+    if (r.player_type === 'Broadsign' || r.player_type === 'Grassfish') {
+      networkedScreens += screens;
+      networkedFaces += faces;
+    }
+  }
+  return { totalScreens, totalFaces, networkedScreens, networkedFaces };
 }
 
 export function locationScreenCount(loc, allLocations, assetInventory) {

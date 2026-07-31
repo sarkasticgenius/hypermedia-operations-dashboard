@@ -13,6 +13,7 @@ import { exportToCsv } from '../lib/csv.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtMoney } from '../lib/format.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
+import { renderTabs } from '../lib/tabs.js';
 
 async function loadSimCardsData() {
   const [simCards, locations, assetInventory] = await Promise.all([
@@ -98,9 +99,7 @@ export function renderSimCards() {
     ${renderCharts(simCards)}
     ${(duplicateCount || mismatchCount) ? `<div class="banner">${duplicateCount ? `${duplicateCount} duplicate deployment(s). ` : ''}${mismatchCount ? `${mismatchCount} unresolved import mismatch(es).` : ''}</div>` : ''}
     <div class="toolbar">
-      <div class="tabs">
-        ${['All', 'Spare', 'Deployed', 'Needs Review'].map((t) => `<div class="tab ${tab === t ? 'active' : ''}" onclick="App.setSimStatusFilter('${t}')">${t}${t === 'Needs Review' && needsReviewCount ? ` (${needsReviewCount})` : ''}</div>`).join('')}
-      </div>
+      ${renderTabs(['All', 'Spare', 'Deployed', 'Needs Review'].map((t) => ({ key: t, label: t, count: t === 'Needs Review' ? (needsReviewCount || null) : null })), tab, 'App.setSimStatusFilter')}
       <div class="toolbar-actions">
         <input id="sim-search" placeholder="Search SIM cards..." value="${esc(STATE.simSearch || '')}" oninput="App.setSimSearch(this.value)">
         ${canExportArea('simCards') ? `<button class="btn-sm" onclick="App.exportSimCardsCsv()">Export CSV</button>` : ''}

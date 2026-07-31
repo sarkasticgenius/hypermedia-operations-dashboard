@@ -61,7 +61,7 @@ async function fetchAllInventory(adminClient: any, playerType: string) {
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await adminClient
       .from('asset_inventory')
-      .select('id, name, venue, player_box_id')
+      .select('id, name, venue, player_box_id, faces')
       .eq('player_type', playerType)
       .not('player_box_id', 'is', null)
       .order('id', { ascending: true })
@@ -197,13 +197,13 @@ Deno.serve(async (req) => {
     const { data: locations } = await adminClient.from('locations').select('id, name');
     const locByName = new Map((locations || []).map((l) => [l.name.toLowerCase(), l.id]));
 
-    const rowsByLocation = new Map<string, { assetName: string; boxId: string; offline: boolean; lastAccess: string | null }[]>();
+    const rowsByLocation = new Map<string, { assetName: string; boxId: string; offline: boolean; lastAccess: string | null; faces: number }[]>();
     let unmatchedLocation = 0;
     for (const { asset, isOnline, lastAccess } of matched) {
       const locId = asset.venue ? locByName.get(String(asset.venue).toLowerCase()) : null;
       if (!locId) { unmatchedLocation++; continue; }
       if (!rowsByLocation.has(locId)) rowsByLocation.set(locId, []);
-      rowsByLocation.get(locId).push({ assetName: asset.name, boxId: String(asset.player_box_id), offline: !isOnline, lastAccess });
+      rowsByLocation.get(locId).push({ assetName: asset.name, boxId: String(asset.player_box_id), offline: !isOnline, lastAccess, faces: asset.faces || 1 });
     }
 
     const nowIso = new Date().toISOString();
@@ -213,7 +213,7 @@ Deno.serve(async (req) => {
       await adminClient.from('location_sub_assets').delete().eq('location_id', locId).eq('source', 'grassfish');
       if (offlineRows.length) {
         await adminClient.from('location_sub_assets').insert(offlineRows.map((r) => ({
-          location_id: locId, name: r.assetName, status: 'Offline', source: 'grassfish',
+          location_id: locId, name: r.assetName, status: 'Offline', source: 'grassfish', faces: r.faces,
           notes: `Grassfish Box ID: ${r.boxId}${r.lastAccess && r.lastAccess !== '0001-01-01T00:00:00Z' ? ` - Last Access: ${r.lastAccess}` : ''}`,
         })));
       }

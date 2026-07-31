@@ -12,6 +12,7 @@ import { esc, jsAttr, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
 import { getSignedUrl } from '../lib/storage.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
+import { renderTabs } from '../lib/tabs.js';
 
 const STATUS_BADGE = { Open: 'b-red', 'In Progress': 'b-amber', Resolved: 'b-blue', Closed: 'b-gray' };
 
@@ -53,9 +54,9 @@ export function renderTickets() {
   const view = STATE.ticketView || 'list';
   const visible = filteredTickets(tickets);
 
-  const viewTabs = ['list', 'calendar', 'heatmap'].map((v) =>
-    `<div class="tab ${view === v ? 'active' : ''}" onclick="App.setTicketView('${v}')">${v === 'list' ? 'List' : v === 'calendar' ? 'Calendar' : 'Heatmap'}</div>`
-  ).join('');
+  const viewTabs = renderTabs([
+    { key: 'list', label: 'List' }, { key: 'calendar', label: 'Calendar' }, { key: 'heatmap', label: 'Heatmap' },
+  ], view, 'App.setTicketView');
 
   let body;
   if (view === 'calendar') body = renderCalendar(tickets);
@@ -66,7 +67,7 @@ export function renderTickets() {
     ${renderCharts(tickets)}
     ${STATE.ticketLocationFilter ? `<div class="banner">Filtered to location: <strong>${esc(STATE.ticketLocationFilter)}</strong> <button class="link-btn" onclick="App.clearTicketLocationFilter()">Clear filter</button></div>` : ''}
     <div class="toolbar">
-      <div class="tabs">${viewTabs}</div>
+      ${viewTabs}
       <div class="toolbar-actions">
         ${canExportArea('tickets') ? `<button class="btn-sm" onclick="App.exportTicketsCsv()">Export CSV</button>` : ''}
         ${canAdd('tickets') ? `<button class="btn btn-orange" onclick="App.editTicket(null)">+ New Ticket</button>` : ''}
@@ -74,12 +75,8 @@ export function renderTickets() {
     </div>
     ${view === 'list' ? `
       <div class="toolbar">
-        <div class="tabs">
-          ${['All', 'Issue', 'Internal'].map((t) => `<div class="tab ${(STATE.ticketTypeTab || 'All') === t ? 'active' : ''}" onclick="App.setTicketTypeTab('${t}')">${t === 'Issue' ? 'Issue Tickets' : t === 'Internal' ? 'Internal Tickets' : 'All'}</div>`).join('')}
-        </div>
-        <div class="tabs">
-          ${['All', 'Open', 'In Progress', 'Closed'].map((s) => `<div class="tab ${(STATE.ticketStatusTab || 'All') === s ? 'active' : ''}" onclick="App.setTicketStatusTab('${s}')">${s}</div>`).join('')}
-        </div>
+        ${renderTabs([{ key: 'All', label: 'All' }, { key: 'Issue', label: 'Issue Tickets' }, { key: 'Internal', label: 'Internal Tickets' }], STATE.ticketTypeTab || 'All', 'App.setTicketTypeTab')}
+        ${renderTabs(['All', 'Open', 'In Progress', 'Closed'].map((s) => ({ key: s, label: s })), STATE.ticketStatusTab || 'All', 'App.setTicketStatusTab')}
       </div>
       <div class="field" style="max-width:320px;"><input id="ticket-search" placeholder="Search tickets..." value="${esc(STATE.ticketSearch || '')}" oninput="App.setTicketSearch(this.value)"></div>
     ` : ''}
@@ -184,9 +181,9 @@ function kpiRowForTickets(list) {
 
 function renderCalendar(tickets) {
   const mode = STATE.ticketCalMode || 'month';
-  const modeTabs = ['month', 'week'].map((m) => `<div class="tab ${mode === m ? 'active' : ''}" onclick="App.setTicketCalMode('${m}')">${m === 'month' ? 'Month' : 'Week'}</div>`).join('');
+  const modeTabs = renderTabs([{ key: 'month', label: 'Month' }, { key: 'week', label: 'Week' }], mode, 'App.setTicketCalMode');
   const body = mode === 'week' ? renderWeekStrip(tickets) : renderMonthGrid(tickets);
-  return `<div class="card"><div class="tabs" style="margin-bottom:10px;">${modeTabs}</div>${body}</div>`;
+  return `<div class="card">${modeTabs}${body}</div>`;
 }
 
 function renderMonthGrid(tickets) {

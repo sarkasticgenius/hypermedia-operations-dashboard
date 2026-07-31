@@ -14,6 +14,7 @@ import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
+import { renderTabs } from '../lib/tabs.js';
 
 const TABS = [
   { key: 'categories', label: 'Asset Categories' },
@@ -24,13 +25,12 @@ const TABS = [
 
 export function renderSettings() {
   const tab = STATE.settingsTab || 'categories';
-  const tabsHtml = TABS.map((t) => `<div class="tab ${tab === t.key ? 'active' : ''}" onclick="App.setSettingsTab('${t.key}')">${t.label}</div>`).join('');
   let body;
   if (tab === 'contractors') body = renderContractorsTab();
   else if (tab === 'networks') body = renderNetworksTab();
   else if (tab === 'integrations') body = renderIntegrationsTab();
   else body = renderCategoriesTab();
-  return `<div class="tabs">${tabsHtml}</div>${body}`;
+  return `${renderTabs(TABS, tab, 'App.setSettingsTab')}${body}`;
 }
 
 export function setSettingsTab(tab) {
