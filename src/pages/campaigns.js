@@ -6,6 +6,7 @@ import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, fmtMoney } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const STATUS_BADGE = { Scheduled: 'b-blue', Online: 'b-green', Offline: 'b-red', Ended: 'b-gray' };
 
@@ -14,7 +15,12 @@ export function renderCampaigns() {
   if (campaigns === null) return loadingCard();
   if (campaigns?.__error) return loadingCard(campaigns.__error);
 
-  const rows = campaigns.map((c) => `
+  const sorted = applySort(campaigns, 'campaigns', {
+    name: (c) => c.name || '', client: (c) => c.client || '', dates: (c) => c.start_date || '',
+    budget: (c) => c.budget || 0, status: (c) => c.status || '',
+  });
+
+  const rows = sorted.map((c) => `
     <tr>
       <td>${esc(c.name)}</td>
       <td>${c.client ? `${brandLogoTag(c.client, 18)} ` : ''}${esc(c.client || '-')}</td>
@@ -40,7 +46,7 @@ export function renderCampaigns() {
     <div class="card">
       ${campaigns.length === 0 ? '<div class="empty">No campaigns yet.</div>' : `
         <table>
-          <thead><tr><th>Name</th><th>Client</th><th>Dates</th><th>Budget</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>${sortTh('campaigns', 'name', 'Name')}${sortTh('campaigns', 'client', 'Client')}${sortTh('campaigns', 'dates', 'Dates')}${sortTh('campaigns', 'budget', 'Budget')}${sortTh('campaigns', 'status', 'Status')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

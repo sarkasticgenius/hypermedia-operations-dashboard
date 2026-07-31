@@ -6,7 +6,7 @@ import { saveAsset } from '../data/assets.js';
 import { saveLocation } from '../data/locations.js';
 import { saveCampaign } from '../data/campaigns.js';
 import { savePermit } from '../data/permits.js';
-import { saveMetroPic } from '../data/metroPics.js';
+import { saveMetroPic, listMetroPics } from '../data/metroPics.js';
 import { saveSimCard, listSimCards } from '../data/simCards.js';
 import { saveAssetInventory, listAssetInventory } from '../data/assetsInventory.js';
 import { invalidateAssetInventoryCaches } from './assetsInventory.js';
@@ -81,6 +81,31 @@ const IMPORT_CONFIGS = {
     required: 'station',
     transform: (m) => m,
     dateFields: ['validityStart', 'validityEnd'],
+    table: 'metro_pics',
+    list: listMetroPics,
+    // Same company (Company Name) or same person (Emirates ID) re-appearing in a re-uploaded
+    // sheet is a renewal, not a new record - match on either and overwrite validity/status.
+    matchKey: (mapped, existing) => {
+      const eid = (mapped.eidNumber || '').trim().toLowerCase();
+      const station = (mapped.station || '').trim().toLowerCase();
+      return existing.find((e) => (eid && (e.eid_number || '').trim().toLowerCase() === eid))
+        || existing.find((e) => (station && (e.station || '').trim().toLowerCase() === station));
+    },
+    // Dedup key for rows within the *same* uploaded file - a later row with the same key wins,
+    // so a sheet listing the same PIC twice doesn't insert two records.
+    dedupeKey: (m) => (m.eidNumber || '').trim().toLowerCase() || (m.station || '').trim().toLowerCase(),
+    updateFields: (m) => {
+      const out = {};
+      if (m.picName) out.pic_name = m.picName;
+      if (m.designation) out.designation = m.designation;
+      if (m.phone) out.phone = m.phone;
+      if (m.email) out.email = m.email;
+      if (m.validityStart) out.validity_start = m.validityStart;
+      if (m.validityEnd) out.validity_end = m.validityEnd;
+      if (m.eidNumber) out.eid_number = m.eidNumber;
+      if (m.notes) out.notes = m.notes;
+      return out;
+    },
     save: saveMetroPic,
     dataKey: 'metroPics',
   },
@@ -180,26 +205,53 @@ export async function runBulkImportPreview(event, entity) {
     const existing = await config.list();
     const inserts = [];
     const updates = [];
+    const insertByDedupeKey = new Map();
+    const updateByMatchId = new Map();
     let skipped = 0;
+    let duplicates = 0;
     for (const raw of rows) {
       const mapped = normalizeImportDates(config.transform(mapImportRow(raw, config.aliases)), config.dateFields);
       if (!mapped[config.required]) { skipped++; continue; }
       const match = config.matchKey(mapped, existing);
+      const label = mapped.name || mapped.station || mapped.picName || mapped.simNumber || '';
       if (match) {
         const fields = config.updateFields(mapped);
         const changes = Object.entries(fields)
           .filter(([k, v]) => String(match[k] ?? '') !== String(v ?? ''))
           .map(([k, v]) => [k, match[k], v]);
-        if (changes.length) updates.push({ matchId: match.id, label: match.name || match.sim_number || mapped.name || '', changes });
+        if (updateByMatchId.has(match.id)) {
+          // Later row in the same file wins over an earlier one matching the same existing record.
+          duplicates++;
+          const existingUpdate = updateByMatchId.get(match.id);
+          for (const [k, oldVal, v] of changes) {
+            const i = existingUpdate.changes.findIndex(([ck]) => ck === k);
+            if (i >= 0) existingUpdate.changes[i] = [k, oldVal, v]; else existingUpdate.changes.push([k, oldVal, v]);
+          }
+        } else if (changes.length) {
+          const entry = { matchId: match.id, label: match.name || match.station || match.pic_name || match.sim_number || label, changes };
+          updateByMatchId.set(match.id, entry);
+          updates.push(entry);
+        }
+      } else if (config.dedupeKey && config.dedupeKey(mapped)) {
+        const key = config.dedupeKey(mapped);
+        if (insertByDedupeKey.has(key)) {
+          duplicates++;
+          insertByDedupeKey.get(key).mapped = mapped;
+          insertByDedupeKey.get(key).label = label;
+        } else {
+          const entry = { mapped, label };
+          insertByDedupeKey.set(key, entry);
+          inserts.push(entry);
+        }
       } else {
-        inserts.push({ mapped, label: mapped.name || '' });
+        inserts.push({ mapped, label });
       }
     }
     if (!inserts.length && !updates.length) {
       toast(skipped ? `No changes found - ${skipped} row(s) skipped (missing required field).` : 'No changes found - every row already matches what\'s on file.');
       return;
     }
-    openModal('bulkImport', { entity, inserts, updates, skipped });
+    openModal('bulkImport', { entity, inserts, updates, skipped, duplicates });
   } catch (e) {
     toast(e.message || 'Import failed', 'error');
   }
@@ -286,7 +338,7 @@ registerModal('bulkImport', (data) => {
   const isStaged = !!config.matchKey;
 
   if (isStaged && data.inserts) {
-    const { inserts, updates, skipped } = data;
+    const { inserts, updates, skipped, duplicates } = data;
     const total = inserts.length + updates.length;
     const insertRows = inserts.map((r, i) => `
       <tr><td><input type="checkbox" data-import-insert="${i}" checked></td><td>${esc(r.label)}</td></tr>
@@ -296,7 +348,7 @@ registerModal('bulkImport', (data) => {
     `).join('') || `<tr><td colspan="3"><div class="empty">None</div></td></tr>`;
     return `
       <h3>Bulk Import - ${esc(config.label)}: Review Changes</h3>
-      <p class="small muted">Parsed and matched in memory only - nothing has been saved yet. Uncheck any row you don't want, then approve.${skipped ? ` ${skipped} row(s) skipped (missing required field).` : ''}</p>
+      <p class="small muted">Parsed and matched in memory only - nothing has been saved yet. Uncheck any row you don't want, then approve.${skipped ? ` ${skipped} row(s) skipped (missing required field).` : ''}${duplicates ? ` ${duplicates} duplicate row(s) within the file were merged.` : ''}</p>
       <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
         <span>${total} change${total === 1 ? '' : 's'} proposed</span>
         <span style="display:flex;gap:8px;">
@@ -319,8 +371,9 @@ registerModal('bulkImport', (data) => {
     `;
   }
 
+  const MATCH_BY = { simCards: 'SIM number', metroPic: 'Company Name or Emirates ID Number', assetsInventory: 'Asset ID or name+venue' };
   const matchNote = isStaged
-    ? `<p class="small muted">Rows matching an existing record (by ${data.entity === 'simCards' ? 'SIM number' : 'Asset ID or name+venue'}) are compared field by field - you'll see exactly what would change before anything is saved. Unmatched rows show as new.</p>`
+    ? `<p class="small muted">Rows matching an existing record (by ${MATCH_BY[data.entity] || 'a natural key'}) are compared field by field - you'll see exactly what would change before anything is saved. Duplicate rows within the same file are merged. Unmatched rows show as new.</p>`
     : '';
   return `
     <h3>Bulk Import - ${esc(config.label)}</h3>

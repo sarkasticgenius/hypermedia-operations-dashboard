@@ -11,6 +11,7 @@ import { logAudit } from '../lib/audit.js';
 import { esc, jsAttr, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
 import { getSignedUrl } from '../lib/storage.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const STATUS_BADGE = { Open: 'b-red', 'In Progress': 'b-amber', Resolved: 'b-blue', Closed: 'b-gray' };
 
@@ -138,7 +139,11 @@ function renderCharts(tickets) {
 
 // -------------------- list view --------------------
 function renderListView(visible) {
-  const rows = visible.map((t) => `
+  const sorted = applySort(visible, 'ticketsList', {
+    title: (t) => t.title || '', location: (t) => t.location || '', status: (t) => t.status || '',
+    priority: (t) => t.priority || '', reported: (t) => t.date_reported || '',
+  });
+  const rows = sorted.map((t) => `
     <tr>
       <td>${esc(t.title)}</td>
       <td>${esc(t.location || '-')}</td>
@@ -155,7 +160,7 @@ function renderListView(visible) {
     <div class="card">
       ${visible.length === 0 ? '<div class="empty">No tickets match your filters.</div>' : `
         <table>
-          <thead><tr><th>Title</th><th>Location</th><th>Status</th><th>Priority</th><th>Reported</th><th></th></tr></thead>
+          <thead><tr>${sortTh('ticketsList', 'title', 'Title')}${sortTh('ticketsList', 'location', 'Location')}${sortTh('ticketsList', 'status', 'Status')}${sortTh('ticketsList', 'priority', 'Priority')}${sortTh('ticketsList', 'reported', 'Reported')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

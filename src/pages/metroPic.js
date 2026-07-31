@@ -1,25 +1,35 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
 import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
-import { listMetroPics, saveMetroPic, deleteMetroPic, renewMetroPic } from '../data/metroPics.js';
+import { listMetroPics, saveMetroPic, deleteMetroPic, renewMetroPic, metroPicStatus } from '../data/metroPics.js';
 import { logAudit } from '../lib/audit.js';
-import { esc, fmtDate, daysUntilInfo } from '../lib/format.js';
+import { esc, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
+
+const STATUS_BADGE = { Active: 'b-green', 'Expiring Soon': 'b-amber', Expired: 'b-red' };
 
 export function renderMetroPic() {
   const pics = loadData('metroPics', listMetroPics);
   if (pics === null) return loadingCard();
   if (pics?.__error) return loadingCard(pics.__error);
 
-  const rows = pics.map((m) => {
-    const info = daysUntilInfo(m.validity_end);
+  const sorted = applySort(pics, 'metroPics', {
+    station: (m) => m.station || '', picName: (m) => m.pic_name || '', phone: (m) => m.phone || '',
+    validityStart: (m) => m.validity_start || '', validityEnd: (m) => m.validity_end || '',
+    status: (m) => metroPicStatus(m),
+  });
+
+  const rows = sorted.map((m) => {
+    const status = metroPicStatus(m);
     return `
       <tr>
         <td>${esc(m.station)}</td>
         <td>${esc(m.pic_name || '-')}</td>
         <td>${esc(m.phone || '-')}</td>
+        <td>${fmtDate(m.validity_start)}</td>
         <td>${fmtDate(m.validity_end)}</td>
-        <td><span class="badge ${info.overdue ? 'b-red' : info.urgent ? 'b-amber' : 'b-green'}">${info.text}</span></td>
+        <td><span class="badge ${STATUS_BADGE[status] || 'b-gray'}">${status}</span></td>
         <td>
           ${canEdit('metroPic') ? `<button class="btn-sm" onclick="App.editMetroPic('${m.id}')">Edit</button>` : ''}
           ${canEdit('metroPic') ? `<button class="btn-sm" onclick="App.renewMetroPicRow('${m.id}')">Renew</button>` : ''}
@@ -41,7 +51,7 @@ export function renderMetroPic() {
     <div class="card">
       ${pics.length === 0 ? '<div class="empty">No Metro PICs yet.</div>' : `
         <table>
-          <thead><tr><th>Company Name</th><th>PIC Name</th><th>Phone</th><th>Valid Until</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>${sortTh('metroPics', 'station', 'Company Name')}${sortTh('metroPics', 'picName', 'PIC Name')}${sortTh('metroPics', 'phone', 'Phone')}${sortTh('metroPics', 'validityStart', 'Valid From')}${sortTh('metroPics', 'validityEnd', 'Valid Until')}${sortTh('metroPics', 'status', 'Status')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

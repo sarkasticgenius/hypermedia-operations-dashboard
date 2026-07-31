@@ -12,6 +12,7 @@ import { logAudit } from '../lib/audit.js';
 import { esc, fmtMoney, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 function isRental(categories, name) {
   return !!categories.find((c) => c.name.toLowerCase() === String(name || '').toLowerCase())?.is_rental;
@@ -82,7 +83,11 @@ function renderInventoryView(data) {
     return true;
   });
 
-  const rows = visible.map((a) => {
+  const sorted = applySort(visible, 'assetsInventoryList', {
+    name: (a) => a.name || '', price: (a) => a.unit_price || 0, available: (a) => a.stock_available || 0, status: (a) => a.status || '',
+  });
+
+  const rows = sorted.map((a) => {
     const rental = isRental(categories, a.category);
     const meta = [
       a.serial_number ? `SN: ${a.serial_number}` : null,
@@ -134,7 +139,7 @@ function renderInventoryView(data) {
     <div class="card">
       ${visible.length === 0 ? '<div class="empty">No spare hardware assets match your filters.</div>' : `
         <table>
-          <thead><tr><th>Asset</th><th>Unit Price</th><th class="tright">Available (Spare)</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>${sortTh('assetsInventoryList', 'name', 'Asset')}${sortTh('assetsInventoryList', 'price', 'Unit Price')}${sortTh('assetsInventoryList', 'available', 'Available (Spare)')}${sortTh('assetsInventoryList', 'status', 'Status')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -171,7 +176,11 @@ function renderDeployedView(data) {
 
   const repeats = redeploymentFrequency(assignments);
 
-  const rows = deployed.map((a) => {
+  const sortedDeployed = applySort(deployed, 'assetsDeployedList', {
+    name: (a) => a.name || '', onSite: (a) => a.stock_on_site || 0, available: (a) => a.stock_available || 0, status: (a) => a.status || '',
+  });
+
+  const rows = sortedDeployed.map((a) => {
     const deployedLocs = (a.asset_locations || []).map((al) => `${al.location_name} (${al.qty})`).join(', ') || '-';
     return `
       <tr style="${a.status === 'Faulty' ? 'background:#fdecea;' : ''}">
@@ -203,7 +212,7 @@ function renderDeployedView(data) {
     <div class="card">
       ${deployed.length === 0 ? '<div class="empty">No assets have been deployed out of the warehouse yet.</div>' : `
         <table>
-          <thead><tr><th>Asset</th><th class="tright">On Site</th><th class="tright">Available (Spare)</th><th>Deployed Locations</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>${sortTh('assetsDeployedList', 'name', 'Asset')}${sortTh('assetsDeployedList', 'onSite', 'On Site')}${sortTh('assetsDeployedList', 'available', 'Available (Spare)')}<th>Deployed Locations</th>${sortTh('assetsDeployedList', 'status', 'Status')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

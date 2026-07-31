@@ -5,6 +5,7 @@ import { listPermits, savePermit, deletePermit, permitStatus } from '../data/per
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const STATUS_BADGE = { Active: 'b-green', 'Expiring Soon': 'b-amber', Expired: 'b-red' };
 
@@ -13,7 +14,12 @@ export function renderPermits() {
   if (permits === null) return loadingCard();
   if (permits?.__error) return loadingCard(permits.__error);
 
-  const rows = permits.map((p) => {
+  const sorted = applySort(permits, 'permits', {
+    title: (p) => p.title || '', type: (p) => p.type || '', location: (p) => p.location || '',
+    expiry: (p) => p.expiry_date || '', status: (p) => permitStatus(p),
+  });
+
+  const rows = sorted.map((p) => {
     const status = permitStatus(p);
     return `
       <tr>
@@ -42,7 +48,7 @@ export function renderPermits() {
     <div class="card">
       ${permits.length === 0 ? '<div class="empty">No permits yet.</div>' : `
         <table>
-          <thead><tr><th>Title</th><th>Type</th><th>Location</th><th>Expiry</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>${sortTh('permits', 'title', 'Title')}${sortTh('permits', 'type', 'Type')}${sortTh('permits', 'location', 'Location')}${sortTh('permits', 'expiry', 'Expiry')}${sortTh('permits', 'status', 'Status')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

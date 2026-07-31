@@ -13,6 +13,7 @@ import { supabase } from '../supabaseClient.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const TABS = [
   { key: 'categories', label: 'Asset Categories' },
@@ -118,7 +119,12 @@ function renderContractorsTab() {
     if (a.contractor_id) screenCounts[a.contractor_id] = (screenCounts[a.contractor_id] || 0) + 1;
   }
 
-  const rows = contractors.map((c) => `
+  const sorted = applySort(contractors, 'contractors', {
+    name: (c) => c.name || '', company: (c) => c.company || '', phone: (c) => c.phone || '',
+    screens: (c) => screenCounts[c.id] || 0,
+  });
+
+  const rows = sorted.map((c) => `
     <tr>
       <td>${brandLogoTag(c.company || c.name)} ${esc(c.name)}</td>
       <td>${esc(c.company || '-')}</td>
@@ -134,7 +140,7 @@ function renderContractorsTab() {
   return `
     <div class="card">
       <div class="card-head"><h3>Contractors</h3><div class="desc">Notified by email when a ticket is created for a screen assigned to them. Screen assignment happens on the Asset Inventory edit/bulk-edit form.</div></div>
-      <table><thead><tr><th>Name</th><th>Company</th><th>Emails</th><th>Phone</th><th class="tright">Screens</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <table><thead><tr>${sortTh('contractors', 'name', 'Name')}${sortTh('contractors', 'company', 'Company')}<th>Emails</th>${sortTh('contractors', 'phone', 'Phone')}${sortTh('contractors', 'screens', 'Screens')}<th></th></tr></thead><tbody>${rows}</tbody></table>
       <button class="btn btn-orange" style="margin-top:14px;" onclick="App.editContractorModal(null)">+ Add Contractor</button>
     </div>
   `;

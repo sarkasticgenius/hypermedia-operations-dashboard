@@ -9,6 +9,7 @@ import { getSignedUrl } from '../lib/storage.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, todayISO } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const STATUS_BADGE = { Ordered: 'b-gray', 'In Transit': 'b-amber', Delivered: 'b-green' };
 
@@ -46,7 +47,12 @@ export function renderProcurement() {
   const delOk = canDelete('orders');
   const exportOk = canExportArea('orders');
 
-  const rows = orders.map((o) => `
+  const sorted = applySort(orders, 'procurement', {
+    asset: (o) => o.asset_name || '', qty: (o) => o.qty || 0, orderDate: (o) => o.order_date || '',
+    destination: (o) => o.destination || '', status: (o) => o.status || '',
+  });
+
+  const rows = sorted.map((o) => `
     <tr>
       <td><b>${esc(o.asset_name || '-')}</b></td>
       <td class="tright">${o.qty}</td>
@@ -76,7 +82,7 @@ export function renderProcurement() {
     <div class="card">
       ${orders.length === 0 ? '<div class="empty">No purchase orders yet.</div>' : `
         <table>
-          <thead><tr><th>Asset</th><th class="tright">Qty</th><th>Order Date</th><th>Destination</th><th>Status</th><th>Warranty</th><th>Delivery Note</th><th></th></tr></thead>
+          <thead><tr>${sortTh('procurement', 'asset', 'Asset')}${sortTh('procurement', 'qty', 'Qty')}${sortTh('procurement', 'orderDate', 'Order Date')}${sortTh('procurement', 'destination', 'Destination')}${sortTh('procurement', 'status', 'Status')}<th>Warranty</th><th>Delivery Note</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

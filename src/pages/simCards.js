@@ -12,6 +12,7 @@ import { svgGroupedBarChart } from '../lib/charts.js';
 import { exportToCsv } from '../lib/csv.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtMoney } from '../lib/format.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 async function loadSimCardsData() {
   const [simCards, locations, assetInventory] = await Promise.all([
@@ -57,12 +58,18 @@ export function renderSimCards() {
   const mismatchCount = simCards.filter((s) => s.has_mismatch).length;
 
   const tab = STATE.simStatusFilter || 'All';
-  const visible = filteredSimCards(simCards, dupCounts).sort((a, b) => {
-    const aFlag = issueInfo(a, dupCounts).flagged;
-    const bFlag = issueInfo(b, dupCounts).flagged;
-    if (aFlag !== bFlag) return aFlag ? -1 : 1;
-    return (a.sim_number || '').localeCompare(b.sim_number || '');
-  });
+  const filtered = filteredSimCards(simCards, dupCounts);
+  const visible = STATE.tableSort?.simCards
+    ? applySort(filtered, 'simCards', {
+        simNumber: (s) => s.sim_number || '', carrier: (s) => s.carrier || '', dataPlan: (s) => s.data_plan || '',
+        billing: (s) => s.billing_cost || 0, status: (s) => s.status || '', deployedAt: (s) => s.deployed_location_name || '',
+      })
+    : filtered.sort((a, b) => {
+        const aFlag = issueInfo(a, dupCounts).flagged;
+        const bFlag = issueInfo(b, dupCounts).flagged;
+        if (aFlag !== bFlag) return aFlag ? -1 : 1;
+        return (a.sim_number || '').localeCompare(b.sim_number || '');
+      });
 
   const rows = visible.map((s) => {
     const info = issueInfo(s, dupCounts);
@@ -104,7 +111,7 @@ export function renderSimCards() {
     <div class="card">
       ${visible.length === 0 ? '<div class="empty">No SIM cards match your filters.</div>' : `
         <table>
-          <thead><tr><th>SIM Number</th><th>Carrier</th><th>Data Plan</th><th>Billing</th><th>Status</th><th>Deployed At</th><th></th></tr></thead>
+          <thead><tr>${sortTh('simCards', 'simNumber', 'SIM Number')}${sortTh('simCards', 'carrier', 'Carrier')}${sortTh('simCards', 'dataPlan', 'Data Plan')}${sortTh('simCards', 'billing', 'Billing')}${sortTh('simCards', 'status', 'Status')}${sortTh('simCards', 'deployedAt', 'Deployed At')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

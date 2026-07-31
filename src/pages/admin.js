@@ -6,6 +6,7 @@ import { listAuditLog } from '../data/auditLog.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 import { startImpersonation } from '../impersonate.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const TABS = [{ key: 'users', label: 'Users' }, { key: 'audit', label: 'Audit Log' }];
 
@@ -24,7 +25,12 @@ function renderUsersTab() {
   if (users === null) return loadingCard();
   if (users?.__error) return loadingCard(users.__error);
 
-  const rows = users.map((u) => {
+  const sorted = applySort(users, 'users', {
+    username: (u) => u.username || '', name: (u) => u.name || '', role: (u) => u.role || '',
+    status: (u) => u.active ? 'Active' : 'Deactivated',
+  });
+
+  const rows = sorted.map((u) => {
     const summary = u.role === 'admin' ? 'Full access (admin)' : PERMISSION_AREAS.filter((a) => u.permissions[a]?.view).length + ' area(s) with access';
     return `
       <tr>
@@ -49,7 +55,7 @@ function renderUsersTab() {
     </div>
     <div class="card">
       <table>
-        <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Access</th><th>Status</th><th></th></tr></thead>
+        <thead><tr>${sortTh('users', 'username', 'Username')}${sortTh('users', 'name', 'Name')}${sortTh('users', 'role', 'Role')}<th>Access</th>${sortTh('users', 'status', 'Status')}<th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -60,7 +66,10 @@ function renderAuditTab() {
   const log = loadData('auditLog', () => listAuditLog(300));
   if (log === null) return loadingCard();
   if (log?.__error) return loadingCard(log.__error);
-  const rows = log.map((l) => `
+  const sorted = applySort(log, 'auditLog', {
+    time: (l) => l.ts || '', user: (l) => l.username || '', action: (l) => l.action || '', detail: (l) => l.detail || '',
+  });
+  const rows = sorted.map((l) => `
     <tr>
       <td>${new Date(l.ts).toLocaleString()}</td>
       <td>${esc(l.username || '-')}</td>
@@ -72,7 +81,7 @@ function renderAuditTab() {
     <div class="card">
       ${log.length === 0 ? '<div class="empty">No activity logged yet.</div>' : `
         <table>
-          <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead>
+          <thead><tr>${sortTh('auditLog', 'time', 'Time')}${sortTh('auditLog', 'user', 'User')}${sortTh('auditLog', 'action', 'Action')}${sortTh('auditLog', 'detail', 'Detail')}</tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

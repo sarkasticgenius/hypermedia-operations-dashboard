@@ -1,6 +1,7 @@
 import { STATE, loadData, invalidate, toast, setState } from '../state.js';
 import { loadingCard } from '../modals.js';
 import { esc } from '../lib/format.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
 import { listUsers } from '../data/users.js';
 import { listDeletedAssets, restoreAsset, permanentlyDeleteAsset } from '../data/assets.js';
@@ -96,10 +97,14 @@ export function renderRecycleBin() {
   const search = (STATE.recycleBinSearch || '').trim().toLowerCase();
   const usersById = Object.fromEntries(data.users.map((u) => [u.id, u]));
 
-  const rows = data.rows.filter((r) => {
+  const filtered = data.rows.filter((r) => {
     if (typeFilter !== 'All' && r.type !== typeFilter) return false;
     if (search && !r.display.toLowerCase().includes(search)) return false;
     return true;
+  });
+  const rows = applySort(filtered, 'recycleBin', {
+    item: (r) => r.display || '', type: (r) => r.label || '', deletedAt: (r) => r.deleted_at || '',
+    deletedBy: (r) => usersById[r.deleted_by]?.name || usersById[r.deleted_by]?.username || '',
   });
 
   const typeOptions = ['All', ...RECYCLE_CONFIG.map((c) => c.key)]
@@ -133,7 +138,7 @@ export function renderRecycleBin() {
     <div class="card">
       ${rows.length === 0 ? '<div class="empty">Nothing here - deleted items from anywhere in the app show up in this list.</div>' : `
         <table>
-          <thead><tr><th>Item</th><th>Type</th><th>Deleted</th><th>Deleted By</th><th></th></tr></thead>
+          <thead><tr>${sortTh('recycleBin', 'item', 'Item')}${sortTh('recycleBin', 'type', 'Type')}${sortTh('recycleBin', 'deletedAt', 'Deleted')}${sortTh('recycleBin', 'deletedBy', 'Deleted By')}<th></th></tr></thead>
           <tbody>${rowsHtml}</tbody>
         </table>
       `}

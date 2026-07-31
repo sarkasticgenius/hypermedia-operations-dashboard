@@ -9,6 +9,7 @@ import {
 import { listContractors } from '../data/contractors.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, fmtMoney } from '../lib/format.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const TABS = [
   { key: 'list', label: 'Campaigns' },
@@ -37,7 +38,12 @@ function renderListTab() {
   if (campaigns === null) return loadingCard();
   if (campaigns?.__error) return loadingCard(campaigns.__error);
 
-  const rows = campaigns.map((c) => `
+  const sorted = applySort(campaigns, 'staticCampaignsList', {
+    name: (c) => c.name || '', client: (c) => c.client || '', format: (c) => c.format || '',
+    dates: (c) => c.start_date || '', status: (c) => c.status || '',
+  });
+
+  const rows = sorted.map((c) => `
     <tr>
       <td>${esc(c.name)}</td>
       <td>${esc(c.client || '-')}</td>
@@ -61,7 +67,7 @@ function renderListTab() {
     <div class="card">
       ${campaigns.length === 0 ? '<div class="empty">No static campaigns yet.</div>' : `
         <table>
-          <thead><tr><th>Name</th><th>Client</th><th>Format</th><th>Dates</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>${sortTh('staticCampaignsList', 'name', 'Name')}${sortTh('staticCampaignsList', 'client', 'Client')}${sortTh('staticCampaignsList', 'format', 'Format')}${sortTh('staticCampaignsList', 'dates', 'Dates')}${sortTh('staticCampaignsList', 'status', 'Status')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -75,7 +81,12 @@ function renderMachinesTab() {
   if (machines === null || contractors === null) return loadingCard();
   if (machines?.__error) return loadingCard(machines.__error);
 
-  const rows = machines.map((m) => {
+  const sortedMachines = applySort(machines, 'staticMachinesList', {
+    name: (m) => m.name || '', category: (m) => m.category || '',
+    contractor: (m) => (contractors || []).find((c) => c.id === m.contractor_id)?.name || '', status: (m) => m.status || '',
+  });
+
+  const rows = sortedMachines.map((m) => {
     const contractor = (contractors || []).find((c) => c.id === m.contractor_id);
     return `
       <tr>
@@ -101,7 +112,7 @@ function renderMachinesTab() {
     <div class="card">
       ${machines.length === 0 ? '<div class="empty">No machines yet.</div>' : `
         <table>
-          <thead><tr><th>Name</th><th>Category</th><th>Contractor</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>${sortTh('staticMachinesList', 'name', 'Name')}${sortTh('staticMachinesList', 'category', 'Category')}${sortTh('staticMachinesList', 'contractor', 'Contractor')}${sortTh('staticMachinesList', 'status', 'Status')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -115,7 +126,12 @@ function renderBookingsTab() {
   if (bookings === null || machines === null) return loadingCard();
   if (bookings?.__error) return loadingCard(bookings.__error);
 
-  const rows = bookings.map((b) => {
+  const sortedBookings = applySort(bookings, 'staticBookingsList', {
+    machine: (b) => (machines || []).find((m) => m.id === b.machine_id)?.name || '',
+    dates: (b) => b.start_date || '', bookedBy: (b) => b.booked_by || '',
+  });
+
+  const rows = sortedBookings.map((b) => {
     const machine = (machines || []).find((m) => m.id === b.machine_id);
     return `
       <tr>
@@ -140,7 +156,7 @@ function renderBookingsTab() {
     <div class="card">
       ${bookings.length === 0 ? '<div class="empty">No bookings yet.</div>' : `
         <table>
-          <thead><tr><th>Machine</th><th>Dates</th><th>Booked By</th><th></th></tr></thead>
+          <thead><tr>${sortTh('staticBookingsList', 'machine', 'Machine')}${sortTh('staticBookingsList', 'dates', 'Dates')}${sortTh('staticBookingsList', 'bookedBy', 'Booked By')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
