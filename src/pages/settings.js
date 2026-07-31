@@ -363,40 +363,22 @@ function renderBroadsignApiCard(settings) {
   `;
 }
 
-// Back to the proven-working locationlist/init call (X-ApiKey auth) - the v1/player/{boxId}
-// attempt 404s for every box ID on the real tenant. init returns a FilterResultID (a server-side
-// cached filter) rather than the location list itself; the sync function's follow-up call to
-// actually fetch results is a best-effort guess since Grassfish's GV2 client webservices aren't
-// publicly documented. Two-stage calibration once real items come back: Sync Now first logs a raw
-// sample (below) so "Status Field Name" can be read off, then a raw value histogram once that's
-// set, so "Offline Status Values" can be set from real data. See supabase/functions/grassfish-sync.
+// Reverse-engineered live against the real tenant (see supabase/functions/grassfish-sync for the
+// full three-step flow: locationlist/init -> locations/list -> per-item locations/{Id} detail).
+// "BoxIsOnline" is a real, unambiguous boolean field, so unlike Broadsign's undocumented
+// monitor_status codes this needs no raw-sample calibration - just Base URL + API Key. Runs
+// automatically every 20 minutes via a pg_cron job (migration 0014) in addition to Test/Sync Now.
 function renderGrassfishApiCard(settings) {
   const cfg = settings.grassfishApi || {};
   const testing = STATE.testing_grassfishApi;
-  const rawCounts = cfg.lastRawStatusCounts || {};
-  const rawCountsHtml = Object.keys(rawCounts).length
-    ? `<div class="small muted" style="margin-top:6px;">Last raw "${esc(cfg.statusFieldName || '')}" counts (matched screens only): ${Object.keys(rawCounts).map((k) => `${esc(k)} (${rawCounts[k]}x)`).join(', ')}</div>`
-    : '';
   const missingHtml = (cfg.lastMissingFromApi || []).length
-    ? `<div class="small muted" style="margin-top:2px;">${cfg.lastMissingFromApi.length} inventory Player Box ID(s) had no match in the API response last sync.</div>` : '';
-  const sampleHtml = cfg.lastRawSample
-    ? `<details style="margin-top:6px;"><summary class="small muted" style="cursor:pointer;">Last raw sample (read field names off this)</summary><pre style="font-size:11px;white-space:pre-wrap;background:#f7f6f4;border-radius:6px;padding:8px;margin-top:4px;">${esc(cfg.lastRawSample)}</pre></details>`
-    : '';
+    ? `<div class="small muted" style="margin-top:2px;">${cfg.lastMissingFromApi.length} matched Box ID(s) failed to respond last sync.</div>` : '';
   return `
     <div class="card">
-      <div class="card-head"><h3>Grassfish API</h3><div class="desc">locationlist/init sync, matched to Asset Inventory rows tagged Player Type "Grassfish" by Player Box ID.</div></div>
+      <div class="card-head"><h3>Grassfish API</h3><div class="desc">Matched to Asset Inventory rows tagged Player Type "Grassfish" by Player Box ID. Runs automatically every 20 minutes, plus on demand below.</div></div>
       <form onsubmit="App.saveIntegrationForm(event,'grassfishApi')">
         <div class="field"><label>Base URL</label><input id="int-grassfishApi-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://your-tenant.grassfish.tv"></div>
         <div class="field"><label>API Key</label><input id="int-grassfishApi-apiKey" type="password" value="${esc(cfg.apiKey || '')}"></div>
-        <div class="grid2">
-          <div class="field"><label>Status Field Name</label>
-            <input id="int-grassfishApi-statusFieldName" value="${esc(cfg.statusFieldName || '')}" placeholder="e.g. Online">
-          </div>
-          <div class="field"><label>Offline Status Values</label>
-            <input id="int-grassfishApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. false,Offline">
-          </div>
-        </div>
-        <div class="small muted" style="margin-top:-6px;margin-bottom:10px;">Run Test/Sync Now first - it logs the raw response from the "fetch results" follow-up call below. If that call isn't returning items yet, the summary will say so and log the raw response for calibration.</div>
         <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-grassfishApi-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <button class="btn btn-orange" type="submit">Save</button>
@@ -405,9 +387,7 @@ function renderGrassfishApiCard(settings) {
         </div>
         ${cfg.lastSyncSummary ? `<p class="small muted" style="margin-top:6px;">${esc(cfg.lastSyncSummary)}</p>` : ''}
         ${cfg.lastError ? `<div class="login-error" style="margin-top:6px;">${esc(cfg.lastError)}</div>` : ''}
-        ${rawCountsHtml}
         ${missingHtml}
-        ${sampleHtml}
       </form>
     </div>
   `;
