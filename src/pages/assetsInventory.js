@@ -168,7 +168,11 @@ export function renderAssetsInventory() {
       </div>
     </div>
     ${selectedIds.size > 0 ? `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-      <span><b>${selectedIds.size}</b> screen${selectedIds.size === 1 ? '' : 's'} selected</span>
+      <span>
+        <b>${selectedIds.size}</b> screen${selectedIds.size === 1 ? '' : 's'} selected
+        ${allPageSelected && list.length > pageIds.length ? ` - <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.selectAllAssetInvMatching()">Select all ${list.length} matching this filter</a>` : ''}
+        ${selectedIds.size > pageIds.length ? ` (spans every page of this filter)` : ''}
+      </span>
       <div style="display:flex;gap:8px;">
         ${editOk ? `<button class="btn-sm" onclick="App.openBulkEditAssetInv()">Bulk Edit</button>` : ''}
         ${delOk ? `<button class="btn-sm" style="color:#c0392b;" onclick="App.bulkDeleteAssetInv()">Bulk Delete</button>` : ''}
@@ -207,6 +211,17 @@ export function toggleAssetInvSelectAllOnPage(checked) {
   if (checked) pageIds.forEach((id) => cur.add(id));
   else pageIds.forEach((id) => cur.delete(id));
   setState({ aiSelectedIds: [...cur] });
+}
+
+// Selects every row matching the current search/filters across ALL pagination pages, not just the
+// 50 on screen - toggleAssetInvSelectAllOnPage() alone could only ever reach one page at a time,
+// so bulk-editing/deleting a large filtered set meant manually paging through and re-checking
+// "select all" on every page.
+export function selectAllAssetInvMatching() {
+  const data = pageData();
+  if (!data) return;
+  const list = sortedAndFiltered(data.rows, data.contractors);
+  setState({ aiSelectedIds: list.map((r) => r.id) });
 }
 
 export function clearAssetInvSelection() { setState({ aiSelectedIds: [] }); }

@@ -88,24 +88,80 @@ export async function purgeRecycleBinRow(type, id) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+// Selection keys are `${type}::${id}` since ids aren't unique across the different tables this
+// page pools together (an assets row and a permits row can share the same uuid by coincidence).
+function rowKey(type, id) { return `${type}::${id}`; }
+
+export function toggleRecycleBinSelection(type, id, checked) {
+  const cur = new Set(STATE.recycleBinSelectedIds || []);
+  const key = rowKey(type, id);
+  if (checked) cur.add(key); else cur.delete(key);
+  setState({ recycleBinSelectedIds: [...cur] });
+}
+
+export function toggleRecycleBinSelectAll(checked) {
+  const data = STATE.pageData.recycleBin?.data;
+  if (!data) return;
+  const visible = visibleRecycleBinRows(data);
+  const cur = new Set(STATE.recycleBinSelectedIds || []);
+  if (checked) visible.forEach((r) => cur.add(rowKey(r.type, r.id)));
+  else visible.forEach((r) => cur.delete(rowKey(r.type, r.id)));
+  setState({ recycleBinSelectedIds: [...cur] });
+}
+
+export function clearRecycleBinSelection() { setState({ recycleBinSelectedIds: [] }); }
+
+export async function bulkPurgeRecycleBin() {
+  const keys = STATE.recycleBinSelectedIds || [];
+  if (!keys.length) return;
+  if (!confirm(`Permanently delete ${keys.length} selected item(s)? This cannot be undone - none of them will be recoverable.`)) return;
+  try {
+    const byType = new Map();
+    for (const key of keys) {
+      const [type, id] = key.split('::');
+      if (!byType.has(type)) byType.set(type, []);
+      byType.get(type).push(id);
+    }
+    for (const [type, ids] of byType.entries()) {
+      const cfg = RECYCLE_CONFIG.find((c) => c.key === type);
+      if (!cfg) continue;
+      await Promise.all(ids.map((id) => cfg.purge(id)));
+      await logAudit(`Bulk-permanently-delete ${cfg.label}`, `${ids.length} item(s)`);
+    }
+    invalidate('recycleBin');
+    setState({ recycleBinSelectedIds: [] });
+    toast(`${keys.length} item(s) permanently deleted`);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// Shared between the render and toggleRecycleBinSelectAll() so "select all" always matches
+// whatever the search/type filter currently has on screen, not the full unfiltered set.
+function visibleRecycleBinRows(data) {
+  const typeFilter = STATE.recycleBinType || 'All';
+  const search = (STATE.recycleBinSearch || '').trim().toLowerCase();
+  const usersById = Object.fromEntries(data.users.map((u) => [u.id, u]));
+  const filtered = data.rows.filter((r) => {
+    if (typeFilter !== 'All' && r.type !== typeFilter) return false;
+    if (search && !r.display.toLowerCase().includes(search)) return false;
+    return true;
+  });
+  return applySort(filtered, 'recycleBin', {
+    item: (r) => r.display || '', type: (r) => r.label || '', deletedAt: (r) => r.deleted_at || '',
+    deletedBy: (r) => usersById[r.deleted_by]?.name || usersById[r.deleted_by]?.username || '',
+  });
+}
+
 export function renderRecycleBin() {
   const data = loadData('recycleBin', loadRecycleBinData);
   if (data === null) return loadingCard();
   if (data?.__error) return loadingCard(data.__error);
 
   const typeFilter = STATE.recycleBinType || 'All';
-  const search = (STATE.recycleBinSearch || '').trim().toLowerCase();
   const usersById = Object.fromEntries(data.users.map((u) => [u.id, u]));
-
-  const filtered = data.rows.filter((r) => {
-    if (typeFilter !== 'All' && r.type !== typeFilter) return false;
-    if (search && !r.display.toLowerCase().includes(search)) return false;
-    return true;
-  });
-  const rows = applySort(filtered, 'recycleBin', {
-    item: (r) => r.display || '', type: (r) => r.label || '', deletedAt: (r) => r.deleted_at || '',
-    deletedBy: (r) => usersById[r.deleted_by]?.name || usersById[r.deleted_by]?.username || '',
-  });
+  const rows = visibleRecycleBinRows(data);
+  const selectedIds = new Set(STATE.recycleBinSelectedIds || []);
+  const rowKeys = rows.map((r) => rowKey(r.type, r.id));
+  const allSelected = rowKeys.length > 0 && rowKeys.every((k) => selectedIds.has(k));
 
   const typeOptions = ['All', ...RECYCLE_CONFIG.map((c) => c.key)]
     .map((k) => `<option value="${k}" ${typeFilter === k ? 'selected' : ''}>${k === 'All' ? 'All types' : esc(RECYCLE_CONFIG.find((c) => c.key === k).label)}</option>`)
@@ -115,6 +171,7 @@ export function renderRecycleBin() {
     const deletedBy = usersById[r.deleted_by];
     return `
       <tr>
+        <td style="width:28px;"><input type="checkbox" ${selectedIds.has(rowKey(r.type, r.id)) ? 'checked' : ''} onchange="App.toggleRecycleBinSelection('${r.type}','${r.id}', this.checked)"></td>
         <td>${esc(r.display)}</td>
         <td>${esc(r.label)}</td>
         <td>${r.deleted_at ? new Date(r.deleted_at).toLocaleString() : '-'}</td>
@@ -135,10 +192,17 @@ export function renderRecycleBin() {
       </div>
       <div class="small muted">${rows.length} of ${data.rows.length} deleted item(s)</div>
     </div>
+    ${selectedIds.size > 0 ? `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <span><b>${selectedIds.size}</b> item${selectedIds.size === 1 ? '' : 's'} selected</span>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-sm" style="color:#c0392b;" onclick="App.bulkPurgeRecycleBin()">Delete Selected Permanently</button>
+        <button class="btn-sm" onclick="App.clearRecycleBinSelection()">Clear Selection</button>
+      </div>
+    </div>` : ''}
     <div class="card">
       ${rows.length === 0 ? '<div class="empty">Nothing here - deleted items from anywhere in the app show up in this list.</div>' : `
         <table>
-          <thead><tr>${sortTh('recycleBin', 'item', 'Item')}${sortTh('recycleBin', 'type', 'Type')}${sortTh('recycleBin', 'deletedAt', 'Deleted')}${sortTh('recycleBin', 'deletedBy', 'Deleted By')}<th></th></tr></thead>
+          <thead><tr><th style="width:28px;"><input type="checkbox" ${allSelected ? 'checked' : ''} onchange="App.toggleRecycleBinSelectAll(this.checked)" title="Select all matching this filter"></th>${sortTh('recycleBin', 'item', 'Item')}${sortTh('recycleBin', 'type', 'Type')}${sortTh('recycleBin', 'deletedAt', 'Deleted')}${sortTh('recycleBin', 'deletedBy', 'Deleted By')}<th></th></tr></thead>
           <tbody>${rowsHtml}</tbody>
         </table>
       `}
