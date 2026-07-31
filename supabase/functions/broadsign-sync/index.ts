@@ -8,6 +8,9 @@
 //   Header: authorization: Bearer <apiKey>
 //   Response: {"monitor_poll":[{client_resource_id, domain_id, id, monitor_status, poll_last_utc,
 //              poll_next_expected_utc, private_ip, product_version, public_ip}], "not_modified_since"}
+// poll_last_utc/monitor_status are stored on every MATCHED asset_inventory row (last_poll_utc,
+// last_monitor_status), not just offline ones, so "when was this screen last heard from" is
+// always visible regardless of online/offline calibration state.
 //
 // monitor_status meaning: Broadsign's docs show an example value but never publish what any
 // integer code means. Guessing that mapping wrong would silently invert every screen's status, so
@@ -24,12 +27,63 @@
 // broadsignInventoryIndex(). Matched, currently-offline players become location_sub_assets rows
 // (source='broadsign'); the online count rolls up to locations.broadsign_healthy_count instead of
 // being stored per-row, matching the original's loc.subAssets/broadsignHealthyCount split.
+//
+// The asset_inventory pull is paginated (PAGE_SIZE-based .range() loop) - Supabase's project-wide
+// "Max Rows" setting silently caps any single unpaginated select, which is exactly why this used
+// to only ever pull ~716 of 1591+ tagged rows without ever surfacing an error.
+//
+// Every run writes a row to integration_sync_logs (pruned to the most recent 100 per integration)
+// so mismatches/failures can be reviewed over time from the console page's "View Sync Log", not
+// just the single most recent summary. Runs two ways:
+//   1. Settings > Integrations > Broadsign API "Test / Sync Now" - authenticated admin JWT.
+//   2. A pg_cron job every 15 minutes (see migration 0018) - sends a shared secret in
+//      x-cron-secret instead of a user session (pg_cron can't hold one).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 };
+
+const PAGE_SIZE = 1000;
+
+async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string, anonKey: string): Promise<boolean> {
+  const cronSecret = req.headers.get('x-cron-secret');
+  if (cronSecret) {
+    const { data: secretRow } = await adminClient.from('app_settings').select('value').eq('key', '_cronSecret').single();
+    return !!(secretRow?.value?.secret && cronSecret === secretRow.value.secret);
+  }
+  const authHeader = req.headers.get('Authorization') || '';
+  const callerClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
+  const { data: { user: caller } } = await callerClient.auth.getUser();
+  if (!caller) return false;
+  const { data: profile } = await adminClient.from('profiles').select('active').eq('id', caller.id).single();
+  return !!profile?.active;
+}
+
+async function fetchAllInventory(adminClient: any, playerType: string) {
+  const all: any[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await adminClient
+      .from('asset_inventory')
+      .select('id, name, venue, player_box_id')
+      .eq('player_type', playerType)
+      .not('player_box_id', 'is', null)
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    all.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+  return all;
+}
+
+async function logSync(adminClient: any, row: Record<string, unknown>) {
+  await adminClient.from('integration_sync_logs').insert(row);
+  const { data: old } = await adminClient
+    .from('integration_sync_logs').select('id').eq('integration', row.integration)
+    .order('synced_at', { ascending: false }).range(100, 100000);
+  if (old?.length) await adminClient.from('integration_sync_logs').delete().in('id', old.map((r: any) => r.id));
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -38,15 +92,9 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    const authHeader = req.headers.get('Authorization') || '';
-
-    const callerClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
-    const { data: { user: caller } } = await callerClient.auth.getUser();
-    if (!caller) throw new Error('Not authenticated');
-
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
-    const { data: profile } = await adminClient.from('profiles').select('role, active').eq('id', caller.id).single();
-    if (!profile?.active) throw new Error('Inactive account');
+
+    if (!(await isAuthorized(req, adminClient, supabaseUrl, anonKey))) throw new Error('Not authenticated');
 
     const { data: settingsRow } = await adminClient.from('app_settings').select('value').eq('key', 'broadsignApi').single();
     const cfg = settingsRow?.value || {};
@@ -54,13 +102,9 @@ Deno.serve(async (req) => {
       throw new Error('Broadsign integration is not fully configured (Base URL, API Key, Domain ID, Enabled).');
     }
 
-    // Step 1: pull the Broadsign IDs from inventory, up front, before ever calling the API.
-    const { data: inventory } = await adminClient
-      .from('asset_inventory')
-      .select('id, name, venue, player_box_id')
-      .eq('player_type', 'Broadsign')
-      .not('player_box_id', 'is', null);
-    const inventoryIndex = new Map((inventory || [])
+    // Step 1: pull EVERY Broadsign ID from inventory, paginated (not capped at Max Rows).
+    const inventory = await fetchAllInventory(adminClient, 'Broadsign');
+    const inventoryIndex = new Map(inventory
       .filter((r) => String(r.player_box_id).trim())
       .map((r) => [String(r.player_box_id).trim(), r]));
     if (!inventoryIndex.size) {
@@ -91,6 +135,20 @@ Deno.serve(async (req) => {
     }
     const missingFromApi = [...inventoryIndex.keys()].filter((id) => !seenIds.has(id));
     const pulledLine = `Pulled ${inventoryIndex.size} Broadsign ID(s) from Asset Inventory; the API returned data for ${matchedRows.length} of them${missingFromApi.length ? `, ${missingFromApi.length} had no data back (check Domain ID, or the box may be retired/never polled)` : ''}.`;
+
+    // Store poll_last_utc/monitor_status on every matched asset row, online or offline - this is
+    // "last heard from" data, independent of whether offline calibration has been set yet.
+    if (matchedRows.length) {
+      const updates = matchedRows.map(({ asset, row }) => ({
+        id: asset.id, last_poll_utc: row.poll_last_utc || null, last_monitor_status: String(row.monitor_status),
+      }));
+      for (let i = 0; i < updates.length; i += 200) {
+        const chunk = updates.slice(i, i + 200);
+        await Promise.all(chunk.map((u) => adminClient.from('asset_inventory').update({
+          last_poll_utc: u.last_poll_utc, last_monitor_status: u.last_monitor_status,
+        }).eq('id', u.id)));
+      }
+    }
 
     // Raw status histogram scoped to OUR matched screens only, not domain-wide noise from other
     // players sharing this Broadsign domain that this app doesn't track.
@@ -140,9 +198,15 @@ Deno.serve(async (req) => {
     }
 
     await adminClient.from('app_settings').update({
-      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', lastRawStatusCounts: rawCounts, lastMissingFromApi: missingFromApi },
+      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', lastRawStatusCounts: rawCounts, lastMissingFromApi: missingFromApi, lastPulledCount: inventoryIndex.size, lastMatchedCount: matchedRows.length, lastLocationsUpdated: locationsUpdated },
       updated_at: nowIso,
     }).eq('key', 'broadsignApi');
+
+    await logSync(adminClient, {
+      integration: 'broadsign', synced_at: nowIso, pulled_count: inventoryIndex.size,
+      matched_count: matchedRows.length, failed_count: missingFromApi.length,
+      locations_updated: locationsUpdated, missing_ids: missingFromApi, summary, error: null,
+    });
 
     return new Response(JSON.stringify({ summary, matched: matchedRows.length, locationsUpdated }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,
@@ -157,6 +221,7 @@ Deno.serve(async (req) => {
       if (row) {
         await adminClient.from('app_settings').update({ value: { ...row.value, lastError: message } }).eq('key', 'broadsignApi');
       }
+      await logSync(adminClient, { integration: 'broadsign', synced_at: new Date().toISOString(), error: message });
     } catch (_) { /* best-effort error record */ }
     return new Response(JSON.stringify({ error: message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400,

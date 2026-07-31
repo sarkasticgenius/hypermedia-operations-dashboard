@@ -4,10 +4,67 @@ import { getSetting } from '../data/settings.js';
 import { listLocations } from '../data/locations.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { hiddenMemberIds, resolveMembers, sourceStats, heatmapColor } from '../data/locationStats.js';
+import { listSyncLogs } from '../data/syncLogs.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
+
+// Top-of-page "last pulled" stat strip, shared by every network console page - shows when the
+// last sync ran and what it found, with a View Sync Log button for reviewing mismatches over
+// time (integration_sync_logs) instead of just the single most recent summary.
+function syncStatBar(c, settingKey, integration) {
+  const lastSync = c.lastSync ? new Date(c.lastSync).toLocaleString() : 'Never';
+  return `
+    <div class="kpi-row" style="margin-bottom:12px;">
+      <div class="kpi"><div class="label">Last Synced</div><div class="value" style="font-size:15px;">${esc(lastSync)}</div></div>
+      <div class="kpi"><div class="label">Pulled from Inventory</div><div class="value">${c.lastPulledCount ?? '-'}</div></div>
+      <div class="kpi"><div class="label">Matched Live</div><div class="value">${c.lastMatchedCount ?? '-'}</div></div>
+      <div class="kpi"><div class="label">Locations Updated</div><div class="value">${c.lastLocationsUpdated ?? '-'}</div></div>
+    </div>
+    <div style="margin:-4px 0 12px;">
+      <button class="btn-sm" onclick="App.openSyncLogModal('${integration}')">View Sync Log</button>
+    </div>
+  `;
+}
+
+export function openSyncLogModal(integration) {
+  openModal('syncLog', { integration });
+}
+
+registerModal('syncLog', (data) => {
+  const integration = data.integration;
+  const logs = loadData(`syncLog_${integration}`, () => listSyncLogs(integration));
+  const label = integration === 'broadsign' ? 'Broadsign' : integration === 'grassfish' ? 'Grassfish' : integration;
+  if (logs === null) return loadingCard();
+  if (logs?.__error) return loadingCard(logs.__error);
+
+  const rows = logs.map((l) => {
+    const missing = l.missing_ids || [];
+    return `
+      <tr>
+        <td class="small">${esc(new Date(l.synced_at).toLocaleString())}</td>
+        <td class="tright">${l.pulled_count ?? '-'}</td>
+        <td class="tright">${l.matched_count ?? '-'}</td>
+        <td class="tright">${l.failed_count ?? '-'}</td>
+        <td class="tright">${l.locations_updated ?? '-'}</td>
+        <td>${l.error ? `<span style="color:#c0392b;">${esc(l.error)}</span>` : (missing.length ? `<details><summary class="small" style="cursor:pointer;">${missing.length} mismatch(es)</summary><div class="small muted" style="max-width:320px;white-space:normal;margin-top:4px;">${missing.map(esc).join(', ')}</div></details>` : '<span class="small muted">-</span>')}</td>
+      </tr>
+    `;
+  }).join('') || `<tr><td colspan="6"><div class="empty">No sync history yet.</div></td></tr>`;
+
+  return `
+    <h3>${esc(label)} Sync Log</h3>
+    <p class="small muted">Most recent ${logs.length} run(s). Each row's mismatch list shows Player Box IDs that were pulled from Asset Inventory but didn't get a response from the API (retired box, typo, or a domain/tenant mismatch) - use it to correct Asset Inventory data.</p>
+    <div style="max-height:420px;overflow-y:auto;">
+      <table>
+        <thead><tr><th>Synced At</th><th class="tright">Pulled</th><th class="tright">Matched</th><th class="tright">Failed</th><th class="tright">Locations Updated</th><th>Mismatches / Error</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
+  `;
+});
 
 // JSON.stringify escapes backslashes/double-quotes per the JSON spec, but not single quotes -
 // these payloads get embedded inside single-quoted onclick='...' attributes below, so any
@@ -72,8 +129,9 @@ function renderNetworkPanel(source, healthyField, title, settingKey, syncFnName)
   const visibleTiles = search ? allTiles.filter((t) => t.name.toLowerCase().includes(search)) : allTiles;
   const tiles = visibleTiles.map((t) => t.html).join('');
 
-  return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}.` : 'No live API configured yet.'} ${dataLocs.length ? `Showing the last imported snapshot for ${dataLocs.length} location(s), pulled from Locations.` : 'No data imported for this source yet.'}</span>
+  return `${syncStatBar(c, settingKey, source)}
+  <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)}).` : 'No live API configured yet.'} ${dataLocs.length ? `Showing the last imported snapshot for ${dataLocs.length} location(s), pulled from Locations.` : 'No data imported for this source yet.'}</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-sm" onclick="App.runNetworkSync('${settingKey}','${syncFnName}')" ${STATE.syncing === settingKey ? 'disabled' : ''}>${STATE.syncing === settingKey ? 'Syncing...' : 'Sync Now'}</button>
       ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}
@@ -134,8 +192,9 @@ export function renderGrassfishPanel() {
     </div>`;
   }).join('');
 
-  return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}.` : 'No live API configured yet.'} ${screens.length} Grassfish screen${screens.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = Grassfish) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign Console uses.</span>
+  return `${syncStatBar(c, 'grassfishApi', 'grassfish')}
+  <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)}).` : 'No live API configured yet.'} ${screens.length} Grassfish screen${screens.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = Grassfish) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign Console uses.</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-sm" onclick="App.runNetworkSync('grassfishApi','grassfish-sync')" ${STATE.syncing === 'grassfishApi' ? 'disabled' : ''}>${STATE.syncing === 'grassfishApi' ? 'Syncing...' : 'Sync Now'}</button>
       ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}

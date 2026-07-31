@@ -26,14 +26,21 @@
 //
 // Runs server-side (service role) so the API key never reaches the browser. Called two ways:
 //   1. Settings > Integrations > Grassfish API "Test / Sync Now" - authenticated admin JWT.
-//   2. A pg_cron job every 20 minutes (see migration 0014) - sends a shared secret in
+//   2. A pg_cron job every 15 minutes (see migration 0018) - sends a shared secret in
 //      x-cron-secret instead of a user session (pg_cron can't hold one).
+// Every run writes a row to integration_sync_logs (pruned to the most recent 100 per integration)
+// for the console page's "View Sync Log", and the asset_inventory pull is paginated - Supabase's
+// project-wide "Max Rows" setting silently caps any single unpaginated select once row counts grow
+// past it (this bit Broadsign for real; Grassfish's count is small enough today to not have hit it
+// yet, but this avoids the same silent-truncation bug down the line).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 };
+
+const PAGE_SIZE = 1000;
 
 async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string, anonKey: string): Promise<boolean> {
   const cronSecret = req.headers.get('x-cron-secret');
@@ -47,6 +54,30 @@ async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string,
   if (!caller) return false;
   const { data: profile } = await adminClient.from('profiles').select('active').eq('id', caller.id).single();
   return !!profile?.active;
+}
+
+async function fetchAllInventory(adminClient: any, playerType: string) {
+  const all: any[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await adminClient
+      .from('asset_inventory')
+      .select('id, name, venue, player_box_id')
+      .eq('player_type', playerType)
+      .not('player_box_id', 'is', null)
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    all.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+  return all;
+}
+
+async function logSync(adminClient: any, row: Record<string, unknown>) {
+  await adminClient.from('integration_sync_logs').insert(row);
+  const { data: old } = await adminClient
+    .from('integration_sync_logs').select('id').eq('integration', row.integration)
+    .order('synced_at', { ascending: false }).range(100, 100000);
+  if (old?.length) await adminClient.from('integration_sync_logs').delete().in('id', old.map((r: any) => r.id));
 }
 
 async function fetchDetail(base: string, apiKey: string, id: number) {
@@ -97,12 +128,8 @@ Deno.serve(async (req) => {
       throw new Error('Grassfish integration is not fully configured (Base URL, API Key, Enabled).');
     }
 
-    const { data: inventory } = await adminClient
-      .from('asset_inventory')
-      .select('id, name, venue, player_box_id')
-      .eq('player_type', 'Grassfish')
-      .not('player_box_id', 'is', null);
-    const inventoryIndex = new Map((inventory || [])
+    const inventory = await fetchAllInventory(adminClient, 'Grassfish');
+    const inventoryIndex = new Map(inventory
       .filter((r) => String(r.player_box_id).trim())
       .map((r) => [String(r.player_box_id).trim().toLowerCase(), r]));
     if (!inventoryIndex.size) {
@@ -188,9 +215,15 @@ Deno.serve(async (req) => {
     const summary = `${pulledLine} ${matched.length} responded, ${failed.length} failed${failed.length ? ` (e.g. ${failed[0].boxId}: ${failed[0].error})` : ''}. Synced live: ${locationsUpdated} location(s) updated.${unmatchedLocation ? ` ${unmatchedLocation} matched screen(s) had no matching Location by venue name.` : ''}`;
 
     await adminClient.from('app_settings').update({
-      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', lastMissingFromApi: failed.map((f) => f.boxId), lastRawSample: null, lastRawStatusCounts: null, statusFieldName: null, offlineStatusValues: null },
+      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', lastMissingFromApi: failed.map((f) => f.boxId), lastRawSample: null, lastRawStatusCounts: null, statusFieldName: null, offlineStatusValues: null, lastPulledCount: inventoryIndex.size, lastMatchedCount: matched.length, lastLocationsUpdated: locationsUpdated },
       updated_at: nowIso,
     }).eq('key', 'grassfishApi');
+
+    await logSync(adminClient, {
+      integration: 'grassfish', synced_at: nowIso, pulled_count: inventoryIndex.size,
+      matched_count: matched.length, failed_count: failed.length, locations_updated: locationsUpdated,
+      missing_ids: failed.map((f) => f.boxId), summary, error: null,
+    });
 
     return new Response(JSON.stringify({ summary, matched: matched.length, locationsUpdated }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,
@@ -205,6 +238,7 @@ Deno.serve(async (req) => {
       if (row) {
         await adminClient.from('app_settings').update({ value: { ...row.value, lastError: message } }).eq('key', 'grassfishApi');
       }
+      await logSync(adminClient, { integration: 'grassfish', synced_at: new Date().toISOString(), error: message });
     } catch (_) { /* best-effort error record */ }
     return new Response(JSON.stringify({ error: message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400,

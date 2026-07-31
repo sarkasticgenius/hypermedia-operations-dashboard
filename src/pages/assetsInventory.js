@@ -123,7 +123,7 @@ export function renderAssetsInventory() {
       <td>${r.venue ? `${brandLogoTag(r.venue, 18)} ` : ''}${esc(r.venue || '-')}<div class="small muted">${esc(r.location || '')}</div></td>
       <td>${esc(r.category || '-')}</td>
       <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
-      <td>${esc(r.player_type || '-')}${r.player_box_id ? `<div class="small muted">${esc(r.player_box_id)}</div>` : ''}</td>
+      <td>${esc(r.player_type || '-')}${r.player_box_id ? `<div class="small muted">${esc(r.player_box_id)}</div>` : ''}${r.last_poll_utc ? `<div class="small muted">Last poll: ${esc(new Date(r.last_poll_utc).toLocaleString())}</div>` : ''}</td>
       <td>${r.pdooh_ready ? '<span class="badge b-green">Yes</span>' : '<span class="muted small">No</span>'}</td>
       <td>${r.contractor_id ? esc(contractorLabel(contractors, r.contractor_id)) : '<span class="muted small">-</span>'}</td>
       <td>${ticketCountByAsset[r.id] ? `<button class="link-btn" onclick="App.openAssetTicketHistory('${r.id}')">${ticketCountByAsset[r.id]}</button>` : '<span class="muted small">0</span>'}</td>
