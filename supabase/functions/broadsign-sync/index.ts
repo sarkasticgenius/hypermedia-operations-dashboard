@@ -28,9 +28,22 @@
 // (source='broadsign'); the online count rolls up to locations.broadsign_healthy_count instead of
 // being stored per-row, matching the original's loc.subAssets/broadsignHealthyCount split.
 //
+// player_box_id is NOT unique in Asset Inventory - 224 Box IDs are currently shared across 2+ rows
+// (up to 28 rows sharing one Box ID, 554 "extra" rows total), most likely multi-screen video walls
+// or duplicate manual entries. Broadsign's monitor_poll only reports ONE status per
+// client_resource_id (= one per physical player/box), so every asset_inventory row sharing that
+// box id gets the SAME status applied - the index below is Map<boxId, Asset[]>, not Map<boxId,
+// Asset>, specifically so none of those sibling rows get silently dropped. An earlier version keyed
+// the index by a single Asset per box id, which collapsed all but the last row per duplicate box id
+// - this was the real cause of the Broadsign Console under-reporting online screens (1591 tagged
+// rows in Asset Inventory, but only 1037 ever made it into the online/offline count).
+//
 // The asset_inventory pull is paginated (PAGE_SIZE-based .range() loop) - Supabase's project-wide
 // "Max Rows" setting silently caps any single unpaginated select, which is exactly why this used
-// to only ever pull ~716 of 1591+ tagged rows without ever surfacing an error.
+// to only ever pull ~716 of 1591+ tagged rows without ever surfacing an error. The loop also needs
+// an explicit .order('id') - PostgREST's range/offset pagination has no defined row order without
+// one, so two separate page requests (each its own query execution) can silently disagree on which
+// rows count as "page 1" vs "page 2", under-collecting the union across pages.
 //
 // Every run writes a row to integration_sync_logs (pruned to the most recent 100 per integration)
 // so mismatches/failures can be reviewed over time from the console page's "View Sync Log", not
@@ -69,6 +82,7 @@ async function fetchAllInventory(adminClient: any, playerType: string) {
       .select('id, name, venue, player_box_id')
       .eq('player_type', playerType)
       .not('player_box_id', 'is', null)
+      .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
     all.push(...(data || []));
@@ -102,12 +116,18 @@ Deno.serve(async (req) => {
       throw new Error('Broadsign integration is not fully configured (Base URL, API Key, Domain ID, Enabled).');
     }
 
-    // Step 1: pull EVERY Broadsign ID from inventory, paginated (not capped at Max Rows).
+    // Step 1: pull EVERY Broadsign screen from inventory, paginated (not capped at Max Rows).
+    // inventoryIndex is Map<boxId, Asset[]> - see the top-of-file note on why box ids aren't unique.
     const inventory = await fetchAllInventory(adminClient, 'Broadsign');
-    const inventoryIndex = new Map(inventory
-      .filter((r) => String(r.player_box_id).trim())
-      .map((r) => [String(r.player_box_id).trim(), r]));
-    if (!inventoryIndex.size) {
+    const inventoryIndex = new Map<string, any[]>();
+    for (const r of inventory) {
+      const key = String(r.player_box_id).trim();
+      if (!key) continue;
+      if (!inventoryIndex.has(key)) inventoryIndex.set(key, []);
+      inventoryIndex.get(key)!.push(r);
+    }
+    const totalScreens = [...inventoryIndex.values()].reduce((sum, arr) => sum + arr.length, 0);
+    if (!totalScreens) {
       throw new Error('No Asset Inventory rows are tagged Player Type "Broadsign" with a Player Box ID set - there is nothing to match against.');
     }
 
@@ -124,17 +144,22 @@ Deno.serve(async (req) => {
     if (!pollRows) throw new Error('Response did not contain a "monitor_poll" array - unexpected shape, check the Base URL/Domain ID.');
 
     // Step 3: match - every poll row whose client_resource_id is in the inventory index is one of
-    // ours; everything else belongs to other screens on this Broadsign domain and is ignored. Also
-    // track the reverse gap: inventory IDs the API never mentioned at all.
+    // ours; everything else belongs to other screens on this Broadsign domain and is ignored. A
+    // matched box id fans out to every asset_inventory row sharing it (see note above). Also track
+    // the reverse gap: inventory box ids the API never mentioned at all.
     const matchedRows: { asset: { id: string; name: string; venue: string | null }; row: any }[] = [];
     const seenIds = new Set<string>();
     for (const row of pollRows) {
       const key = String(row.client_resource_id).trim();
-      const asset = inventoryIndex.get(key);
-      if (asset) { matchedRows.push({ asset, row }); seenIds.add(key); }
+      const assets = inventoryIndex.get(key);
+      if (assets) {
+        for (const asset of assets) matchedRows.push({ asset, row });
+        seenIds.add(key);
+      }
     }
-    const missingFromApi = [...inventoryIndex.keys()].filter((id) => !seenIds.has(id));
-    const pulledLine = `Pulled ${inventoryIndex.size} Broadsign ID(s) from Asset Inventory; the API returned data for ${matchedRows.length} of them${missingFromApi.length ? `, ${missingFromApi.length} had no data back (check Domain ID, or the box may be retired/never polled)` : ''}.`;
+    const missingBoxIds = [...inventoryIndex.keys()].filter((id) => !seenIds.has(id));
+    const missingFromApi = missingBoxIds.flatMap((id) => inventoryIndex.get(id)!.map((a) => a.id));
+    const pulledLine = `Pulled ${totalScreens} Broadsign screen(s) from Asset Inventory (${inventoryIndex.size} distinct Box ID${inventoryIndex.size === 1 ? '' : 's'}); the API returned data for ${matchedRows.length} screen(s)${missingFromApi.length ? `, ${missingFromApi.length} had no data back (check Domain ID, or the box may be retired/never polled)` : ''}.`;
 
     // Store poll_last_utc/monitor_status on every matched asset row, online or offline - this is
     // "last heard from" data, independent of whether offline calibration has been set yet.
@@ -198,14 +223,14 @@ Deno.serve(async (req) => {
     }
 
     await adminClient.from('app_settings').update({
-      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', lastRawStatusCounts: rawCounts, lastMissingFromApi: missingFromApi, lastPulledCount: inventoryIndex.size, lastMatchedCount: matchedRows.length, lastLocationsUpdated: locationsUpdated },
+      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', lastRawStatusCounts: rawCounts, lastMissingFromApi: missingFromApi, lastPulledCount: totalScreens, lastMatchedCount: matchedRows.length, lastLocationsUpdated: locationsUpdated },
       updated_at: nowIso,
     }).eq('key', 'broadsignApi');
 
     await logSync(adminClient, {
-      integration: 'broadsign', synced_at: nowIso, pulled_count: inventoryIndex.size,
+      integration: 'broadsign', synced_at: nowIso, pulled_count: totalScreens,
       matched_count: matchedRows.length, failed_count: missingFromApi.length,
-      locations_updated: locationsUpdated, missing_ids: missingFromApi, summary, error: null,
+      locations_updated: locationsUpdated, missing_ids: missingBoxIds, summary, error: null,
     });
 
     return new Response(JSON.stringify({ summary, matched: matchedRows.length, locationsUpdated }), {

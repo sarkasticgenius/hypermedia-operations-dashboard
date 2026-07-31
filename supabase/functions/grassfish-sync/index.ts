@@ -64,6 +64,7 @@ async function fetchAllInventory(adminClient: any, playerType: string) {
       .select('id, name, venue, player_box_id')
       .eq('player_type', playerType)
       .not('player_box_id', 'is', null)
+      .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
     all.push(...(data || []));
@@ -128,11 +129,19 @@ Deno.serve(async (req) => {
       throw new Error('Grassfish integration is not fully configured (Base URL, API Key, Enabled).');
     }
 
+    // Map<boxId, Asset[]>, not Map<boxId, Asset> - player_box_id isn't guaranteed unique (a handful
+    // of Grassfish rows share a box id, same as Broadsign's much larger duplicate-box-id gap), so a
+    // single-Asset map would silently drop every sibling row past the first for a shared box id.
     const inventory = await fetchAllInventory(adminClient, 'Grassfish');
-    const inventoryIndex = new Map(inventory
-      .filter((r) => String(r.player_box_id).trim())
-      .map((r) => [String(r.player_box_id).trim().toLowerCase(), r]));
-    if (!inventoryIndex.size) {
+    const inventoryIndex = new Map<string, any[]>();
+    for (const r of inventory) {
+      const key = String(r.player_box_id).trim().toLowerCase();
+      if (!key) continue;
+      if (!inventoryIndex.has(key)) inventoryIndex.set(key, []);
+      inventoryIndex.get(key)!.push(r);
+    }
+    const totalScreens = [...inventoryIndex.values()].reduce((sum, arr) => sum + arr.length, 0);
+    if (!totalScreens) {
       throw new Error('No Asset Inventory rows are tagged Player Type "Grassfish" with a Player Box ID set - there is nothing to match against.');
     }
 
@@ -168,19 +177,21 @@ Deno.serve(async (req) => {
     if (!Array.isArray(registry)) throw new Error('locations/list did not return an array - unexpected response shape.');
 
     const matchedRegistry = registry.filter((r: any) => r.BoxId && inventoryIndex.has(String(r.BoxId).trim().toLowerCase()));
-    const pulledLine = `Pulled ${inventoryIndex.size} Grassfish ID(s) from Asset Inventory; matched ${matchedRegistry.length} of them against ${registry.length} location(s) in Grassfish's registry.`;
+    const pulledLine = `Pulled ${totalScreens} Grassfish screen(s) from Asset Inventory (${inventoryIndex.size} distinct Box ID${inventoryIndex.size === 1 ? '' : 's'}); matched ${matchedRegistry.length} of them against ${registry.length} location(s) in Grassfish's registry.`;
 
     // Step 3: fetch per-item detail (BoxIsOnline/LastBoxAccess) for every matched item, batched.
     const details = await runBatched(matchedRegistry, (r: any) => fetchDetail(base, apiKey, r.Id), 10);
 
+    // A matched box id fans out to every asset_inventory row sharing it (see the inventoryIndex note
+    // above) - so one Grassfish registry item can produce several `matched` entries.
     const matched: { asset: any; isOnline: boolean; lastAccess: string | null }[] = [];
     const failed: { boxId: string; error: string }[] = [];
     for (let i = 0; i < matchedRegistry.length; i++) {
       const r = matchedRegistry[i];
       const d: any = details[i];
-      const asset = inventoryIndex.get(String(r.BoxId).trim().toLowerCase());
+      const assets = inventoryIndex.get(String(r.BoxId).trim().toLowerCase()) || [];
       if (d.error) failed.push({ boxId: r.BoxId, error: d.error });
-      else matched.push({ asset, isOnline: d.isOnline, lastAccess: d.lastAccess });
+      else for (const asset of assets) matched.push({ asset, isOnline: d.isOnline, lastAccess: d.lastAccess });
     }
 
     const { data: locations } = await adminClient.from('locations').select('id, name');
@@ -215,12 +226,12 @@ Deno.serve(async (req) => {
     const summary = `${pulledLine} ${matched.length} responded, ${failed.length} failed${failed.length ? ` (e.g. ${failed[0].boxId}: ${failed[0].error})` : ''}. Synced live: ${locationsUpdated} location(s) updated.${unmatchedLocation ? ` ${unmatchedLocation} matched screen(s) had no matching Location by venue name.` : ''}`;
 
     await adminClient.from('app_settings').update({
-      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', lastMissingFromApi: failed.map((f) => f.boxId), lastRawSample: null, lastRawStatusCounts: null, statusFieldName: null, offlineStatusValues: null, lastPulledCount: inventoryIndex.size, lastMatchedCount: matched.length, lastLocationsUpdated: locationsUpdated },
+      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', lastMissingFromApi: failed.map((f) => f.boxId), lastRawSample: null, lastRawStatusCounts: null, statusFieldName: null, offlineStatusValues: null, lastPulledCount: totalScreens, lastMatchedCount: matched.length, lastLocationsUpdated: locationsUpdated },
       updated_at: nowIso,
     }).eq('key', 'grassfishApi');
 
     await logSync(adminClient, {
-      integration: 'grassfish', synced_at: nowIso, pulled_count: inventoryIndex.size,
+      integration: 'grassfish', synced_at: nowIso, pulled_count: totalScreens,
       matched_count: matched.length, failed_count: failed.length, locations_updated: locationsUpdated,
       missing_ids: failed.map((f) => f.boxId), summary, error: null,
     });
