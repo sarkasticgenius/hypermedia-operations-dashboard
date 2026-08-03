@@ -19,16 +19,24 @@
 // device object) for if the vendor ever changes field names, but default to the confirmed
 // device_id/status.state so this works out of the box without any calibration step.
 //
-// Two independent outputs from the same pull:
-//   - deviceBreakdown: a fleet-wide count by platform/state/camera type/version, stored on
-//     app_settings.iotApi and rendered as the "Devices by ..." donut cards on the IoT Panel.
-//     Always computed - platform/state/camera/version are plain labels, not undocumented codes,
-//     so there's nothing to calibrate before showing them.
+// app_settings.iotApi.excludedDeviceIds is a persistent user-managed list (set from the IoT
+// Panel's device table, not by this sync) of device_id values to leave out of every count -
+// devices retired/removed on the admin's side that the vendor API still happily returns. This
+// sync reads it every run and filters BEFORE computing deviceBreakdown/matching to Locations, so
+// re-syncing never silently brings an excluded device back into the numbers. It never writes to
+// this field itself (that would risk clobbering an in-flight UI edit) - only the frontend's
+// toggle action does, via a direct app_settings update.
+//
+// Three outputs from the same pull:
+//   - lastDevices: a trimmed copy of every device the API returned (excluded or not), so the IoT
+//     Panel can show a full checkable list without needing a live device pull just to render it.
+//   - deviceBreakdown: a fleet-wide count by platform/state/camera type/version over the
+//     non-excluded devices only. Always computed - platform/state/camera/version are plain
+//     labels, not undocumented codes, so there's nothing to calibrate before showing them.
 //   - Per-location online/offline rollup (location_sub_assets + locations.iot_healthy_count),
 //     same as Broadsign/Grassfish: gated behind an admin-set "Offline Status Values" (which raw
-//     status.state values - TRACKING/OFFLINE/READY/IDLE/UNKNOWN/etc - actually mean "down" is a
-//     judgment call, not something to guess), matched to a Location by venue name first, falling
-//     back to manual_asset_inventory_ids for venues that don't text-match a Location name.
+//     status.state values actually mean "down" is a judgment call, not something to guess),
+//     matched to a Location by venue name first, falling back to manual_asset_inventory_ids.
 //     Excludes soft-deleted locations from that lookup (see broadsign-sync for why that matters).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
@@ -61,6 +69,10 @@ function getPath(obj: any, path: string) {
   return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
 }
 
+function titleCase(s: string) {
+  return s ? String(s).charAt(0).toUpperCase() + String(s).slice(1).toLowerCase() : 'Unknown';
+}
+
 async function fetchAllInventory(adminClient: any, playerType: string) {
   const all: any[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
@@ -87,7 +99,7 @@ async function logSync(adminClient: any, row: Record<string, unknown>) {
 }
 
 // Groups devices by a field into a label->count map - kept small/plain so it's cheap to store on
-// app_settings.iotApi and read straight into the donut cards on the frontend.
+// app_settings.iotApi and read straight into the chart cards on the frontend.
 function countBy(devices: any[], getLabel: (d: any) => string) {
   const counts: Record<string, number> = {};
   for (const d of devices) {
@@ -144,20 +156,39 @@ Deno.serve(async (req) => {
     const boxIdField = cfg.boxIdField || DEFAULT_BOX_ID_FIELD;
     const statusField = cfg.statusFieldName || DEFAULT_STATUS_FIELD;
 
-    // Fleet-wide breakdown - always computed, no calibration needed (these are plain labels, not
-    // undocumented codes).
+    // User-managed, persisted across syncs - never written by this function, only by the IoT
+    // Panel's per-device exclude toggle.
+    const excludedSet = new Set<string>((cfg.excludedDeviceIds || []).map((id: any) => String(id)));
+    const activeDevices = devices.filter((d: any) => !excludedSet.has(String(d.device_id)));
+
+    // Trimmed snapshot of every pulled device (excluded or not) - lets the IoT Panel render a full
+    // checkable device table without a separate live pull, and lets a previously-excluded device
+    // be found again to re-include it.
+    const lastDevices = devices.map((d: any) => ({
+      deviceId: String(d.device_id),
+      displayName: d.display_name || String(d.device_id),
+      storeName: d.store_name || d.location?.store || '',
+      asset: d.location?.asset || '',
+      entrance: d.location?.entrance || '',
+      platform: String(d.status?.platform || 'Unknown').toUpperCase(),
+      state: titleCase(String(getPath(d, statusField) || '')),
+      cameraType: d.status?.available_cameras || d.status?.camera_mode || 'Unknown',
+      version: `${d.status?.task_version || '?'} - ${d.status?.core_version || '?'}`,
+      ts: d.status?.ts || null,
+    }));
+
+    // Fleet-wide breakdown over ACTIVE devices only - excluded ones never count, including right
+    // after a fresh pull that still contains them.
     const deviceBreakdown = {
-      totalDevices: devices.length,
-      byPlatform: countBy(devices, (d) => String(d.status?.platform || 'Unknown').toUpperCase()),
-      byState: countBy(devices, (d) => {
-        const s = getPath(d, statusField);
-        return s ? String(s).charAt(0) + String(s).slice(1).toLowerCase() : 'Unknown';
-      }),
-      byCameraType: countBy(devices, (d) => d.status?.available_cameras || d.status?.camera_mode || 'Unknown'),
-      byVersion: countBy(devices, (d) => `${d.status?.task_version || '?'} - ${d.status?.core_version || '?'}`),
+      totalDevices: activeDevices.length,
+      byPlatform: countBy(activeDevices, (d: any) => String(d.status?.platform || 'Unknown').toUpperCase()),
+      byState: countBy(activeDevices, (d: any) => titleCase(String(getPath(d, statusField) || ''))),
+      byCameraType: countBy(activeDevices, (d: any) => d.status?.available_cameras || d.status?.camera_mode || 'Unknown'),
+      byVersion: countBy(activeDevices, (d: any) => `${d.status?.task_version || '?'} - ${d.status?.core_version || '?'}`),
     };
 
-    const pulledLine = `Logged in and pulled ${devices.length} device(s) from the IoT Admin Console.`;
+    const excludedCount = devices.length - activeDevices.length;
+    const pulledLine = `Logged in and pulled ${devices.length} device(s) from the IoT Admin Console${excludedCount ? ` (${excludedCount} excluded, ${activeDevices.length} counted)` : ''}.`;
     const nowIso = new Date().toISOString();
     let summary: string;
     let locationsUpdated = 0;
@@ -192,7 +223,7 @@ Deno.serve(async (req) => {
       }
 
       const matchedRows: { asset: any; device: any }[] = [];
-      for (const device of devices) {
+      for (const device of activeDevices) {
         const key = String(getPath(device, boxIdField) ?? '').trim();
         if (!key) continue;
         const assets = inventoryIndex.get(key);
@@ -235,7 +266,7 @@ Deno.serve(async (req) => {
     }
 
     await adminClient.from('app_settings').update({
-      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', deviceBreakdown, lastPulledCount: devices.length, lastMatchedCount: matchedCount, lastLocationsUpdated: locationsUpdated },
+      value: { ...cfg, lastSync: nowIso, lastSyncSummary: summary, lastError: '', deviceBreakdown, lastDevices, lastPulledCount: devices.length, lastMatchedCount: matchedCount, lastLocationsUpdated: locationsUpdated },
       updated_at: nowIso,
     }).eq('key', 'iotApi');
 

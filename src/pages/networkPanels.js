@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, openModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
-import { getSetting } from '../data/settings.js';
+import { getSetting, saveSetting } from '../data/settings.js';
 import { listLocations } from '../data/locations.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { hiddenMemberIds, resolveMembers, sourceStats, heatmapColor } from '../data/locationStats.js';
@@ -231,37 +231,70 @@ export function renderGrassfishPanel() {
   </div>` : `<div class="card"><div class="empty">No screens tagged Player Type = Grassfish in Asset Inventory yet. Set a screen's Player Type to "Grassfish" under Asset Inventory to have it show up here.</div></div>`}`;
 }
 
-// Fleet-wide "Devices by ..." donut cards, computed server-side by iot-sync from the live device
+// Fleet-wide "Devices by ..." chart cards, computed server-side by iot-sync from the live device
 // list (app_settings.iotApi.deviceBreakdown) - independent of the per-location heatmap below, so
 // this shows as soon as a sync has run once, whether or not Offline Status Values is calibrated
-// yet. Plain inline SVG rather than a charting dependency - four categories, static per sync.
-const DONUT_PALETTE = ['#00c2c2', '#2f6fb3', '#1f9d55', '#e67e22', '#8e44ad', '#c0392b', '#7f8c8d', '#f1c40f', '#16a085', '#d35400'];
+// yet. Plain inline SVG rather than a charting dependency.
+const CHART_PALETTE = ['#00c2c2', '#2f6fb3', '#1f9d55', '#e67e22', '#8e44ad', '#c0392b', '#7f8c8d', '#f1c40f', '#16a085', '#d35400'];
 
 function donutItems(counts) {
   return Object.entries(counts || {}).sort((a, b) => b[1] - a[1]).map(([label, value]) => ({ label, value }));
 }
 
-function renderDonutSvg(items) {
-  const total = items.reduce((s, it) => s + it.value, 0) || 1;
-  const r = 62; const cx = 80; const cy = 80; const strokeWidth = 30;
-  const circumference = 2 * Math.PI * r;
-  let offset = 0;
-  const segs = items.map((it, idx) => {
-    const dash = (it.value / total) * circumference;
-    const circle = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${DONUT_PALETTE[idx % DONUT_PALETTE.length]}" stroke-width="${strokeWidth}" stroke-dasharray="${dash} ${circumference - dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"><title>${esc(it.label)}: ${it.value}</title></circle>`;
-    offset += dash;
-    return circle;
-  }).join('');
-  return `<svg viewBox="0 0 160 160" width="160" height="160" style="display:block;margin:0 auto;">${segs}</svg>`;
+function polarPoint(cx, cy, r, angleDeg) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
 }
 
-function renderDonutCard(title, items) {
+// True pie (filled wedges to center), not a ring - color index comes from the item's position in
+// the full list (not the filtered/drawn list) so a wedge's color always matches its legend swatch
+// even when some items are zero-value and skipped.
+function renderPieSvg(items) {
+  const total = items.reduce((s, it) => s + it.value, 0) || 1;
+  const r = 68; const cx = 80; const cy = 80;
+  let angle = 0;
+  const wedges = items.map((it, idx) => {
+    if (!it.value) return '';
+    const slice = (it.value / total) * 360;
+    const start = polarPoint(cx, cy, r, angle);
+    const end = polarPoint(cx, cy, r, angle + slice);
+    const largeArc = slice > 180 ? 1 : 0;
+    const path = slice >= 359.99
+      ? `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx - 0.01} ${cy - r} Z`
+      : `M ${cx} ${cy} L ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y} Z`;
+    angle += slice;
+    return `<path d="${path}" fill="${CHART_PALETTE[idx % CHART_PALETTE.length]}" stroke="#fff" stroke-width="1"><title>${esc(it.label)}: ${it.value}</title></path>`;
+  }).join('');
+  return `<svg viewBox="0 0 160 160" width="160" height="160" style="display:block;margin:0 auto;">${wedges}</svg>`;
+}
+
+function chartLegend(items) {
+  return items.map((it, idx) => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;margin:2px 8px 2px 0;"><span style="width:10px;height:10px;border-radius:2px;background:${CHART_PALETTE[idx % CHART_PALETTE.length]};display:inline-block;flex:none;"></span>${esc(it.label)} (${it.value})</span>`).join('');
+}
+
+function renderPieCard(title, items) {
   const total = items.reduce((s, it) => s + it.value, 0);
-  const legend = items.map((it, idx) => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;margin:2px 8px 2px 0;"><span style="width:10px;height:10px;border-radius:2px;background:${DONUT_PALETTE[idx % DONUT_PALETTE.length]};display:inline-block;flex:none;"></span>${esc(it.label)} (${it.value})</span>`).join('');
   return `<div class="card" style="text-align:center;">
     <div class="card-head" style="text-align:left;"><h3>${esc(title)}</h3></div>
-    <div style="display:flex;flex-wrap:wrap;justify-content:center;margin-bottom:10px;">${legend || '<span class="small muted">No data</span>'}</div>
-    ${total ? renderDonutSvg(items) : ''}
+    <div style="display:flex;flex-wrap:wrap;justify-content:center;margin-bottom:10px;">${chartLegend(items) || '<span class="small muted">No data</span>'}</div>
+    ${total ? renderPieSvg(items) : ''}
+  </div>`;
+}
+
+// Horizontal bar/graph chart - used for categories with too many distinct values (e.g. app
+// versions) for a pie slice to stay readable.
+function renderBarCard(title, items) {
+  const max = Math.max(1, ...items.map((it) => it.value));
+  const rows = items.map((it, idx) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+    <div style="width:110px;flex:none;font-size:11px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(it.label)}">${esc(it.label)}</div>
+    <div style="flex:1;background:var(--border);border-radius:4px;overflow:hidden;height:13px;">
+      <div style="width:${Math.round((it.value / max) * 100)}%;height:100%;background:${CHART_PALETTE[idx % CHART_PALETTE.length]};"></div>
+    </div>
+    <div style="width:32px;flex:none;font-size:11px;">${it.value}</div>
+  </div>`).join('');
+  return `<div class="card">
+    <div class="card-head"><h3>${esc(title)}</h3></div>
+    ${items.length ? rows : '<div class="empty">No data</div>'}
   </div>`;
 }
 
@@ -277,6 +310,109 @@ function canonicalStateItems(byState) {
     if (!IOT_STATE_ORDER.includes(label)) items.push({ label, value });
   }
   return items;
+}
+
+// Mirrors iot-sync's countBy() aggregation exactly, run client-side so toggling one device's
+// excluded flag updates the charts instantly without waiting on (or triggering) a live re-pull
+// from the vendor API.
+function recomputeIotBreakdown(devices) {
+  const countBy = (getLabel) => {
+    const counts = {};
+    for (const d of devices) {
+      const label = getLabel(d) || 'Unknown';
+      counts[label] = (counts[label] || 0) + 1;
+    }
+    return counts;
+  };
+  return {
+    totalDevices: devices.length,
+    byPlatform: countBy((d) => d.platform),
+    byState: countBy((d) => d.state),
+    byCameraType: countBy((d) => d.cameraType),
+    byVersion: countBy((d) => d.version),
+  };
+}
+
+// Persisted on app_settings.iotApi.excludedDeviceIds - iot-sync reads this same field on every
+// future pull and filters BEFORE computing its own deviceBreakdown, so a removed device stays
+// removed across re-syncs rather than reappearing the moment the vendor API returns it again.
+export async function toggleIotDeviceExcluded(deviceId, excluded) {
+  const cfg = STATE.pageData.iotApi?.data || {};
+  const excludedSet = new Set(cfg.excludedDeviceIds || []);
+  if (excluded) excludedSet.add(deviceId); else excludedSet.delete(deviceId);
+  const excludedDeviceIds = [...excludedSet];
+  const activeDevices = (cfg.lastDevices || []).filter((d) => !excludedSet.has(d.deviceId));
+  const deviceBreakdown = recomputeIotBreakdown(activeDevices);
+  try {
+    await saveSetting('iotApi', { ...cfg, excludedDeviceIds, deviceBreakdown });
+    await logAudit(excluded ? 'Exclude IoT device' : 'Re-include IoT device', deviceId);
+    invalidate('iotApi');
+    toast(excluded ? 'Device excluded - dropped from the charts and future syncs.' : 'Device re-included.');
+  } catch (e) {
+    toast(e.message || 'Failed to update device', 'error');
+  }
+}
+
+export function setIotDeviceSearch(value) { setState({ iotDeviceSearch: value, iotDevicePage: 0 }); }
+export function setIotDevicePage(page) { setState({ iotDevicePage: page }); }
+export function setIotDeviceFilter(value) { setState({ iotDeviceFilter: value, iotDevicePage: 0 }); }
+
+// Full checkable device list, sourced from iotApi.lastDevices (every device the last sync saw,
+// excluded or not) - lets an admin find and exclude devices removed on their side, or find and
+// re-include one, without needing a live vendor pull just to browse the fleet.
+function renderIotDeviceTable(cfg) {
+  const devices = cfg.lastDevices || [];
+  if (!devices.length) return '';
+  const admin = isAdmin();
+  const excludedSet = new Set(cfg.excludedDeviceIds || []);
+  const search = (STATE.iotDeviceSearch || '').trim().toLowerCase();
+  const filterMode = STATE.iotDeviceFilter || 'all';
+  const filtered = devices.filter((d) => {
+    if (filterMode === 'excluded' && !excludedSet.has(d.deviceId)) return false;
+    if (!search) return true;
+    const hay = `${d.deviceId} ${d.displayName} ${d.storeName} ${d.asset} ${d.entrance} ${d.platform} ${d.state}`.toLowerCase();
+    return hay.includes(search);
+  });
+  const pageSize = 50;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const page = Math.min(STATE.iotDevicePage || 0, totalPages - 1);
+  const pageRows = filtered.slice(page * pageSize, page * pageSize + pageSize);
+
+  const rows = pageRows.map((d) => {
+    const isExcluded = excludedSet.has(d.deviceId);
+    return `<tr${isExcluded ? ' style="opacity:.55;"' : ''}>
+      <td class="small">${esc(d.deviceId)}</td>
+      <td>${esc(d.displayName)}</td>
+      <td class="small">${esc(d.storeName || '-')}</td>
+      <td class="small">${esc(d.platform)}</td>
+      <td class="small">${esc(d.state)}</td>
+      <td>${admin ? `<button class="btn-sm" onclick="App.toggleIotDeviceExcluded('${esc(d.deviceId)}', ${!isExcluded})">${isExcluded ? 'Include' : 'Exclude'}</button>` : (isExcluded ? '<span class="small muted">Excluded</span>' : '')}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6"><div class="empty">No devices match.</div></td></tr>`;
+
+  return `<div class="card">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div><h3>Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown${excludedSet.size ? `, ${excludedSet.size} excluded from the charts above` : ''}.${admin ? ' Excluding a device drops it from every future sync too, not just this view.' : ''}</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <select onchange="App.setIotDeviceFilter(this.value)" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;">
+          <option value="all" ${filterMode === 'all' ? 'selected' : ''}>All devices</option>
+          <option value="excluded" ${filterMode === 'excluded' ? 'selected' : ''}>Excluded only</option>
+        </select>
+        <input placeholder="Search device ID, name, store..." value="${esc(STATE.iotDeviceSearch || '')}" oninput="App.setIotDeviceSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+      </div>
+    </div>
+    <div style="max-height:480px;overflow-y:auto;">
+      <table>
+        <thead><tr><th>Device ID</th><th>Name</th><th>Store</th><th>Platform</th><th>State</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${totalPages > 1 ? `<div style="display:flex;justify-content:center;gap:10px;align-items:center;margin-top:10px;">
+      <button class="btn-sm" ${page === 0 ? 'disabled' : ''} onclick="App.setIotDevicePage(${page - 1})">Prev</button>
+      <span class="small muted">Page ${page + 1} of ${totalPages}</span>
+      <button class="btn-sm" ${page >= totalPages - 1 ? 'disabled' : ''} onclick="App.setIotDevicePage(${page + 1})">Next</button>
+    </div>` : ''}
+  </div>`;
 }
 
 // Standalone dashboard of whatever iot-sync last pulled live from the aioo IoT Admin Console -
@@ -306,12 +442,13 @@ export function renderIotPanel() {
 
   return `${statusBar}
   <div class="small muted" style="margin:10px 0 8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${c.lastSync ? new Date(c.lastSync).toLocaleString() : 'last sync'}.</div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;">
-    ${renderDonutCard('Devices by Platform', donutItems(b.byPlatform))}
-    ${renderDonutCard('Devices by State', canonicalStateItems(b.byState))}
-    ${renderDonutCard('Devices by Camera Type', donutItems(b.byCameraType))}
-    ${renderDonutCard('Devices by Version', donutItems(b.byVersion))}
-  </div>`;
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:14px;">
+    ${renderPieCard('Devices by Platform', donutItems(b.byPlatform))}
+    ${renderPieCard('Devices by State', canonicalStateItems(b.byState))}
+    ${renderPieCard('Devices by Camera Type', donutItems(b.byCameraType))}
+    ${renderBarCard('Devices by Version', donutItems(b.byVersion))}
+  </div>
+  ${renderIotDeviceTable(c)}`;
 }
 
 export function openOfflineAssetsModal(opts) {
