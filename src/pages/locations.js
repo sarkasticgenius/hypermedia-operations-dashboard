@@ -21,6 +21,26 @@ import { esc } from '../lib/format.js';
 
 let draggedVenueId = null;
 
+// Every location mutation here (save/delete/combine/bulk-add/manual-link) only ever invalidated
+// this page's own 'locationsPage' cache - the Broadsign/Grassfish/IoT Console pages independently
+// cache the same listLocations() data under 'locationsForNetworkPanel', and several other pages
+// (Tickets, SIM Cards, Hardware Inventory, Procurement, Live Ops, Settings) bundle it into their
+// own page-scoped cache key. None of those got busted, so e.g. combining two locations on this
+// page never showed up on the Broadsign Console until either its 2-minute cache TTL happened to
+// expire or the whole app was reloaded - easy to read as "the combined tile just doesn't work."
+// Same "invalidate every bundle this data appears in" pattern as assetsInventory.js's
+// invalidateAssetInventoryCaches().
+function invalidateLocationCaches() {
+  invalidate('locationsPage');
+  invalidate('locationsForNetworkPanel');
+  invalidate('assets');
+  invalidate('opsOverviewV2');
+  invalidate('procurementPage');
+  invalidate('settings');
+  invalidate('simCardsPage');
+  invalidate('ticketsPage');
+}
+
 async function loadLocationsData() {
   const [locations, assetInventory, venueTileOrder] = await Promise.all([
     listLocations(), listAssetInventory(), getSetting('venueTileOrder'),
@@ -130,7 +150,7 @@ export async function bulkDeleteLocations() {
   try {
     for (const id of ids) await deleteLocation(id);
     await logAudit('Bulk delete locations', `${ids.length} location(s)`);
-    invalidate('locationsPage');
+    invalidateLocationCaches();
     setState({ locSelectedIds: [] });
     toast(`${ids.length} location(s) deleted`);
   } catch (e) { toast(e.message, 'error'); }
@@ -237,7 +257,7 @@ export async function onVenueDrop(event, targetId) {
   draggedVenueId = null;
   try {
     await saveSetting('venueTileOrder', ordered);
-    invalidate('locationsPage');
+    invalidateLocationCaches();
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -378,7 +398,7 @@ export async function saveCombineLocationsForm(event) {
   try {
     await combineLocations(name, checked);
     await logAudit('Combine locations', name);
-    invalidate('locationsPage');
+    invalidateLocationCaches();
     closeModal();
     toast('Locations combined');
   } catch (e) { toast(e.message, 'error'); }
@@ -421,7 +441,7 @@ export async function saveBulkAddLocationsForm(event) {
       await saveLocation({ name, type, emirate, chain });
     }
     await logAudit('Bulk add locations', `${names.length} location(s)`);
-    invalidate('locationsPage');
+    invalidateLocationCaches();
     closeModal();
     toast(`${names.length} location(s) added`);
   } catch (e) { toast(e.message, 'error'); }
@@ -485,7 +505,7 @@ export async function assignUnassignedGroup(idx) {
     const newIds = [...new Set([...(loc.manual_asset_inventory_ids || []), ...items.map((i) => i.id)])];
     await setManualAssetInventoryIds(destId, newIds);
     await logAudit('Assign unassigned assets', `${items.length} item(s) to ${loc.name}`);
-    invalidate('locationsPage');
+    invalidateLocationCaches();
     closeModal();
     toast(`Assigned ${items.length} item(s) to ${loc.name}`);
   } catch (e) { toast(e.message, 'error'); }
@@ -538,7 +558,7 @@ export async function removeLocation(id) {
   try {
     await deleteLocation(id);
     await logAudit('Delete location', id);
-    invalidate('locationsPage');
+    invalidateLocationCaches();
     toast('Location deleted');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
@@ -578,7 +598,7 @@ export async function saveLocationForm(event) {
   try {
     await saveLocation(row);
     await logAudit(id ? 'Edit location' : 'Add location', row.name);
-    invalidate('locationsPage');
+    invalidateLocationCaches();
     closeModal();
     toast('Location saved');
   } catch (e) { toast(e.message, 'error'); }

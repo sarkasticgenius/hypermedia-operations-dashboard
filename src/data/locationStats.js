@@ -222,12 +222,15 @@ export function assetInventoryForLocationFull(loc, allLocations, assetInventory)
 }
 
 // Asset Inventory is the source of truth for a screen's identity - its own Name, not the venue
-// text (which is really just the Location match key, not the screen's name). `location` here is
-// the screen's own sub-location/floor field on its Asset Inventory row, falling back to venue
-// when that's blank so there's still some "where" context. Shared by the Ticket and SIM Card
-// deploy modals, both of which let someone pick a specific screen at a selected Location.
+// text (which is really just the Location match key, not the screen's name). Sequence is Name,
+// then Format (Width x Height), then Location - falling back to venue when Location is blank so
+// there's still some "where" context. Shared by the Ticket, SIM Card, and Hardware Asset deploy
+// modals, all of which let someone pick a specific screen at a selected Location.
 export function screenLabel(s) {
-  return s.location ? `${s.name} - ${s.location}` : (s.venue ? `${s.name} - ${s.venue}` : s.name);
+  const dims = s.width && s.height ? `${s.width}x${s.height}` : '';
+  const format = [s.format, dims ? `(${dims})` : ''].filter(Boolean).join(' ');
+  const where = s.location || s.venue || '';
+  return [s.name, format, where].filter(Boolean).join(' - ');
 }
 
 const EMIRATES_KEYWORDS = {
