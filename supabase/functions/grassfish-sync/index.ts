@@ -194,13 +194,19 @@ Deno.serve(async (req) => {
       else for (const asset of assets) matched.push({ asset, isOnline: d.isOnline, lastAccess: d.lastAccess });
     }
 
-    const { data: locations } = await adminClient.from('locations').select('id, name');
+    const { data: locations } = await adminClient.from('locations').select('id, name, manual_asset_inventory_ids');
     const locByName = new Map((locations || []).map((l) => [l.name.toLowerCase(), l.id]));
+    // Same manual-link fallback as broadsign-sync - venue text not matching a Location's name is
+    // exactly what manual_asset_inventory_ids exists to bridge, and the sync never consulted it.
+    const locIdByManualAssetId = new Map<string, string>();
+    for (const l of locations || []) {
+      for (const assetId of l.manual_asset_inventory_ids || []) locIdByManualAssetId.set(assetId, l.id);
+    }
 
     const rowsByLocation = new Map<string, { assetName: string; boxId: string; offline: boolean; lastAccess: string | null; faces: number }[]>();
     let unmatchedLocation = 0;
     for (const { asset, isOnline, lastAccess } of matched) {
-      const locId = asset.venue ? locByName.get(String(asset.venue).toLowerCase()) : null;
+      const locId = (asset.venue && locByName.get(String(asset.venue).toLowerCase())) || locIdByManualAssetId.get(asset.id) || null;
       if (!locId) { unmatchedLocation++; continue; }
       if (!rowsByLocation.has(locId)) rowsByLocation.set(locId, []);
       rowsByLocation.get(locId).push({ assetName: asset.name, boxId: String(asset.player_box_id), offline: !isOnline, lastAccess, faces: asset.faces || 1 });

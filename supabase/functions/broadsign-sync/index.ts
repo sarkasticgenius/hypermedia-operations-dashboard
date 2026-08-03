@@ -195,13 +195,23 @@ Deno.serve(async (req) => {
     if (!offlineSet.size) {
       summary = `${pulledLine} Raw monitor_status values seen among matched screens: ${Object.keys(rawCounts).map((k) => `${k} (${rawCounts[k]}x)`).join(', ') || 'none'}. Set "Offline Status Values" below (comparing against screens you know are down) to start applying online/offline status.`;
     } else {
-      const { data: locations } = await adminClient.from('locations').select('id, name');
+      const { data: locations } = await adminClient.from('locations').select('id, name, manual_asset_inventory_ids');
       const locByName = new Map((locations || []).map((l) => [l.name.toLowerCase(), l.id]));
+      // Reverse index of Locations' manual_asset_inventory_ids - the same "venue text doesn't
+      // match, so an admin manually linked specific screens to a Location instead" mechanism the
+      // Locations page and Ticket/SIM/Asset screen pickers already use. The sync itself never
+      // consulted this before, so a manual link alone did nothing for a screen's online/offline
+      // status or its Location's healthy_count - only venue-name equality counted. Venue match
+      // still takes priority when both exist; this is purely a fallback for when it doesn't.
+      const locIdByManualAssetId = new Map<string, string>();
+      for (const l of locations || []) {
+        for (const assetId of l.manual_asset_inventory_ids || []) locIdByManualAssetId.set(assetId, l.id);
+      }
 
       const rowsByLocation = new Map<string, { assetName: string; clientResourceId: string; offline: boolean; faces: number; pollLastUtc: string | null; statusLabel: string }[]>();
       let unmatchedLocation = 0;
       for (const { asset, row } of matchedRows) {
-        const locId = asset.venue ? locByName.get(String(asset.venue).toLowerCase()) : null;
+        const locId = (asset.venue && locByName.get(String(asset.venue).toLowerCase())) || locIdByManualAssetId.get(asset.id) || null;
         if (!locId) { unmatchedLocation++; continue; }
         const offline = offlineSet.has(String(row.monitor_status));
         const statusLabel = missingInActionSet.has(String(row.monitor_status)) ? 'Missing in Action' : 'Offline';
