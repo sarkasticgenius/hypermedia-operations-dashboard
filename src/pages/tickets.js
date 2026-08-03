@@ -4,7 +4,7 @@ import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
 import { listTickets, saveTicket, deleteTicket } from '../data/tickets.js';
 import { listLocations } from '../data/locations.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
-import { assetInventoryForLocation } from '../data/locationStats.js';
+import { assetInventoryForLocationFull, screenLabel } from '../data/locationStats.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { heatmapGrid } from '../lib/heatmapGrid.js';
 import { logAudit } from '../lib/audit.js';
@@ -400,10 +400,13 @@ export async function removeTicket(id) {
 export function onTicketLocationChange(value) {
   const screenSel = document.getElementById('tk-screen');
   if (!screenSel) return;
-  const assetInventory = pageData()?.assetInventory || [];
-  const screens = value ? assetInventoryForLocation(value, assetInventory) : [];
+  const pd = pageData();
+  const locations = pd?.locations || [];
+  const assetInventory = pd?.assetInventory || [];
+  const loc = value ? locations.find((l) => l.name === value) : null;
+  const screens = loc ? assetInventoryForLocationFull(loc, locations, assetInventory) : [];
   screenSel.innerHTML = '<option value="">-</option>'
-    + screens.map((s) => `<option value="${s.id}">${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('');
+    + screens.map((s) => `<option value="${s.id}">${esc(screenLabel(s))}</option>`).join('');
   onTicketScreenChange('');
 }
 
@@ -434,7 +437,7 @@ export async function saveTicketForm(event) {
     title: document.getElementById('tk-title').value.trim(),
     location: document.getElementById('tk-location').value,
     assetInvId,
-    assetInvLabel: screen ? `${screen.venue} - ${screen.location || screen.name}` : null,
+    assetInvLabel: screen ? screenLabel(screen) : null,
     description: document.getElementById('tk-description').value.trim(),
     status,
     priority: document.getElementById('tk-priority').value,
@@ -459,7 +462,8 @@ registerModal('ticket', (data) => {
   const pd = pageData();
   const locations = pd?.locations || [];
   const assetInventory = pd?.assetInventory || [];
-  const screens = data.location ? assetInventoryForLocation(data.location, assetInventory) : [];
+  const selectedLoc = data.location ? locations.find((l) => l.name === data.location) : null;
+  const screens = selectedLoc ? assetInventoryForLocationFull(selectedLoc, locations, assetInventory) : [];
   return `
     <h3>${data.id ? 'Edit' : 'New'} Ticket</h3>
     <form onsubmit="App.saveTicketForm(event)">
@@ -488,7 +492,7 @@ registerModal('ticket', (data) => {
         <div class="field"><label>Screen (optional)</label>
           <select id="tk-screen" onchange="App.onTicketScreenChange(this.value)">
             <option value="">-</option>
-            ${screens.map((s) => `<option value="${s.id}" ${data.asset_inv_id === s.id ? 'selected' : ''}>${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('')}
+            ${screens.map((s) => `<option value="${s.id}" ${data.asset_inv_id === s.id ? 'selected' : ''}>${esc(screenLabel(s))}</option>`).join('')}
           </select>
         </div>
       </div>

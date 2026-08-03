@@ -200,6 +200,36 @@ export function locationScreenCount(loc, allLocations, assetInventory) {
   return count;
 }
 
+// Same venue-match + manual-link + chain/combined-member resolution as locationScreenCount(),
+// but returns the actual rows instead of just a count - for anywhere that needs to let someone
+// pick a specific screen at a location (e.g. the ticket modal). Asset Inventory venue text often
+// doesn't match a Location's name exactly (naming drift between the two), which is exactly what
+// manual_asset_inventory_ids exists to bridge - a caller that only checks venue text (as the
+// ticket modal used to) silently shows zero screens for every location that relies on a manual
+// link, even when that link is already correctly set up (confirmed live: "ABU DHABI Coop" has 21
+// manually-linked screens that never appeared in the ticket screen dropdown).
+export function assetInventoryForLocationFull(loc, allLocations, assetInventory) {
+  const seen = new Set();
+  const rows = [];
+  for (const l of effectiveLocations(loc, allLocations)) {
+    const byVenue = assetInventoryForLocation(l.name, assetInventory);
+    const byManualLink = assetInventory.filter((r) => (l.manual_asset_inventory_ids || []).includes(r.id));
+    for (const r of [...byVenue, ...byManualLink]) {
+      if (!seen.has(r.id)) { seen.add(r.id); rows.push(r); }
+    }
+  }
+  return rows;
+}
+
+// Asset Inventory is the source of truth for a screen's identity - its own Name, not the venue
+// text (which is really just the Location match key, not the screen's name). `location` here is
+// the screen's own sub-location/floor field on its Asset Inventory row, falling back to venue
+// when that's blank so there's still some "where" context. Shared by the Ticket and SIM Card
+// deploy modals, both of which let someone pick a specific screen at a selected Location.
+export function screenLabel(s) {
+  return s.location ? `${s.name} - ${s.location}` : (s.venue ? `${s.name} - ${s.venue}` : s.name);
+}
+
 const EMIRATES_KEYWORDS = {
   'Abu Dhabi': ['abu dhabi', 'auh', 'yas island', 'saadiyat', 'khalifa city', 'mussafah', 'musaffah', 'corniche'],
   Dubai: ['dubai', 'dxb', 'deira', 'jumeirah', 'marina', 'jbr', 'downtown', 'business bay'],

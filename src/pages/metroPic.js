@@ -3,7 +3,7 @@ import { loadingCard, registerModal } from '../modals.js';
 import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import { listMetroPics, saveMetroPic, deleteMetroPic, renewMetroPic, metroPicStatus } from '../data/metroPics.js';
 import { logAudit } from '../lib/audit.js';
-import { esc, fmtDate } from '../lib/format.js';
+import { esc, fmtDate, daysUntilInfo } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 
@@ -17,11 +17,12 @@ export function renderMetroPic() {
   const sorted = applySort(pics, 'metroPics', {
     station: (m) => m.station || '', picName: (m) => m.pic_name || '', phone: (m) => m.phone || '',
     validityStart: (m) => m.validity_start || '', validityEnd: (m) => m.validity_end || '',
-    status: (m) => metroPicStatus(m),
+    status: (m) => metroPicStatus(m), daysToExpire: (m) => m.validity_end || '',
   });
 
   const rows = sorted.map((m) => {
     const status = metroPicStatus(m);
+    const di = daysUntilInfo(m.validity_end);
     return `
       <tr>
         <td>${esc(m.station)}</td>
@@ -29,6 +30,7 @@ export function renderMetroPic() {
         <td>${esc(m.phone || '-')}</td>
         <td>${fmtDate(m.validity_start)}</td>
         <td>${fmtDate(m.validity_end)}</td>
+        <td><span class="badge ${di.overdue ? 'b-red' : di.urgent ? 'b-amber' : 'b-gray'}">${esc(di.text)}</span></td>
         <td><span class="badge ${STATUS_BADGE[status] || 'b-gray'}">${status}</span></td>
         <td>
           ${canEdit('metroPic') ? `<button class="btn-sm" onclick="App.editMetroPic('${m.id}')">Edit</button>` : ''}
@@ -51,7 +53,7 @@ export function renderMetroPic() {
     <div class="card">
       ${pics.length === 0 ? '<div class="empty">No Metro PICs yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('metroPics', 'station', 'Company Name')}${sortTh('metroPics', 'picName', 'PIC Name')}${sortTh('metroPics', 'phone', 'Phone')}${sortTh('metroPics', 'validityStart', 'Valid From')}${sortTh('metroPics', 'validityEnd', 'Valid Until')}${sortTh('metroPics', 'status', 'Status')}<th></th></tr></thead>
+          <thead><tr>${sortTh('metroPics', 'station', 'Company Name')}${sortTh('metroPics', 'picName', 'PIC Name')}${sortTh('metroPics', 'phone', 'Phone')}${sortTh('metroPics', 'validityStart', 'Valid From')}${sortTh('metroPics', 'validityEnd', 'Valid Until')}${sortTh('metroPics', 'daysToExpire', 'Days to Expire')}${sortTh('metroPics', 'status', 'Status')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

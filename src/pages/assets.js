@@ -7,7 +7,7 @@ import {
 import { listCategories } from '../data/categories.js';
 import { listLocations } from '../data/locations.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
-import { assetInventoryForLocation } from '../data/locationStats.js';
+import { assetInventoryForLocationFull, screenLabel } from '../data/locationStats.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtMoney, fmtDate } from '../lib/format.js';
 import { exportToCsv } from '../lib/csv.js';
@@ -485,10 +485,13 @@ export function openDeployModal(assetId) {
 export function onDeployDestinationChange(value) {
   const screenSel = document.getElementById('deploy-screen');
   if (!screenSel) return;
-  const assetInventory = pageData()?.assetInventory || [];
-  const screens = value ? assetInventoryForLocation(value, assetInventory) : [];
+  const pd = pageData();
+  const locations = pd?.locations || [];
+  const assetInventory = pd?.assetInventory || [];
+  const loc = value ? locations.find((l) => l.name === value) : null;
+  const screens = loc ? assetInventoryForLocationFull(loc, locations, assetInventory) : [];
   screenSel.innerHTML = '<option value="">-</option>'
-    + screens.map((s) => `<option value="${s.id}">${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('');
+    + screens.map((s) => `<option value="${s.id}">${esc(screenLabel(s))}</option>`).join('');
 }
 
 export async function saveDeployForm(event) {
@@ -503,7 +506,7 @@ export async function saveDeployForm(event) {
   try {
     await deployAsset({
       assetId: asset.id, assetName: asset.name, destinationName, qty,
-      deployedBy: STATE.user?.name || '', subAsset: screen ? `${screen.venue} - ${screen.location || screen.name}` : null,
+      deployedBy: STATE.user?.name || '', subAsset: screen ? screenLabel(screen) : null,
     });
     await logAudit('Deploy asset', `${asset.name} -> ${destinationName} (${qty})`);
     invalidate('assets');

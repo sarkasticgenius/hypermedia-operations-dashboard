@@ -6,7 +6,7 @@ import {
   simLocationDuplicateCounts, isDuplicateLocationSim,
 } from '../data/simCards.js';
 import { listLocations } from '../data/locations.js';
-import { assetInventoryForLocation } from '../data/locationStats.js';
+import { assetInventoryForLocationFull, screenLabel } from '../data/locationStats.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { exportToCsv } from '../lib/csv.js';
@@ -245,7 +245,7 @@ export async function saveSimCardDeploy(event) {
   try {
     const result = await deploySimCard(id, {
       locationId: location ? location.id : null, locationName,
-      assetInvId, assetInvLabel: screen ? `${screen.venue} - ${screen.location || screen.name}` : null,
+      assetInvId, assetInvLabel: screen ? screenLabel(screen) : null,
     });
     await logAudit('Deploy SIM card', locationName);
     invalidate('simCardsPage');
@@ -287,7 +287,8 @@ registerModal('simCardDeploy', (data) => {
   const pd = pageData();
   const locations = (pd?.locations || []).filter((l) => l.type === 'Installed').sort((a, b) => a.name.localeCompare(b.name));
   const selectedLocation = data.__deployLocation ?? data.deployed_location_name ?? '';
-  const screens = selectedLocation ? assetInventoryForLocation(selectedLocation, pd?.assetInventory || []) : [];
+  const selectedLocObj = selectedLocation ? (pd?.locations || []).find((l) => l.name === selectedLocation) : null;
+  const screens = selectedLocObj ? assetInventoryForLocationFull(selectedLocObj, pd?.locations || [], pd?.assetInventory || []) : [];
   return `
     <h3>Deploy SIM ${esc(data.sim_number || '')}</h3>
     <form onsubmit="App.saveSimCardDeploy(event)">
@@ -301,7 +302,7 @@ registerModal('simCardDeploy', (data) => {
       <div class="field"><label>Screen (optional)</label>
         <select id="simd-screen">
           <option value="">-</option>
-          ${screens.map((s) => `<option value="${s.id}">${esc(s.venue)} - ${esc(s.location || s.name)}</option>`).join('')}
+          ${screens.map((s) => `<option value="${s.id}">${esc(screenLabel(s))}</option>`).join('')}
         </select>
       </div>
       <div class="modal-actions">
