@@ -7,6 +7,7 @@ import {
 import { listContractors } from '../data/contractors.js';
 import { listNetworks } from '../data/networks.js';
 import { listTickets } from '../data/tickets.js';
+import { isMafRow } from '../data/locationStats.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate } from '../lib/format.js';
@@ -88,7 +89,7 @@ function computeFiltered(rows) {
     if (pdoohFilter !== 'All' && !!r.pdooh_ready !== (pdoohFilter === 'Yes')) return false;
     if (hmFilter !== 'All' && !!r.managed_by_hm !== (hmFilter === 'Yes')) return false;
     if (netFilter !== 'All' && !(r.networkNames || []).includes(netFilter)) return false;
-    if (mafFilter && !(r.networkNames || []).some((n) => n.toUpperCase().includes('MAF'))) return false;
+    if (mafFilter && !isMafRow(r)) return false;
     if (search && !matchesSearch(r, search)) return false;
     return true;
   });

@@ -204,9 +204,18 @@ Deno.serve(async (req) => {
         rowsByLocation.get(locId).push({ assetName: asset.name, clientResourceId: String(row.client_resource_id), offline, faces: asset.faces || 1 });
       }
 
+      // Wipe every existing broadsign-sourced offline row and healthy-count FIRST, once, rather
+      // than per-location inside the loop below. A per-location delete/update only ever touched
+      // locations present in rowsByLocation THIS run - a location that previously had matched
+      // screens but has none this run (venue text stopped matching, screens retired, etc.) never
+      // got touched again, so its old offline rows and healthy_count sat there stale forever. This
+      // was confirmed live: 14 offline rows still carrying pre-rewrite note text, from locations
+      // that haven't matched anything in the current sync for a while.
+      await adminClient.from('location_sub_assets').delete().eq('source', 'broadsign');
+      await adminClient.from('locations').update({ broadsign_healthy_count: null, broadsign_as_of: null }).not('broadsign_healthy_count', 'is', null);
+
       for (const [locId, rows] of rowsByLocation.entries()) {
         const offlineRows = rows.filter((r) => r.offline);
-        await adminClient.from('location_sub_assets').delete().eq('location_id', locId).eq('source', 'broadsign');
         if (offlineRows.length) {
           await adminClient.from('location_sub_assets').insert(offlineRows.map((r) => ({
             location_id: locId, name: r.assetName, status: 'Offline', source: 'broadsign', faces: r.faces,

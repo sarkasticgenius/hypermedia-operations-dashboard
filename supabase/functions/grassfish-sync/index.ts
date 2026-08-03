@@ -208,9 +208,16 @@ Deno.serve(async (req) => {
 
     const nowIso = new Date().toISOString();
     let locationsUpdated = 0;
+
+    // Same fix as broadsign-sync: wipe every existing grassfish-sourced offline row and healthy-
+    // count up front, once, instead of per-location inside the loop - a per-location delete/update
+    // never touched a location that dropped out of the matched set entirely, leaving stale offline
+    // rows and healthy_count behind indefinitely.
+    await adminClient.from('location_sub_assets').delete().eq('source', 'grassfish');
+    await adminClient.from('locations').update({ grassfish_healthy_count: null, grassfish_as_of: null }).not('grassfish_healthy_count', 'is', null);
+
     for (const [locId, rows] of rowsByLocation.entries()) {
       const offlineRows = rows.filter((r) => r.offline);
-      await adminClient.from('location_sub_assets').delete().eq('location_id', locId).eq('source', 'grassfish');
       if (offlineRows.length) {
         await adminClient.from('location_sub_assets').insert(offlineRows.map((r) => ({
           location_id: locId, name: r.assetName, status: 'Offline', source: 'grassfish', faces: r.faces,

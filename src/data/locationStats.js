@@ -146,14 +146,35 @@ export function inventoryFaceTotals(assetInventory) {
   return { totalScreens, totalFaces, networkedScreens, networkedFaces };
 }
 
-// Same "straight from Asset Inventory" approach as inventoryFaceTotals(), scoped to rows linked to
-// any network whose name contains "MAF" (Majid Al Futtaim malls) - same convention the Asset
-// Inventory page's "MAF Malls only" filter already uses.
+// Majid Al Futtaim mall venue names that don't carry "MAF" anywhere in their own asset_inventory
+// venue text or a linked network - the "MAF" only exists on the corresponding Locations row (e.g.
+// "MAF-FUJAIRAH CITY CENTER"), which asset_inventory.venue doesn't match verbatim. Confirmed
+// against real data: every one of these has networkNames === [] and a venue string with no "MAF"
+// substring, so network-name matching alone silently excludes all of them. Substring match (not
+// exact) so "-3D"/"-FACADE"/etc suffix variants of the same mall still count.
+const MAF_MALL_VENUE_KEYWORDS = [
+  'MIRDIF CITY CENTER', 'ZAHIA CITY CENTER', 'SHINDAGHA CITY CENTER', 'SHINDAGAH CITY CENTER',
+  'SHARJAH CITY CENTER', 'FUJAIRAH CITY CENTER', 'MALL OF THE EMIRATES',
+];
+
+// True if a row belongs to a Majid Al Futtaim mall, whether that's discoverable from its linked
+// network name (the original convention) or only from its venue text (the gap above). The venue-
+// text fallback is scoped to category === 'Malls' specifically - "Mall of the Emirates" is also a
+// Metro-station venue name (category 'Metro', unrelated screens sharing the landmark's name), and
+// category is the only thing that reliably tells those apart.
+export function isMafRow(r) {
+  if ((r.networkNames || []).some((n) => n.toUpperCase().includes('MAF'))) return true;
+  if (r.category !== 'Malls') return false;
+  const venue = (r.venue || '').toUpperCase();
+  return MAF_MALL_VENUE_KEYWORDS.some((k) => venue.includes(k));
+}
+
+// Same "straight from Asset Inventory" approach as inventoryFaceTotals(), scoped to MAF mall rows.
 export function mafInventoryTotals(assetInventory) {
   let screens = 0;
   let faces = 0;
   for (const r of assetInventory) {
-    if (!(r.networkNames || []).some((n) => n.toUpperCase().includes('MAF'))) continue;
+    if (!isMafRow(r)) continue;
     screens += r.screens || 1;
     faces += r.faces || 1;
   }
