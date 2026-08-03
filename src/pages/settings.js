@@ -403,26 +403,23 @@ function renderGrassfishApiCard(settings) {
   `;
 }
 
-// aioo IoT Admin Console - only the login endpoint was confirmed (POST .../auth with
-// username/password, returns a token); the device-list endpoint wasn't provided, so it's a
-// configurable field here rather than guessed. Calibrates the same two-stage way the old
-// Grassfish sync did: raw sample first (read off Box ID Field/Status Field Name), then a raw
-// value histogram once Status Field Name is set (read off Offline Status Values).
+// aioo IoT Admin Console - both endpoints are confirmed live: POST .../auth with
+// username/password returns a token, then GET the Device List Path with that token in a
+// "User-Token" header (not Authorization: Bearer) returns {"result":[...]}. Always shows the
+// fleet-wide "Devices by platform/state/camera type/version" breakdown on the IoT Panel (no
+// calibration needed for those - they're plain labels). The per-Location online/offline rollup
+// still needs "Offline Status Values" set once, same as Broadsign/Grassfish, since which raw
+// device states count as "down" is a judgment call.
 function renderIotApiCard(settings) {
   const cfg = settings.iotApi || {};
   const testing = STATE.testing_iotApi;
-  const rawCounts = cfg.lastRawStatusCounts || {};
+  const rawCounts = (cfg.deviceBreakdown && cfg.deviceBreakdown.byState) || {};
   const rawCountsHtml = Object.keys(rawCounts).length
-    ? `<div class="small muted" style="margin-top:6px;">Last raw "${esc(cfg.statusFieldName || '')}" counts (matched devices only): ${Object.keys(rawCounts).map((k) => `${esc(k)} (${rawCounts[k]}x)`).join(', ')}</div>`
-    : '';
-  const missingHtml = (cfg.lastMissingFromApi || []).length
-    ? `<div class="small muted" style="margin-top:2px;">${cfg.lastMissingFromApi.length} inventory Player Box ID(s) had no match in the device list last sync.</div>` : '';
-  const sampleHtml = cfg.lastRawSample
-    ? `<details style="margin-top:6px;"><summary class="small muted" style="cursor:pointer;">Last raw sample (read field names off this)</summary><pre style="font-size:11px;white-space:pre-wrap;background:#f7f6f4;border-radius:6px;padding:8px;margin-top:4px;">${esc(cfg.lastRawSample)}</pre></details>`
+    ? `<div class="small muted" style="margin-top:6px;">Last device state counts: ${Object.keys(rawCounts).map((k) => `${esc(k)} (${rawCounts[k]}x)`).join(', ')}</div>`
     : '';
   return `
     <div class="card">
-      <div class="card-head"><h3>IoT Admin Console (aioo)</h3><div class="desc">Logs in via POST /aioo_iot_admin_console/web_api/api/v1/auth, then pulls the device list, matched to Asset Inventory rows tagged Player Type "IoT" by Player Box ID. Shows on the IoT Panel below Grassfish Console.</div></div>
+      <div class="card-head"><h3>IoT Admin Console (aioo)</h3><div class="desc">Logs in via POST /aioo_iot_admin_console/web_api/api/v1/auth, then pulls the device list from the Device List Path, matched to Asset Inventory rows tagged Player Type "IoT" by Player Box ID. Shows on the IoT Panel below Grassfish Console.</div></div>
       <form onsubmit="App.saveIntegrationForm(event,'iotApi')">
         <div class="field"><label>Base URL</label><input id="int-iotApi-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://iotadmin.eu.aiootech.com"></div>
         <div class="grid2">
@@ -430,16 +427,12 @@ function renderIotApiCard(settings) {
           <div class="field"><label>Password</label><input id="int-iotApi-password" type="password" value="${esc(cfg.password || '')}"></div>
         </div>
         <div class="field"><label>Device List Path</label>
-          <input id="int-iotApi-devicePath" value="${esc(cfg.devicePath || '')}" placeholder="e.g. /aioo_iot_admin_console/web_api/api/v1/devices">
-          <div class="small muted" style="margin-top:4px;">The path that returns the device list once logged in - not published anywhere yet, so this has to be entered once it's known. Sent as GET with "Authorization: Bearer &lt;token&gt;".</div>
-        </div>
-        <div class="grid2">
-          <div class="field"><label>Box ID Field</label><input id="int-iotApi-boxIdField" value="${esc(cfg.boxIdField || '')}" placeholder="e.g. box_id"></div>
-          <div class="field"><label>Status Field Name</label><input id="int-iotApi-statusFieldName" value="${esc(cfg.statusFieldName || '')}" placeholder="e.g. status"></div>
+          <input id="int-iotApi-devicePath" value="${esc(cfg.devicePath || '')}" placeholder="/aioo_iot_admin_console/web_api/api/v1/device">
+          <div class="small muted" style="margin-top:4px;">Leave blank to use the default above. Sent as GET with a "User-Token" header (not Authorization).</div>
         </div>
         <div class="field"><label>Offline Status Values</label>
-          <input id="int-iotApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. Offline,Error">
-          <div class="small muted" style="margin-top:4px;">Leave Box ID Field/Status Field Name/Offline Status Values blank and run Test/Sync Now first - it logs a raw sample device below so you can read off the real field names, then a raw value histogram once Status Field Name is set.</div>
+          <input id="int-iotApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. Offline,Unknown">
+          <div class="small muted" style="margin-top:4px;">Comma-separated device states (from the counts below) that should count as offline for the per-location heatmap. The "Devices by ..." breakdown on the IoT Panel works without this being set.</div>
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-iotApi-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
@@ -450,8 +443,6 @@ function renderIotApiCard(settings) {
         ${cfg.lastSyncSummary ? `<p class="small muted" style="margin-top:6px;">${esc(cfg.lastSyncSummary)}</p>` : ''}
         ${cfg.lastError ? `<div class="login-error" style="margin-top:6px;">${esc(cfg.lastError)}</div>` : ''}
         ${rawCountsHtml}
-        ${missingHtml}
-        ${sampleHtml}
       </form>
     </div>
   `;

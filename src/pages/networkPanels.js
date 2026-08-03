@@ -231,23 +231,73 @@ export function renderGrassfishPanel() {
   </div>` : `<div class="card"><div class="empty">No screens tagged Player Type = Grassfish in Asset Inventory yet. Set a screen's Player Type to "Grassfish" under Asset Inventory to have it show up here.</div></div>`}`;
 }
 
-// Until iot-sync has run at least once with Status Field Name/Offline Status Values calibrated
-// (see Settings > Integrations > IoT Admin Console), no location has a location_sub_assets row
-// sourced from IoT yet - same "fall back to an Asset Inventory view" pattern the Grassfish panel
-// uses, so this stays useful rather than permanently empty.
+// Fleet-wide "Devices by ..." donut cards, computed server-side by iot-sync from the live device
+// list (app_settings.iotApi.deviceBreakdown) - independent of the per-location heatmap below, so
+// this shows as soon as a sync has run once, whether or not Offline Status Values is calibrated
+// yet. Plain inline SVG rather than a charting dependency - four categories, static per sync.
+const DONUT_PALETTE = ['#00c2c2', '#2f6fb3', '#1f9d55', '#e67e22', '#8e44ad', '#c0392b', '#7f8c8d', '#f1c40f', '#16a085', '#d35400'];
+
+function donutItems(counts) {
+  return Object.entries(counts || {}).sort((a, b) => b[1] - a[1]).map(([label, value]) => ({ label, value }));
+}
+
+function renderDonutSvg(items) {
+  const total = items.reduce((s, it) => s + it.value, 0) || 1;
+  const r = 62; const cx = 80; const cy = 80; const strokeWidth = 30;
+  const circumference = 2 * Math.PI * r;
+  let offset = 0;
+  const segs = items.map((it, idx) => {
+    const dash = (it.value / total) * circumference;
+    const circle = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${DONUT_PALETTE[idx % DONUT_PALETTE.length]}" stroke-width="${strokeWidth}" stroke-dasharray="${dash} ${circumference - dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"><title>${esc(it.label)}: ${it.value}</title></circle>`;
+    offset += dash;
+    return circle;
+  }).join('');
+  return `<svg viewBox="0 0 160 160" width="160" height="160" style="display:block;margin:0 auto;">${segs}</svg>`;
+}
+
+function renderDonutCard(title, counts) {
+  const items = donutItems(counts);
+  const total = items.reduce((s, it) => s + it.value, 0);
+  const legend = items.map((it, idx) => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;margin:2px 8px 2px 0;"><span style="width:10px;height:10px;border-radius:2px;background:${DONUT_PALETTE[idx % DONUT_PALETTE.length]};display:inline-block;flex:none;"></span>${esc(it.label)} (${it.value})</span>`).join('');
+  return `<div class="card" style="text-align:center;">
+    <div class="card-head" style="text-align:left;"><h3>${esc(title)}</h3></div>
+    <div style="display:flex;flex-wrap:wrap;justify-content:center;margin-bottom:10px;">${legend || '<span class="small muted">No data</span>'}</div>
+    ${total ? renderDonutSvg(items) : ''}
+  </div>`;
+}
+
+function renderIotDeviceBreakdown(cfg) {
+  const b = cfg?.deviceBreakdown;
+  if (!b || !b.totalDevices) return '';
+  return `<div class="small muted" style="margin-bottom:8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${cfg.lastSync ? new Date(cfg.lastSync).toLocaleString() : 'last sync'}.</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:14px;">
+    ${renderDonutCard('Devices by Platform', b.byPlatform)}
+    ${renderDonutCard('Devices by State', b.byState)}
+    ${renderDonutCard('Devices by Camera Type', b.byCameraType)}
+    ${renderDonutCard('Devices by Version', b.byVersion)}
+  </div>`;
+}
+
+// Until iot-sync has run at least once with Offline Status Values calibrated (see Settings >
+// Integrations > IoT Admin Console), no location has a location_sub_assets row sourced from IoT
+// yet - same "fall back to an Asset Inventory view" pattern the Grassfish panel uses, so this
+// stays useful rather than permanently empty. The device breakdown donuts above don't need that
+// calibration and show as soon as a sync has run once, in either branch.
 export function renderIotPanel() {
   const allLocations = loadData('locationsForNetworkPanel', listLocations);
-  if (allLocations === null) return loadingCard();
+  const cfg = loadData('iotApi', () => getSetting('iotApi'));
+  if (allLocations === null || cfg === null) return loadingCard();
   if (allLocations?.__error) return loadingCard(allLocations.__error);
+  if (cfg?.__error) return loadingCard(cfg.__error);
+
+  const breakdown = renderIotDeviceBreakdown(cfg);
   const hasLiveData = allLocations.some((l) => (l.location_sub_assets || []).some((sa) => sa.source === 'iot'));
   if (hasLiveData) {
-    return renderNetworkPanel('iot', 'iot_healthy_count', 'IoT Panel', 'iotApi', 'iot-sync');
+    return breakdown + renderNetworkPanel('iot', 'iot_healthy_count', 'IoT Panel', 'iotApi', 'iot-sync');
   }
 
-  const cfg = loadData('iotApi', () => getSetting('iotApi'));
   const inventory = loadData('assetInventoryForIotPanel', listAssetInventory);
-  if (cfg === null || inventory === null) return loadingCard();
-  if (cfg?.__error) return loadingCard(cfg.__error);
+  if (inventory === null) return loadingCard();
   if (inventory?.__error) return loadingCard(inventory.__error);
 
   const admin = isAdmin();
@@ -270,7 +320,7 @@ export function renderIotPanel() {
     </div>`;
   }).join('');
 
-  return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+  return `${breakdown}<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
     <span>${c.baseUrl ? `API configured${admin ? ` (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}` : ''}.` : 'No live API configured yet.'} ${devices.length} IoT device${devices.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = IoT) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign/Grassfish Consoles use.</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-sm" onclick="App.runNetworkSync('iotApi','iot-sync')" ${STATE.syncing === 'iotApi' ? 'disabled' : ''}>${STATE.syncing === 'iotApi' ? 'Syncing...' : 'Sync Now'}</button>
