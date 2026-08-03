@@ -195,7 +195,13 @@ Deno.serve(async (req) => {
     if (!offlineSet.size) {
       summary = `${pulledLine} Raw monitor_status values seen among matched screens: ${Object.keys(rawCounts).map((k) => `${k} (${rawCounts[k]}x)`).join(', ') || 'none'}. Set "Offline Status Values" below (comparing against screens you know are down) to start applying online/offline status.`;
     } else {
-      const { data: locations } = await adminClient.from('locations').select('id, name, manual_asset_inventory_ids');
+      // Excludes soft-deleted locations - otherwise a deleted wrapper location that still carries
+      // its old manual_asset_inventory_ids competes with whatever real location a screen was
+      // reassigned to for the same asset id, non-deterministically winning the map depending on
+      // row order. Bit real: splitting Metro Green Line's single wrapper location into 18 real
+      // per-station locations left the (soft-deleted) wrapper's stale links still in the reverse
+      // index, so all 18 new stations synced empty.
+      const { data: locations } = await adminClient.from('locations').select('id, name, manual_asset_inventory_ids').is('deleted_at', null);
       const locByName = new Map((locations || []).map((l) => [l.name.toLowerCase(), l.id]));
       // Reverse index of Locations' manual_asset_inventory_ids - the same "venue text doesn't
       // match, so an admin manually linked specific screens to a Location instead" mechanism the

@@ -194,7 +194,10 @@ Deno.serve(async (req) => {
       else for (const asset of assets) matched.push({ asset, isOnline: d.isOnline, lastAccess: d.lastAccess });
     }
 
-    const { data: locations } = await adminClient.from('locations').select('id, name, manual_asset_inventory_ids');
+    // Excludes soft-deleted locations - same fix as broadsign-sync: a deleted wrapper location that
+    // still carries its old manual_asset_inventory_ids would otherwise compete with whatever real
+    // location a screen was reassigned to for the same asset id.
+    const { data: locations } = await adminClient.from('locations').select('id, name, manual_asset_inventory_ids').is('deleted_at', null);
     const locByName = new Map((locations || []).map((l) => [l.name.toLowerCase(), l.id]));
     // Same manual-link fallback as broadsign-sync - venue text not matching a Location's name is
     // exactly what manual_asset_inventory_ids exists to bridge, and the sync never consulted it.
