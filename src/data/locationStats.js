@@ -1,6 +1,7 @@
 // Shared aggregation math for Locations / Live Ops Overview / the Broadsign &
 // Grassfish console panels. The original app recomputed chain/combined-member
 // resolution independently in ~4 places; here it's centralized.
+import { fmtRelativeTime } from '../lib/format.js';
 
 export function resolveMembers(loc, allLocations) {
   if (loc.combined_members && loc.combined_members.length) {
@@ -88,7 +89,14 @@ export function sourceStats(loc, allLocations, source, healthyField) {
       total++;
       offline++;
       offlineFaces += sa.faces || 1;
-      offlineItems.push({ location: l.name, name: sa.name, detail: sa.notes || '' });
+      // status_label ('Missing in Action' | 'Offline') and poll_last_utc are set at sync time;
+      // the relative-time portion is always computed fresh here at render time, never stored, so
+      // it stays accurate no matter how long ago the sync actually ran. Falls back to `notes` for
+      // rows synced before these columns existed.
+      const label = sa.status_label || (source === 'broadsign' || source === 'grassfish' ? 'Offline' : null);
+      const pollText = sa.poll_last_utc ? `Last poll: ${fmtRelativeTime(sa.poll_last_utc)}` : '';
+      const detail = [label, pollText].filter(Boolean).join(' - ') || sa.notes || '';
+      offlineItems.push({ location: l.name, name: sa.name, detail, statusLabel: label, pollLastUtc: sa.poll_last_utc });
     }
     if (l[healthyField]) total += l[healthyField];
   }

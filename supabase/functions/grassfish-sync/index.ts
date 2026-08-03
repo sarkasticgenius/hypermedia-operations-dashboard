@@ -221,7 +221,9 @@ Deno.serve(async (req) => {
       if (offlineRows.length) {
         await adminClient.from('location_sub_assets').insert(offlineRows.map((r) => ({
           location_id: locId, name: r.assetName, status: 'Offline', source: 'grassfish', faces: r.faces,
-          notes: `Grassfish Box ID: ${r.boxId}${r.lastAccess && r.lastAccess !== '0001-01-01T00:00:00Z' ? ` - Last Access: ${r.lastAccess}` : ''}`,
+          status_label: 'Offline',
+          poll_last_utc: r.lastAccess && r.lastAccess !== '0001-01-01T00:00:00Z' ? r.lastAccess : null,
+          notes: `Grassfish Box ID: ${r.boxId}`,
         })));
       }
       await adminClient.from('locations').update({

@@ -30,6 +30,25 @@ export function jsAttr(s) {
     .replace(/\r?\n/g, '\\n');
 }
 
+// "2 days, 4 hours and 16 minutes ago" - deliberately computed at render time from a raw
+// timestamp rather than ever being baked into a stored string, so it stays accurate no matter how
+// long ago the sync that captured the timestamp actually ran.
+export function fmtRelativeTime(iso) {
+  if (!iso) return null;
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (diffMs < 60000) return 'just now';
+  const totalMinutes = Math.floor(diffMs / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days) parts.push(`${days} day${days === 1 ? '' : 's'}`);
+  if (hours) parts.push(`${hours} hour${hours === 1 ? '' : 's'}`);
+  if (minutes || !parts.length) parts.push(`${minutes} minute${minutes === 1 ? '' : 's'}`);
+  const joined = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+  return `${joined} ago`;
+}
+
 export function daysUntilInfo(dateStr) {
   if (!dateStr) return { text: '-', urgent: false, overdue: false };
   const today = new Date(todayISO() + 'T00:00:00');

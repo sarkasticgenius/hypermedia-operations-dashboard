@@ -184,6 +184,10 @@ Deno.serve(async (req) => {
     }
 
     const offlineSet = new Set(String(cfg.offlineStatusValues || '').split(',').map((s) => s.trim()).filter(Boolean));
+    // Subset of offlineSet that specifically means "Missing in Action" rather than a generic
+    // "Offline" - same undocumented-codes caveat as offlineStatusValues, so this is admin-
+    // calibrated too rather than guessed (see Settings > Integrations > Broadsign API).
+    const missingInActionSet = new Set(String(cfg.missingInActionStatusValues || '').split(',').map((s) => s.trim()).filter(Boolean));
     const nowIso = new Date().toISOString();
     let summary: string;
     let locationsUpdated = 0;
@@ -194,14 +198,18 @@ Deno.serve(async (req) => {
       const { data: locations } = await adminClient.from('locations').select('id, name');
       const locByName = new Map((locations || []).map((l) => [l.name.toLowerCase(), l.id]));
 
-      const rowsByLocation = new Map<string, { assetName: string; clientResourceId: string; offline: boolean; faces: number }[]>();
+      const rowsByLocation = new Map<string, { assetName: string; clientResourceId: string; offline: boolean; faces: number; pollLastUtc: string | null; statusLabel: string }[]>();
       let unmatchedLocation = 0;
       for (const { asset, row } of matchedRows) {
         const locId = asset.venue ? locByName.get(String(asset.venue).toLowerCase()) : null;
         if (!locId) { unmatchedLocation++; continue; }
         const offline = offlineSet.has(String(row.monitor_status));
+        const statusLabel = missingInActionSet.has(String(row.monitor_status)) ? 'Missing in Action' : 'Offline';
         if (!rowsByLocation.has(locId)) rowsByLocation.set(locId, []);
-        rowsByLocation.get(locId).push({ assetName: asset.name, clientResourceId: String(row.client_resource_id), offline, faces: asset.faces || 1 });
+        rowsByLocation.get(locId).push({
+          assetName: asset.name, clientResourceId: String(row.client_resource_id), offline,
+          faces: asset.faces || 1, pollLastUtc: row.poll_last_utc || null, statusLabel,
+        });
       }
 
       // Wipe every existing broadsign-sourced offline row and healthy-count FIRST, once, rather
@@ -219,7 +227,8 @@ Deno.serve(async (req) => {
         if (offlineRows.length) {
           await adminClient.from('location_sub_assets').insert(offlineRows.map((r) => ({
             location_id: locId, name: r.assetName, status: 'Offline', source: 'broadsign', faces: r.faces,
-            notes: `Broadsign ID: ${r.clientResourceId} - raw monitor_status logged in Settings`,
+            poll_last_utc: r.pollLastUtc, status_label: r.statusLabel,
+            notes: `Broadsign ID: ${r.clientResourceId}`,
           })));
         }
         await adminClient.from('locations').update({
