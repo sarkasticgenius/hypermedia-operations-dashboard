@@ -430,6 +430,10 @@ function renderIotApiCard(settings) {
           <input id="int-iotApi-devicePath" value="${esc(cfg.devicePath || '')}" placeholder="/aioo_iot_admin_console/web_api/api/v1/device">
           <div class="small muted" style="margin-top:4px;">Leave blank to use the default above. Sent as GET with a "User-Token" header (not Authorization).</div>
         </div>
+        <div class="field"><label>API Key</label>
+          <input id="int-iotApi-apiKey" type="password" value="${esc(cfg.apiKey || '')}">
+          <div class="small muted" style="margin-top:4px;">Stored for when aioo issues a key-based auth path - not used by the sync yet, which still logs in with Username/Password above.</div>
+        </div>
         <div class="field"><label>Offline Status Values</label>
           <input id="int-iotApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. Offline,Unknown">
           <div class="small muted" style="margin-top:4px;">Comma-separated device states (from the counts below) that should count as offline for the per-location heatmap. The "Devices by ..." breakdown on the IoT Panel works without this being set.</div>
