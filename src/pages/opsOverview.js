@@ -7,6 +7,7 @@ import { listMetroPics, metroPicStatus } from '../data/metroPics.js';
 import { listSimCards, simLocationDuplicateCounts, isDuplicateLocationSim } from '../data/simCards.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { hiddenMemberIds, locationOfflineStats, locationManualStats, sourceStats, inventoryFaceTotals, mafInventoryTotals } from '../data/locationStats.js';
+import { getSetting } from '../data/settings.js';
 import { svgGroupedBarChart, svgDonutChart } from '../lib/charts.js';
 import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
@@ -14,10 +15,10 @@ import { esc } from '../lib/format.js';
 let refreshTimer = null;
 
 async function loadOverview() {
-  const [locations, tickets, permits, metroPics, simCards, assetInventory] = await Promise.all([
-    listLocations(), listTickets(), listPermits(), listMetroPics(), listSimCards(), listAssetInventory(),
+  const [locations, tickets, permits, metroPics, simCards, assetInventory, iotApi] = await Promise.all([
+    listLocations(), listTickets(), listPermits(), listMetroPics(), listSimCards(), listAssetInventory(), getSetting('iotApi'),
   ]);
-  return { locations, tickets, permits, metroPics, simCards, assetInventory };
+  return { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi };
 }
 
 function ensureAutoRefresh() {
@@ -174,7 +175,7 @@ export function renderOpsOverview() {
   if (data === null) return loadingCard();
   if (data.__error) return loadingCard(data.__error);
 
-  const { locations, tickets, permits, metroPics, simCards, assetInventory } = data;
+  const { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi } = data;
   const openTickets = urgentOpenTickets(tickets);
   const { items: offlineAssets, networkedOfflineFaces } = allOfflineAssets(locations);
   const simIssues = allSimIssues(simCards);
@@ -184,6 +185,9 @@ export function renderOpsOverview() {
   const visibleOffline = filteredOfflineAssets(offlineAssets);
   const inventoryTotals = inventoryFaceTotals(assetInventory);
   const mafTotals = mafInventoryTotals(assetInventory);
+  const iotB = iotApi?.deviceBreakdown;
+  const iotTracking = iotB?.byState?.Tracking || 0;
+  const iotTrackingPct = iotB?.totalDevices ? Math.round((iotTracking / iotB.totalDevices) * 100) : 0;
   // Broadsign+Grassfish online = everything in the full inventory for those two networks minus
   // whatever's currently known offline from live sync data - same "total minus offline" base
   // inventoryFaceTotals already uses, just split into online/offline instead of one static figure.
@@ -233,6 +237,22 @@ export function renderOpsOverview() {
         <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline Faces</div><div class="value">${networkedOfflineFaces}</div></div>
       </div>
     </div>
+
+    ${iotB && iotB.totalDevices ? `<div class="card">
+      <div class="card-head"><h3>IoT Devices</h3><div class="desc">${iotB.totalDevices} device(s) via the aioo IoT Admin Console${iotApi.lastSync ? `, last synced ${new Date(iotApi.lastSync).toLocaleTimeString()}` : ''}. See <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('iotPanel')">IoT Panel</a> for the full breakdown.</div></div>
+      <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
+        ${svgDonutChart(iotTrackingPct, donutColor(iotB.totalDevices - iotTracking, iotB.totalDevices), 130, iotTrackingPct + '%', 'Tracking')}
+        <div style="flex:1;min-width:220px;">
+          ${svgGroupedBarChart(Object.keys(iotB.byState), [{ name: 'Devices', color: '#2f6fb3', values: Object.values(iotB.byState) }], { width: 300, height: 130 })}
+        </div>
+      </div>
+      <div class="kpi-row" style="margin-top:16px;">
+        <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Tracking</div><div class="value">${iotTracking}</div></div>
+        <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline</div><div class="value">${iotB.byState.Offline || 0}</div></div>
+        <div class="kpi"><div class="label">Ready</div><div class="value">${iotB.byState.Ready || 0}</div></div>
+        <div class="kpi"><div class="label">Idle / Unknown</div><div class="value">${(iotB.byState.Idle || 0) + (iotB.byState.Unknown || 0)}</div></div>
+      </div>
+    </div>` : ''}
 
     <div id="ops-card-tickets" class="card">
       <div class="card-head"><h3>Open Tickets <span class="badge b-red">${openTickets.length}</span></h3></div>

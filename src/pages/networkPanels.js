@@ -4,6 +4,7 @@ import { getSetting, saveSetting } from '../data/settings.js';
 import { listLocations } from '../data/locations.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { hiddenMemberIds, resolveMembers, sourceStats, heatmapColor } from '../data/locationStats.js';
+import { svgGroupedBarChart } from '../lib/charts.js';
 import { listSyncLogs } from '../data/syncLogs.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin, canAdd } from '../auth.js';
@@ -272,29 +273,38 @@ function chartLegend(items) {
   return items.map((it, idx) => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;margin:2px 8px 2px 0;"><span style="width:10px;height:10px;border-radius:2px;background:${CHART_PALETTE[idx % CHART_PALETTE.length]};display:inline-block;flex:none;"></span>${esc(it.label)} (${it.value})</span>`).join('');
 }
 
-function renderPieCard(title, items) {
-  const total = items.reduce((s, it) => s + it.value, 0);
-  return `<div class="card" style="text-align:center;">
-    <div class="card-head" style="text-align:left;"><h3>${esc(title)}</h3></div>
-    <div style="display:flex;flex-wrap:wrap;justify-content:center;margin-bottom:10px;">${chartLegend(items) || '<span class="small muted">No data</span>'}</div>
-    ${total ? renderPieSvg(items) : ''}
+// Each "Devices by ..." card can switch between a pie and a histogram/bar view - default is pie
+// for the low-cardinality categories and bar for Version (too many distinct values for pie
+// slices to stay readable), but every card can toggle either way. Mode is per-category so
+// switching one doesn't affect the others. Bar mode reuses the app's shared svgGroupedBarChart
+// (same component Live Ops Overview's charts use) for visual consistency, rather than a bespoke
+// bar renderer just for this page.
+const IOT_CHART_DEFAULT_MODE = { platform: 'pie', state: 'pie', cameraType: 'pie', version: 'bar' };
+
+export function setIotChartMode(key, mode) {
+  setState({ iotChartMode: { ...(STATE.iotChartMode || {}), [key]: mode } });
+}
+
+function chartModeToggle(key, mode) {
+  return `<div style="display:flex;gap:4px;flex:none;">
+    <button class="btn-sm${mode === 'pie' ? ' btn-orange' : ''}" onclick="App.setIotChartMode('${key}','pie')">Pie</button>
+    <button class="btn-sm${mode === 'bar' ? ' btn-orange' : ''}" onclick="App.setIotChartMode('${key}','bar')">Bar</button>
   </div>`;
 }
 
-// Horizontal bar/graph chart - used for categories with too many distinct values (e.g. app
-// versions) for a pie slice to stay readable.
-function renderBarCard(title, items) {
-  const max = Math.max(1, ...items.map((it) => it.value));
-  const rows = items.map((it, idx) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
-    <div style="width:110px;flex:none;font-size:11px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(it.label)}">${esc(it.label)}</div>
-    <div style="flex:1;background:var(--border);border-radius:4px;overflow:hidden;height:13px;">
-      <div style="width:${Math.round((it.value / max) * 100)}%;height:100%;background:${CHART_PALETTE[idx % CHART_PALETTE.length]};"></div>
-    </div>
-    <div style="width:32px;flex:none;font-size:11px;">${it.value}</div>
-  </div>`).join('');
-  return `<div class="card">
-    <div class="card-head"><h3>${esc(title)}</h3></div>
-    ${items.length ? rows : '<div class="empty">No data</div>'}
+function renderIotChartCard(key, title, items) {
+  const mode = (STATE.iotChartMode && STATE.iotChartMode[key]) || IOT_CHART_DEFAULT_MODE[key] || 'pie';
+  const total = items.reduce((s, it) => s + it.value, 0);
+  if (mode === 'bar') {
+    return `<div class="card">
+      <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:10px;"><h3>${esc(title)}</h3>${chartModeToggle(key, mode)}</div>
+      ${total ? svgGroupedBarChart(items.map((it) => it.label), [{ name: title, color: CHART_PALETTE[0], values: items.map((it) => it.value) }], { width: 300, height: 190 }) : '<div class="empty">No data</div>'}
+    </div>`;
+  }
+  return `<div class="card" style="text-align:center;">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;"><h3>${esc(title)}</h3>${chartModeToggle(key, mode)}</div>
+    <div style="display:flex;flex-wrap:wrap;justify-content:center;margin-bottom:10px;">${chartLegend(items) || '<span class="small muted">No data</span>'}</div>
+    ${total ? renderPieSvg(items) : ''}
   </div>`;
 }
 
@@ -443,10 +453,10 @@ export function renderIotPanel() {
   return `${statusBar}
   <div class="small muted" style="margin:10px 0 8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${c.lastSync ? new Date(c.lastSync).toLocaleString() : 'last sync'}.</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:14px;">
-    ${renderPieCard('Devices by Platform', donutItems(b.byPlatform))}
-    ${renderPieCard('Devices by State', canonicalStateItems(b.byState))}
-    ${renderPieCard('Devices by Camera Type', donutItems(b.byCameraType))}
-    ${renderBarCard('Devices by Version', donutItems(b.byVersion))}
+    ${renderIotChartCard('platform', 'Devices by Platform', donutItems(b.byPlatform))}
+    ${renderIotChartCard('state', 'Devices by State', canonicalStateItems(b.byState))}
+    ${renderIotChartCard('cameraType', 'Devices by Camera Type', donutItems(b.byCameraType))}
+    ${renderIotChartCard('version', 'Devices by Version', donutItems(b.byVersion))}
   </div>
   ${renderIotDeviceTable(c)}`;
 }
