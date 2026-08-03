@@ -255,8 +255,7 @@ function renderDonutSvg(items) {
   return `<svg viewBox="0 0 160 160" width="160" height="160" style="display:block;margin:0 auto;">${segs}</svg>`;
 }
 
-function renderDonutCard(title, counts) {
-  const items = donutItems(counts);
+function renderDonutCard(title, items) {
   const total = items.reduce((s, it) => s + it.value, 0);
   const legend = items.map((it, idx) => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;margin:2px 8px 2px 0;"><span style="width:10px;height:10px;border-radius:2px;background:${DONUT_PALETTE[idx % DONUT_PALETTE.length]};display:inline-block;flex:none;"></span>${esc(it.label)} (${it.value})</span>`).join('');
   return `<div class="card" style="text-align:center;">
@@ -266,110 +265,54 @@ function renderDonutCard(title, counts) {
   </div>`;
 }
 
-function renderIotDeviceBreakdown(cfg) {
-  const b = cfg?.deviceBreakdown;
-  if (!b || !b.totalDevices) return '';
-  return `<div class="small muted" style="margin-bottom:8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${cfg.lastSync ? new Date(cfg.lastSync).toLocaleString() : 'last sync'}.</div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:14px;">
-    ${renderDonutCard('Devices by Platform', b.byPlatform)}
-    ${renderDonutCard('Devices by State', b.byState)}
-    ${renderDonutCard('Devices by Camera Type', b.byCameraType)}
-    ${renderDonutCard('Devices by Version', b.byVersion)}
-  </div>`;
+// Fixed display order matching the states the aioo console itself uses (confirmed from the
+// user's own reference screenshot) - always shown even at zero count, per "include all status
+// values", rather than only whatever states happened to appear in the latest pull.
+const IOT_STATE_ORDER = ['Idle', 'Ready', 'Tracking', 'Offline', 'Unknown'];
+
+function canonicalStateItems(byState) {
+  const b = byState || {};
+  const items = IOT_STATE_ORDER.map((label) => ({ label, value: b[label] || 0 }));
+  for (const [label, value] of Object.entries(b)) {
+    if (!IOT_STATE_ORDER.includes(label)) items.push({ label, value });
+  }
+  return items;
 }
 
-// Until iot-sync has run at least once with Offline Status Values calibrated (see Settings >
-// Integrations > IoT Admin Console), no location has a location_sub_assets row sourced from IoT
-// yet - same "fall back to an Asset Inventory view" pattern the Grassfish panel uses, so this
-// stays useful rather than permanently empty. The device breakdown donuts above don't need that
-// calibration and show as soon as a sync has run once, in either branch.
+// Standalone dashboard of whatever iot-sync last pulled live from the aioo IoT Admin Console -
+// deliberately NOT matched against Asset Inventory/Locations (that matching lives in iot-sync for
+// a future per-site heatmap, but this page just shows the fleet as the vendor's own API reports
+// it, same as the "Devices by ..." dashboard in aioo's own console).
 export function renderIotPanel() {
-  const allLocations = loadData('locationsForNetworkPanel', listLocations);
   const cfg = loadData('iotApi', () => getSetting('iotApi'));
-  if (allLocations === null || cfg === null) return loadingCard();
-  if (allLocations?.__error) return loadingCard(allLocations.__error);
+  if (cfg === null) return loadingCard();
   if (cfg?.__error) return loadingCard(cfg.__error);
-
-  const breakdown = renderIotDeviceBreakdown(cfg);
-  const hasLiveData = allLocations.some((l) => (l.location_sub_assets || []).some((sa) => sa.source === 'iot'));
-  if (hasLiveData) {
-    return breakdown + renderNetworkPanel('iot', 'iot_healthy_count', 'IoT Panel', 'iotApi', 'iot-sync');
-  }
-
-  const inventory = loadData('assetInventoryForIotPanel', listAssetInventory);
-  if (inventory === null) return loadingCard();
-  if (inventory?.__error) return loadingCard(inventory.__error);
 
   const admin = isAdmin();
   const c = cfg || {};
-  const devices = inventory.filter((r) => r.player_type === 'IoT');
-  const byVenue = {};
-  devices.forEach((r) => {
-    const v = r.venue || 'Unassigned';
-    if (!byVenue[v]) byVenue[v] = [];
-    byVenue[v].push(r);
-  });
-  const venues = Object.keys(byVenue).sort((a, b) => a.localeCompare(b));
-  const search = (STATE.networkSearch || '').trim().toLowerCase();
-  const visibleVenues = search ? venues.filter((v) => v.toLowerCase().includes(search)) : venues;
-  const tiles = visibleVenues.map((v) => {
-    const list = byVenue[v];
-    return `<div style="background:#5a4fb0;border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openIotVenueModal(${jsonAttr(v)})' title="Click to see devices at this venue">
-      <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(v)}</div>
-      <div style="font-size:11px;opacity:.95;">${list.length} device${list.length === 1 ? '' : 's'}</div>
-    </div>`;
-  }).join('');
+  const b = c.deviceBreakdown;
 
-  return `${breakdown}<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-    <span>${c.baseUrl ? `API configured${admin ? ` (${esc(c.baseUrl)})${c.lastSync ? `, last tested ${esc(c.lastSync)}` : ', not tested yet'}` : ''}.` : 'No live API configured yet.'} ${devices.length} IoT device${devices.length === 1 ? '' : 's'} across ${venues.length} venue${venues.length === 1 ? '' : 's'} in Asset Inventory. This view reflects Asset Inventory directly (Player Type = IoT) rather than a live online/offline feed - once a sync succeeds at least once, this page switches to the same online/offline heatmap the Broadsign/Grassfish Consoles use.</span>
+  const statusBar = admin ? `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last synced ${esc(new Date(c.lastSync).toLocaleString())}` : ', not tested yet'}.` : 'No live API configured yet.'}${c.lastError ? ` <span style="color:#c0392b;">${esc(c.lastError)}</span>` : ''}</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-sm" onclick="App.runNetworkSync('iotApi','iot-sync')" ${STATE.syncing === 'iotApi' ? 'disabled' : ''}>${STATE.syncing === 'iotApi' ? 'Syncing...' : 'Sync Now'}</button>
-      ${admin ? `<button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>` : ''}
+      <button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>
     </span>
-  </div>
-  ${venues.length ? `<div class="card">
-    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-      <div><h3>Devices by Venue</h3><div class="desc">One tile per venue with at least one IoT device in Asset Inventory. Click a tile to see the individual devices and raise a ticket if needed.</div></div>
-      <input id="net-search" placeholder="Search by venue name..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
-    </div>
-    ${visibleVenues.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No venue matches "${esc(STATE.networkSearch || '')}".</div>`}
-  </div>` : `<div class="card"><div class="empty">No devices tagged Player Type = IoT in Asset Inventory yet. Set a device's Player Type to "IoT" under Asset Inventory to have it show up here.</div></div>`}`;
-}
+  </div>` : '';
 
-export function openIotVenueModal(venue) {
-  openModal('iotVenueModal', { venue });
-}
+  if (!b || !b.totalDevices) {
+    return `${statusBar}<div class="card"><div class="empty">No live device data yet.${admin ? ' Configure the API in Settings, then Sync Now.' : ' Ask an Admin to configure this.'}</div></div>`;
+  }
 
-registerModal('iotVenueModal', (data) => {
-  const venue = data.venue || '';
-  const inventory = STATE.pageData.assetInventoryForIotPanel?.data || [];
-  const devices = inventory.filter((r) => r.player_type === 'IoT' && (r.venue || '') === venue);
-  const ticketAddOk = canAdd('tickets');
-  const admin = isAdmin();
-  const rows = devices.map((r) => {
-    const prefill = {
-      title: `${venue} - ${r.name} Issue`,
-      location: venue,
-      description: `Device: ${r.name}${r.format ? ` (${r.format})` : ''}${r.player_box_id ? ` - Player Box ID: ${r.player_box_id}` : ''}`,
-      type: 'Issue',
-    };
-    return `<tr>
-      <td><b>${esc(r.name)}</b></td>
-      <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
-      ${admin ? `<td>${esc(r.player_box_id || '-')}</td>` : ''}
-      <td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="${admin ? 4 : 3}"><div class="empty">No IoT devices at this venue.</div></td></tr>`;
-  return `
-    <h3>IoT - ${esc(venue)}</h3>
-    <div class="small muted" style="margin-bottom:8px;">${devices.length} device${devices.length === 1 ? '' : 's'} at this venue, pulled from Asset Inventory (Player Type = IoT).</div>
-    <table>
-      <thead><tr><th>Name</th><th>Format</th>${admin ? '<th>Player Box ID</th>' : ''}<th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
-  `;
-});
+  return `${statusBar}
+  <div class="small muted" style="margin:10px 0 8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${c.lastSync ? new Date(c.lastSync).toLocaleString() : 'last sync'}.</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;">
+    ${renderDonutCard('Devices by Platform', donutItems(b.byPlatform))}
+    ${renderDonutCard('Devices by State', canonicalStateItems(b.byState))}
+    ${renderDonutCard('Devices by Camera Type', donutItems(b.byCameraType))}
+    ${renderDonutCard('Devices by Version', donutItems(b.byVersion))}
+  </div>`;
+}
 
 export function openOfflineAssetsModal(opts) {
   openModal('offlineAssetsModal', opts);
@@ -389,7 +332,6 @@ export async function runNetworkSync(settingKey, functionName) {
     invalidate(settingKey);
     invalidate('locationsForNetworkPanel');
     invalidate('assetInventoryForGrassfishPanel');
-    invalidate('assetInventoryForIotPanel');
     toast(data?.summary || 'Sync complete');
   } catch (e) {
     toast(e.message || 'Sync failed', 'error');
