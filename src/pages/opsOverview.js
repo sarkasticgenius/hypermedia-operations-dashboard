@@ -1,4 +1,4 @@
-import { STATE, loadData, invalidate, openModal, setState } from '../state.js';
+import { STATE, loadData, revalidate, openModal, setState } from '../state.js';
 import { loadingCard } from '../modals.js';
 import { listLocations } from '../data/locations.js';
 import { listTickets } from '../data/tickets.js';
@@ -25,7 +25,7 @@ function ensureAutoRefresh() {
   if (refreshTimer) return;
   refreshTimer = setInterval(() => {
     if (STATE.page === 'opsOverview') {
-      invalidate('opsOverviewV2');
+      revalidate('opsOverviewV2');
       setState({});
     } else {
       clearInterval(refreshTimer);

@@ -130,6 +130,18 @@ export function invalidate(key) {
   delete STATE.pageData[key];
 }
 
+// For periodic/background refresh only - unlike invalidate(), this keeps the existing cached data
+// in place (so render() has something to show) and just marks it stale, letting loadData()'s own
+// TTL-revalidation logic do a quiet background refetch. invalidate() deletes the entry outright,
+// which forces loadData() back into its "loading" branch and returns null - fine after a mutation
+// (the page SHOULD show a fresh load), but wrong for a timer-driven refresh, where it produced a
+// blank/loading flash every interval even though the page already had perfectly good data to keep
+// showing while the new fetch was in flight.
+export function revalidate(key) {
+  const entry = STATE.pageData[key];
+  if (entry && entry.status === 'ready') entry.fetchedAt = 0;
+}
+
 export function openModal(type, data) {
   setState({ modal: { type, data: data || {}, openedAt: Date.now() } });
 }

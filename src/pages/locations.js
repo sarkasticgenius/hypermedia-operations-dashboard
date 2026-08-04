@@ -9,6 +9,7 @@ import { getSetting, saveSetting } from '../data/settings.js';
 import {
   hiddenMemberIds, resolveMembers, heatmapColor, screenDensityColor,
   locationScreenCount, guessEmirate, EMIRATES_ORDER, sortByTileOrder, assetInventoryForLocation,
+  brandNameForLocation,
 } from '../data/locationStats.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { heatmapGrid } from '../lib/heatmapGrid.js';
@@ -218,7 +219,7 @@ function venueCardHtml(l, editOk, bulkOk, isSelected) {
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
         <div>
           ${bulkOk ? `<input type="checkbox" style="width:auto;margin-right:6px;" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation()" onchange="App.toggleLocationSelection('${l.id}', this.checked)">` : ''}
-          ${editOk ? '<span style="cursor:grab;color:var(--text-dim);">⋮⋮</span> ' : ''}${brandLogoTag(l.name)} <strong>${esc(l.name)}</strong>
+          ${editOk ? '<span style="cursor:grab;color:var(--text-dim);">⋮⋮</span> ' : ''}${brandLogoTag(brandNameForLocation(l))} <strong>${esc(l.name)}</strong>
           ${l.is_combined ? ' <span class="badge b-blue">Combined</span>' : ''}
         </div>
         <span class="badge ${l.type === 'Installed' ? 'b-green' : 'b-gray'}">${esc(l.type)}</span>

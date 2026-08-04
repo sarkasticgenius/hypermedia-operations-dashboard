@@ -3,6 +3,17 @@
 // resolution independently in ~4 places; here it's centralized.
 import { fmtRelativeTime } from '../lib/format.js';
 
+// Metro Rail station/bridge locations (each named "Metro Station - <stop>" or "Metro Bridge -
+// <bridge>") are individually meaningless as brand-lookup names - Brandfetch's search has nothing
+// to match "Metro Station - Energy" against, so every one of them burns a lookup that always
+// fails. They're all the same real-world brand (Dubai Metro, run by RTA), so route every one to a
+// single shared lookup name instead - one cached result covers the whole network.
+const METRO_RAIL_CHAINS = new Set(['Red Line', 'Green Line', 'Metro Bridges', 'Expo Line']);
+export function brandNameForLocation(loc) {
+  if (loc.chain && METRO_RAIL_CHAINS.has(loc.chain)) return 'Dubai Metro Rail';
+  return loc.name;
+}
+
 export function resolveMembers(loc, allLocations) {
   if (loc.combined_members && loc.combined_members.length) {
     const ids = new Set(loc.combined_members);
@@ -160,9 +171,15 @@ export function inventoryFaceTotals(assetInventory) {
 // against real data: every one of these has networkNames === [] and a venue string with no "MAF"
 // substring, so network-name matching alone silently excludes all of them. Substring match (not
 // exact) so "-3D"/"-FACADE"/etc suffix variants of the same mall still count.
+// Spelled "CENTRE" (UK) to match the real venue text in Asset Inventory, not "CENTER" (US) - the
+// keyword list here previously used US spelling and silently matched nothing, since every one of
+// these malls' real venue strings use UK spelling. Also previously missing Deira/Ajman/Me'aisem
+// entirely (Deira/Ajman happen to also carry a "Retail MAF" network link so they were still
+// counted via the network-name path; Me'aisem had neither and was fully uncounted).
 const MAF_MALL_VENUE_KEYWORDS = [
-  'MIRDIF CITY CENTER', 'ZAHIA CITY CENTER', 'SHINDAGHA CITY CENTER', 'SHINDAGAH CITY CENTER',
-  'SHARJAH CITY CENTER', 'FUJAIRAH CITY CENTER', 'MALL OF THE EMIRATES',
+  'MIRDIF CITY CENTRE', 'ZAHIA CITY CENTRE', 'SHINDAGHA CITY CENTRE', 'SHINDAGAH CITY CENTRE',
+  'SHARJAH CITY CENTRE', 'FUJAIRAH CITY CENTRE', 'DEIRA CITY CENTRE', 'AJMAN CITY CENTRE',
+  "ME'AISEM CITY CENTRE", 'MALL OF THE EMIRATES',
 ];
 
 // True if a row belongs to a Majid Al Futtaim mall, whether that's discoverable from its linked

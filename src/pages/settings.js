@@ -9,6 +9,7 @@ import { invalidateAssetInventoryCaches } from './assetsInventory.js';
 import { listLocations } from '../data/locations.js';
 import { listCampaigns } from '../data/campaigns.js';
 import { listBrandLogos, lookupBrandLogos } from '../data/brandLogos.js';
+import { brandNameForLocation } from '../data/locationStats.js';
 import { supabase } from '../supabaseClient.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
@@ -510,11 +511,16 @@ export async function saveAssetInventoryApiForm(event) {
 function renderBrandfetchCard(settings) {
   const cfg = settings.brandfetch || {};
   const fetching = STATE.fetching_brandfetch;
+  const overridesText = Object.entries(cfg.domainOverrides || {}).map(([name, domain]) => `${name} = ${domain}`).join('\n');
   return `
     <div class="card">
-      <div class="card-head"><h3>Brandfetch (Brand Logos)</h3><div class="desc">Looks up a brand logo per venue/contractor/campaign-client name and caches it. Free tier is capped at 100 requests/month, so use "Fetch Missing Logos" rather than fetching live on every page load.</div></div>
+      <div class="card-head"><h3>Brandfetch (Brand Logos)</h3><div class="desc">Looks up a brand logo per venue/contractor/campaign-client name and caches it. Free tier is capped at 100 requests/month, so use "Fetch Missing Logos" rather than fetching live on every page load. Runs automatically once a week in addition to on-demand fetches below.</div></div>
       <form onsubmit="App.saveBrandfetchForm(event)">
         <div class="field"><label>API Key</label><input id="int-brandfetch-apiKey" type="password" value="${esc(cfg.apiKey || '')}" placeholder="Brandfetch Client ID / API Key"></div>
+        <div class="field"><label>Domain Overrides</label>
+          <textarea id="int-brandfetch-domainOverrides" rows="3" placeholder="AL HAMRA MALL = alhamra.ae">${esc(overridesText)}</textarea>
+          <div class="small muted" style="margin-top:4px;">One per line, "Name = domain.com". For names the search-based lookup can't confidently match (e.g. a generic mall name) - resolves the logo directly from the domain instead, via Brandfetch's Logo Link (doesn't use search quota).</div>
+        </div>
         <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-brandfetch-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <button class="btn btn-orange" type="submit">Save</button>
@@ -534,6 +540,13 @@ export async function saveBrandfetchForm(event) {
   const cfg = { ...(settings.brandfetch || {}) };
   cfg.apiKey = document.getElementById('int-brandfetch-apiKey').value.trim();
   cfg.enabled = document.getElementById('int-brandfetch-enabled').checked;
+  const overridesText = document.getElementById('int-brandfetch-domainOverrides').value;
+  const domainOverrides = {};
+  overridesText.split('\n').forEach((line) => {
+    const [name, domain] = line.split('=').map((s) => s && s.trim());
+    if (name && domain) domainOverrides[name] = domain;
+  });
+  cfg.domainOverrides = domainOverrides;
   try {
     await saveSetting('brandfetch', cfg);
     await logAudit('Save integration settings', 'brandfetch');
@@ -557,7 +570,7 @@ export async function runBrandfetchFetchMissing() {
     ]);
     const cachedNames = new Set(cached.map((r) => r.name.toLowerCase()));
     const candidateNames = new Set();
-    locations.forEach((l) => l.name && candidateNames.add(l.name.trim()));
+    locations.forEach((l) => { const n = brandNameForLocation(l); if (n) candidateNames.add(n.trim()); });
     contractors.forEach((c) => (c.company || c.name) && candidateNames.add((c.company || c.name).trim()));
     campaigns.forEach((c) => c.client && candidateNames.add(c.client.trim()));
 
