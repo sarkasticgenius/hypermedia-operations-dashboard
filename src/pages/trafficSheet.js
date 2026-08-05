@@ -55,8 +55,11 @@ import { esc, jsAttr, todayISO } from '../lib/format.js';
 import { renderTabs } from '../lib/tabs.js';
 import { exportToCsv } from '../lib/csv.js';
 
-// "Today's Campaigns" is a cross-category view - venueMatchesTab('today') matches every venue,
-// so it isn't scoped to any single venueType/network the way the other tabs are.
+// "Today's Campaigns" and "FOC / Marketing" are both cross-category views - venueMatchesTab
+// matches every venue for either, so neither is scoped to a single venueType/network the way the
+// other tabs are; FOC / Marketing is further narrowed to matching campaign names on top of that
+// (see the tab === 'focMarketing' filter in renderTrafficSheet/downloadTrafficSheetCsv). Placed
+// last so it sits at the right-hand end of the tab row, beside ENOC.
 const TAB_DEFS = [
   { key: 'today', label: "Today's Campaigns" },
   { key: 'shzBridges', label: 'SHZ Bridges' },
@@ -66,13 +69,13 @@ const TAB_DEFS = [
   { key: 'royals', label: 'Royals' },
   { key: 'gems', label: 'Gems' },
   { key: 'enoc', label: 'ENOC' },
+  { key: 'focMarketing', label: 'FOC / Marketing' },
 ];
 
 const STORE_KEYWORDS = ['LULU', 'UNION COOP', 'ADCOOP'];
 const GEMS_VENUE_KEYWORDS = ['PALM DUBAI ZUMUROD', 'PALM DUBAI RUBY', 'PALM DUBAI FAIROUZ'];
-// Not a separate tab (per feedback - a whole top-level tab was more separation than wanted) - just
-// a visual grouping inside the Today's Active Campaigns list, so users can tell FOC/marketing
-// bookings apart from paid ones at a glance without losing them from the normal view.
+// Also used inside the Today's Active Campaigns list on every OTHER tab, to visually group
+// FOC/marketing bookings apart from paid ones without hiding them from the normal view there.
 const FOC_MARKETING_KEYWORDS = ['FOC', 'MARKETING', 'MKTG'];
 
 function isFocMarketingCampaign(campaign) {
@@ -133,6 +136,7 @@ function venueMatchesTab(venue, tabKey) {
   const name = normalizeVenueText(venue.venue);
   switch (tabKey) {
     case 'today':
+    case 'focMarketing':
       return true;
     case 'malls':
       return venueType === 'MALLS' && !isMafVenue(venue);
@@ -338,9 +342,19 @@ function todayListTable(campaigns, emptyText) {
 }
 
 // FOC/marketing bookings (name contains FOC/Marketing/MKTG) are grouped into their own labeled
-// sub-table beneath the regular one, in the SAME card - a visual split for the user rather than a
-// separate top-level tab, so they're still visible in the normal Today's Active Campaigns view.
-function renderTodayList(campaigns) {
+// sub-table beneath the regular one, in the SAME card, on every OTHER tab - a visual split so
+// they're still visible in the normal Today's Active Campaigns view there. On the dedicated
+// FOC / Marketing tab itself every row is already FOC/Marketing (campaigns was pre-filtered to
+// just those), so the split would be 100% redundant - skip it and show one plain table instead.
+function renderTodayList(campaigns, tab) {
+  if (tab === 'focMarketing') {
+    return `
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-head"><h3>Today's Active Campaigns</h3><div class="desc">${campaigns.length} FOC/Marketing campaign(s) active today for this location.</div></div>
+        ${todayListTable(campaigns, 'No FOC/Marketing campaigns active today.')}
+      </div>
+    `;
+  }
   const regular = campaigns.filter((c) => !isFocMarketingCampaign(c));
   const focMarketing = campaigns.filter(isFocMarketingCampaign);
   return `
@@ -437,7 +451,11 @@ export function renderTrafficSheet() {
   }
 
   const locations = data ? locationsForTab(data, tab) : [];
-  const campaigns = data ? filteredCampaigns(data, tab, location) : [];
+  let campaigns = data ? filteredCampaigns(data, tab, location) : [];
+  // FOC / Marketing matches every venue (venueMatchesTab), then narrows to just the campaigns
+  // whose name actually says FOC/Marketing/MKTG - the venue-level match alone isn't enough since
+  // this tab isn't a venue category.
+  if (tab === 'focMarketing') campaigns = campaigns.filter(isFocMarketingCampaign);
   // The Today's Campaigns tab is inherently "right now", so it ignores the chosen Start/End Date
   // and always shows exactly what's active today - every other tab (including FOC / Marketing)
   // respects the date range.
@@ -459,7 +477,7 @@ export function renderTrafficSheet() {
   } else {
     detailHtml = renderQuickStatTiles(todaysCampaigns.length, todayExpiringCount, yesterdayActiveCount, yesterdayExpiredCount)
       + renderSummaryCard(gridCampaigns, summary, totalScreens)
-      + (isTodayTab ? '' : renderTodayList(todaysCampaigns))
+      + (isTodayTab ? '' : renderTodayList(todaysCampaigns, tab))
       + renderDayGrid(gridCampaigns, isTodayTab ? '' : startDate, isTodayTab ? '' : endDate);
   }
 
@@ -537,7 +555,8 @@ export function downloadTrafficSheetCsv() {
   const startDate = STATE.trafficSheetStartDate || defaults.start;
   const endDate = STATE.trafficSheetEndDate || defaults.end;
 
-  const campaigns = filteredCampaigns(data, tab, location);
+  let campaigns = filteredCampaigns(data, tab, location);
+  if (tab === 'focMarketing') campaigns = campaigns.filter(isFocMarketingCampaign);
   const gridCampaigns = isTodayTab
     ? campaigns.filter((c) => isActiveOn(c, todayISO()))
     : campaigns.filter((c) => withinDateRange(c, startDate, endDate));
