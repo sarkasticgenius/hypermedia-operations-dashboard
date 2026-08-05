@@ -24,6 +24,7 @@ const NAV_ITEMS_TOP = [
 ];
 const NAV_ITEMS_BOTTOM = [
   { page: 'staticCampaigns', label: 'Static Campaigns' },
+  { page: 'trafficSheet', label: 'Traffic Sheet' },
 ];
 
 // A small icon per workspace, keyed by nav label/key so it stays attached even as pages get
@@ -31,7 +32,7 @@ const NAV_ITEMS_BOTTOM = [
 const NAV_ICONS = {
   'Live Ops Overview': '📊', Home: '🏠', 'Asset Inventory': '🖥️', 'Hardware Inventory': '📦',
   'Procurement & Delivery': '🚚', Locations: '📍', Permits: '📄', 'Metro PIC': '🚇',
-  Ticketing: '🎫', 'SIM Cards': '📶', 'Static Campaigns': '🖼️',
+  Ticketing: '🎫', 'SIM Cards': '📶', 'Static Campaigns': '🖼️', 'Traffic Sheet': '🚦',
   'Digital Campaigns Panel': '📢', 'pDOOH Campaign Panel': '📺', 'Maintenance Panel': '🛠️',
   Administration: '🛡️', Settings: '⚙️', 'My Account': '👤', 'Recycle Bin': '🗑️',
 };
@@ -169,6 +170,7 @@ const PAGE_TITLES = {
   campaigns: 'Digital Campaigns',
   gantt: 'Campaign Calendar',
   staticCampaigns: 'Static Campaigns',
+  trafficSheet: 'Traffic Sheet',
   dashboards: 'Maintenance Panel',
   admin: 'Administration',
   settings: 'Settings',

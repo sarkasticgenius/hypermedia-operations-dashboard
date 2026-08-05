@@ -19,6 +19,7 @@ export const PAGE_AREA = {
   campaigns: 'campaigns',
   gantt: 'campaigns',
   staticCampaigns: 'staticCampaigns',
+  trafficSheet: 'trafficSheet',
   dashboards: 'dashboards',
   admin: 'admin',
   settings: 'admin',

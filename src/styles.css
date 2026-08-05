@@ -140,6 +140,14 @@ tr:hover td{background:#fbfbfa;}
 .muted{color:var(--text-dim);}
 .small{font-size:11.5px;}
 
+/* traffic sheet */
+.tsheet-wrap{overflow-x:auto;}
+.tsheet-table th,.tsheet-table td{white-space:nowrap;}
+.tsheet-table .tsheet-month-head{text-align:center;background:#f7f6f4;border-bottom:1px solid var(--border);}
+.tsheet-table .tsheet-day{text-align:center;min-width:30px;}
+.tsheet-table .tsheet-cell{text-align:center;color:var(--text-dim);}
+.tsheet-table .tsheet-cell.tsheet-active{background:#ffe066;color:var(--text);font-weight:700;}
+
 /* gantt */
 .gantt-wrap{overflow-x:auto;}
 .gantt-name-col{width:190px;flex-shrink:0;font-size:12.5px;font-weight:600;padding:6px 10px 6px 0;}

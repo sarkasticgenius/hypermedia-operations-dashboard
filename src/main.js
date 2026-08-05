@@ -15,6 +15,7 @@ import * as simCardsPage from './pages/simCards.js';
 import * as campaignsPage from './pages/campaigns.js';
 import * as ganttPage from './pages/gantt.js';
 import * as staticCampaignsPage from './pages/staticCampaigns.js';
+import * as trafficSheetPage from './pages/trafficSheet.js';
 import * as dashboardsPage from './pages/dashboards.js';
 import * as adminPage from './pages/admin.js';
 import * as settingsPage from './pages/settings.js';
@@ -58,6 +59,7 @@ registerPage('simCards', simCardsPage.renderSimCards);
 registerPage('campaigns', campaignsPage.renderCampaigns);
 registerPage('gantt', ganttPage.renderGantt);
 registerPage('staticCampaigns', staticCampaignsPage.renderStaticCampaigns);
+registerPage('trafficSheet', trafficSheetPage.renderTrafficSheet);
 registerPage('dashboards', dashboardsPage.renderDashboards);
 registerPage('admin', adminPage.renderAdmin);
 registerPage('settings', settingsPage.renderSettings);
@@ -94,6 +96,7 @@ window.App = {
   ...campaignsPage,
   ...ganttPage,
   ...staticCampaignsPage,
+  ...trafficSheetPage,
   ...dashboardsPage,
   ...adminPage,
   ...settingsPage,

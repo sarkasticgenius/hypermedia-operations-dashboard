@@ -176,7 +176,10 @@ export function inventoryFaceTotals(assetInventory) {
 // these malls' real venue strings use UK spelling. Also previously missing Deira/Ajman/Me'aisem
 // entirely (Deira/Ajman happen to also carry a "Retail MAF" network link so they were still
 // counted via the network-name path; Me'aisem had neither and was fully uncounted).
-const MAF_MALL_VENUE_KEYWORDS = [
+// Exported for reuse by the Traffic Sheet page, which needs the same MAF-mall venue-name match
+// against the external Traffic Sheet API's venue names (a different data source than
+// asset_inventory, so it can't reuse isMafRow() directly - just the keyword list).
+export const MAF_MALL_VENUE_KEYWORDS = [
   'MIRDIF CITY CENTRE', 'ZAHIA CITY CENTRE', 'SHINDAGHA CITY CENTRE', 'SHINDAGAH CITY CENTRE',
   'SHARJAH CITY CENTRE', 'FUJAIRAH CITY CENTRE', 'DEIRA CITY CENTRE', 'AJMAN CITY CENTRE',
   "ME'AISEM CITY CENTRE", 'MALL OF THE EMIRATES',

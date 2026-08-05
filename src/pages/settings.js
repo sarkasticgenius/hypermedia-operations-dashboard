@@ -621,6 +621,10 @@ function renderIntegrationsTab() {
     ${renderIotApiCard(settings)}
     ${renderAssetInventoryApiCard(settings)}
     ${renderBrandfetchCard(settings)}
+    ${integrationField(settings, 'trafficSheetApi', 'Traffic Sheet API (AdLive Center)', [
+      { name: 'apiKey', label: 'API Key', type: 'password' },
+      { name: 'enabled', label: 'Enabled', type: 'checkbox' },
+    ], 'traffic-sheet-proxy')}
     ${integrationField(settings, 'glpiFeed', 'GLPI CSV Feed', [
       { name: 'csvUrl', label: 'CSV URL' }, { name: 'autoRefreshMinutes', label: 'Auto-refresh (minutes)', type: 'number' },
     ])}

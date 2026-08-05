@@ -9,7 +9,7 @@ import { logAudit } from './lib/audit.js';
 // permission at split time, so this alone doesn't change anyone's access.
 export const PERMISSION_AREAS = [
   'assets', 'assetsInventory', 'orders', 'locations', 'maintenancePanels', 'campaigns', 'staticCampaigns',
-  'permits', 'metroPic', 'tickets', 'simCards', 'pdooh', 'dashboards',
+  'permits', 'metroPic', 'tickets', 'simCards', 'pdooh', 'dashboards', 'trafficSheet',
 ];
 
 export const PERM_NONE = { view: false, add: false, edit: false, delete: false, export: false };
