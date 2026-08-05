@@ -54,6 +54,7 @@ import { isAdmin } from '../auth.js';
 import { esc, jsAttr, todayISO } from '../lib/format.js';
 import { renderTabs } from '../lib/tabs.js';
 import { exportToCsv } from '../lib/csv.js';
+import { brandLogoTag } from '../lib/brandLogo.js';
 
 // "Today's Campaigns" and "FOC / Marketing" are both cross-category views - venueMatchesTab
 // matches every venue for either, so neither is scoped to a single venueType/network the way the
@@ -63,6 +64,7 @@ import { exportToCsv } from '../lib/csv.js';
 export const TAB_DEFS = [
   { key: 'today', label: "Today's Campaigns" },
   { key: 'shzBridges', label: 'SHZ Bridges' },
+  { key: 'metro', label: 'Dubai Metro' },
   { key: 'malls', label: 'Malls' },
   { key: 'mafMalls', label: 'MAF Malls' },
   { key: 'stores', label: 'In-Stores' },
@@ -158,6 +160,11 @@ export function venueMatchesTab(venue, tabKey) {
       return name.includes('ENOC') || network.includes('ENOC');
     case 'shzBridges':
       return venueType === 'METRO OUTDOOR' || name.includes('BRIDGE');
+    // Regular in-station Metro screens - distinct venueType from the "METRO OUTDOOR"
+    // pedestrian-bridge inventory above (confirmed against real data: both exist as separate
+    // venueType values, ~103 combined regular-station venues vs 17 bridge ones in a real pull).
+    case 'metro':
+      return venueType === 'METRO';
     default:
       return false;
   }
@@ -309,7 +316,7 @@ function renderQuickStatTiles(todayActive, todayExpiring, yesterdayActive, yeste
 function renderSummaryCard(campaigns, summary, totalScreens) {
   const rows = summary.map((s) => `
     <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttr(s.venue)}')" title="Click to filter to this location">
-      <td>${esc(s.venue)}</td>
+      <td>${brandLogoTag(s.venue)} ${esc(s.venue)}</td>
       <td>${esc(s.venueType || '-')}</td>
       <td>${esc(s.network)}</td>
       <td class="tright">${s.screens || 0}</td>
@@ -335,7 +342,7 @@ function todayListTable(campaigns, emptyText) {
   const rows = campaigns.map((c) => `
     <tr>
       <td>${esc(c.campaignName || '')}</td>
-      <td>${esc((c.__matchedVenues || []).map((v) => v.venue).join(', '))}</td>
+      <td>${brandLogoTag((c.__matchedVenues || [])[0]?.venue, 18)} ${esc((c.__matchedVenues || []).map((v) => v.venue).join(', '))}</td>
       <td class="tsheet-nowrap">${statusBadge(c.status)}</td>
       <td class="tsheet-nowrap">${esc(c.startDate || '')}</td>
       <td class="tsheet-nowrap">${esc(c.endDate || '')}</td>

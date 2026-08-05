@@ -1,6 +1,9 @@
 // Campaign Calendar - combines our own internal Digital Campaigns (campaigns table) with live
 // Traffic Sheet data from the AdLive Center API into one landing page:
-//   1. Internal Digital Campaigns gantt (unchanged from before, one bar per campaign).
+//   1. Internal Digital Campaigns gantt - grouped by location (parsed from the campaign's free-
+//      text `locations` field) rather than one bar per campaign, same shape as section 2 below so
+//      the two read consistently; capped to the 12 busiest locations. Clickable through to the
+//      matching search in Locations.
 //   2. Traffic Sheet Campaigns gantt - one bar per venue category (not per individual campaign;
 //      a real month regularly has 200+ live campaigns, so per-campaign bars here would be
 //      unreadable) spanning that category's earliest start to latest end this month, clickable
@@ -13,11 +16,12 @@
 // Sections 2-4 need Traffic Sheet configured (Settings > Integrations > Traffic Sheet API) and
 // show a placeholder otherwise; section 1 always works regardless.
 //
-// Leftover Inventory deliberately excludes SHZ Bridges: Asset Inventory's `category` is 'Metro'
-// for both bridge screens and regular in-station screens, with no further split and the same ad
-// networks (12 SHEET, The Massive, etc.) shared across both - there's no reliable signal in our
-// own inventory data to isolate bridge screens specifically, unlike the other 6 categories which
-// each have a clean category/network signal (confirmed via a real query against asset_inventory).
+// Leftover Inventory deliberately excludes SHZ Bridges AND Dubai Metro: Asset Inventory's
+// `category` is 'Metro' for both bridge screens and regular in-station screens, with no further
+// split and largely the same ad networks (12 SHEET, The Massive, etc.) shared across both - no
+// reliable signal in our own inventory data to isolate either one specifically, unlike the other
+// 6 categories which each have a clean category/network signal (confirmed via a real query
+// against asset_inventory).
 import { STATE, loadData, setState } from '../state.js';
 import { loadingCard } from '../modals.js';
 import { listCampaigns } from '../data/campaigns.js';
@@ -27,11 +31,15 @@ import { MAF_MALL_VENUE_KEYWORDS } from '../data/locationStats.js';
 import { TAB_DEFS, VENUE_CATEGORY_KEYS, venueMatchesTab, mergeVenueName } from './trafficSheet.js';
 import { supabase } from '../supabaseClient.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
-import { esc } from '../lib/format.js';
+import { esc, jsAttr } from '../lib/format.js';
 
 const COLORS = ['#e8951f', '#2563eb', '#1f9d55', '#b45309', '#c0392b', '#8b5e34'];
 const TAB_LABELS = Object.fromEntries(TAB_DEFS.map((t) => [t.key, t.label]));
-const LEFTOVER_CATEGORY_KEYS = VENUE_CATEGORY_KEYS.filter((k) => k !== 'shzBridges');
+// Both Metro categories are excluded from the Leftover Inventory comparison: Asset Inventory's
+// `category` is 'Metro' for bridge screens (SHZ Bridges) AND regular in-station screens (Dubai
+// Metro) alike, with no further split and largely the same ad networks shared across both - no
+// reliable signal in our own inventory data to isolate either one specifically.
+const LEFTOVER_CATEGORY_KEYS = VENUE_CATEGORY_KEYS.filter((k) => k !== 'shzBridges' && k !== 'metro');
 
 function dayLabelsHtml(daysInMonth) {
   return Array.from({ length: daysInMonth }, (_, i) => `<div>${i + 1}</div>`).join('');
@@ -146,6 +154,60 @@ export function goToTrafficSheetCategory(key) {
   setState({ page: 'trafficSheet', trafficSheetTab: key, trafficSheetLocation: '', modal: null });
 }
 
+// Jumps to the Locations workspace, search box pre-filled - used by the Internal Digital
+// Campaigns per-location rows below.
+export function goToLocationSearch(name) {
+  setState({ page: 'locations', locationSearch: name, modal: null });
+}
+
+// Internal campaigns' `locations` field is free text (comma/semicolon/pipe-separated, typed by a
+// human on the campaign form) - split it the same way Traffic Sheet's own network-name parsing
+// does. Campaigns with nothing in that field fall into "Unspecified" rather than being dropped.
+function parseLocationNames(text) {
+  const seen = new Map();
+  String(text || '').split(/[,;|\/]/).forEach((part) => {
+    const trimmed = part.trim();
+    if (trimmed && !seen.has(trimmed.toLowerCase())) seen.set(trimmed.toLowerCase(), trimmed);
+  });
+  return seen.size ? [...seen.values()] : ['Unspecified'];
+}
+
+// Same "group + count badge + spanning bar" shape as the Traffic Sheet Campaigns section, grouped
+// by location instead of venue category, so the two gantt sections on this page read consistently
+// rather than one being per-campaign and the other per-group.
+function internalCampaignsByLocation(inMonth) {
+  const byLoc = {};
+  inMonth.forEach((c) => {
+    parseLocationNames(c.locations).forEach((loc) => {
+      if (!byLoc[loc]) byLoc[loc] = { count: 0, minStart: null, maxEnd: null, ids: new Set() };
+      const info = byLoc[loc];
+      if (!info.ids.has(c.id)) { info.ids.add(c.id); info.count++; }
+      if (c.start_date && (!info.minStart || c.start_date < info.minStart)) info.minStart = c.start_date;
+      if (c.end_date && (!info.maxEnd || c.end_date > info.maxEnd)) info.maxEnd = c.end_date;
+    });
+  });
+  return byLoc;
+}
+
+function renderInternalGanttRow(name, info, monthStart, monthEnd, daysInMonth, color) {
+  if (!info.count || !info.minStart || !info.maxEnd) return '';
+  const s = new Date(Math.max(new Date(info.minStart), monthStart));
+  const e = new Date(Math.min(new Date(info.maxEnd), monthEnd));
+  const startDay = s.getDate();
+  const endDay = e.getDate();
+  const leftPct = ((startDay - 1) / daysInMonth) * 100;
+  const widthPct = Math.max(2, ((endDay - startDay + 1) / daysInMonth) * 100);
+  const clickable = name !== 'Unspecified';
+  return `
+    <div class="gantt-flexrow gantt-body-row" ${clickable ? `style="cursor:pointer;" onclick="App.goToLocationSearch('${jsAttr(name)}')" title="View ${esc(name)} in Locations"` : ''}>
+      <div class="gantt-name-col">${esc(name)} <span class="tab-count">${info.count}</span></div>
+      <div class="gantt-track" style="--days:${daysInMonth};">
+        <div class="gantt-bar" style="left:${leftPct}%;width:${widthPct}%;background:${color};">${info.count} campaign(s)</div>
+      </div>
+    </div>
+  `;
+}
+
 function renderTrafficSheetSections(tsConfigured, month, monthStart, monthEnd, daysInMonth, assetInventory) {
   if (!tsConfigured) {
     return `
@@ -247,23 +309,16 @@ export function renderGantt() {
     return s <= monthEnd && e >= monthStart;
   });
 
-  const rows = inMonth.map((c, idx) => {
-    const s = new Date(Math.max(new Date(c.start_date), monthStart));
-    const e = new Date(Math.min(new Date(c.end_date), monthEnd));
-    const startDay = s.getDate();
-    const endDay = e.getDate();
-    const leftPct = ((startDay - 1) / daysInMonth) * 100;
-    const widthPct = ((endDay - startDay + 1) / daysInMonth) * 100;
-    const color = COLORS[idx % COLORS.length];
-    return `
-      <div class="gantt-flexrow gantt-body-row">
-        <div class="gantt-name-col">${esc(c.name)}</div>
-        <div class="gantt-track" style="--days:${daysInMonth};">
-          <div class="gantt-bar" style="left:${leftPct}%;width:${widthPct}%;background:${color};" title="${esc(c.name)}">${esc(c.name)}</div>
-        </div>
-      </div>
-    `;
-  }).join('');
+  // Grouped by location (not one bar per campaign) to match the Traffic Sheet Campaigns section's
+  // shape below - capped to the busiest 12 locations so a long tail of one-off free-text location
+  // strings doesn't turn this into an unreadable list.
+  const byLocation = internalCampaignsByLocation(inMonth);
+  const sortedLocations = Object.entries(byLocation).sort((a, b) => b[1].count - a[1].count);
+  const shownLocations = sortedLocations.slice(0, 12);
+  const rows = shownLocations
+    .map(([name, info], idx) => renderInternalGanttRow(name, info, monthStart, monthEnd, daysInMonth, COLORS[idx % COLORS.length]))
+    .join('');
+  const hiddenCount = sortedLocations.length - shownLocations.length;
 
   return `
     <div class="toolbar">
@@ -272,7 +327,10 @@ export function renderGantt() {
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Internal Digital Campaigns</h3><div class="desc">${inMonth.length} campaign(s) running this month</div></div>
+      <div class="card-head">
+        <h3>Internal Digital Campaigns</h3>
+        <div class="desc">${inMonth.length} campaign(s) running this month across ${sortedLocations.length} location(s). Click a row to jump to that location in Locations.${hiddenCount > 0 ? ` Showing the busiest ${shownLocations.length} - ${hiddenCount} more not shown.` : ''}</div>
+      </div>
       ${inMonth.length === 0 ? '<div class="empty">No campaigns running this month.</div>' : `
         <div class="gantt-wrap">
           <div class="gantt-grid" style="--days:${daysInMonth};">

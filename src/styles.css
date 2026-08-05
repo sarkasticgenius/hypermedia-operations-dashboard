@@ -155,7 +155,7 @@ tr:hover td{background:#fbfbfa;}
 .gantt-wrap{overflow-x:auto;}
 .gantt-name-col{width:190px;flex-shrink:0;font-size:12.5px;font-weight:600;padding:6px 10px 6px 0;}
 .gantt-grid{position:relative;flex:1;border-left:1px solid var(--border);min-width:calc(var(--days,30) * 26px);}
-.gantt-daylabels{display:grid;grid-template-columns:repeat(var(--days,30),1fr);font-size:10px;color:var(--text-dim);border-bottom:1px solid var(--border);padding-bottom:4px;}
+.gantt-daylabels{display:grid;grid-template-columns:repeat(var(--days,30),1fr);flex:1;min-width:0;font-size:10px;color:var(--text-dim);border-bottom:1px solid var(--border);padding-bottom:4px;text-align:center;}
 .gantt-body-row{display:flex;align-items:center;height:40px;border-bottom:1px solid #f4f3f0;}
 .gantt-track{position:relative;flex:1;height:22px;background:repeating-linear-gradient(to right, #f4f3f0 0, #f4f3f0 1px, transparent 1px, transparent calc(100%/var(--days)));border-radius:6px;}
 .gantt-bar{position:absolute;top:0;height:22px;border-radius:6px;font-size:10.5px;color:#fff;display:flex;align-items:center;padding:0 8px;overflow:hidden;white-space:nowrap;font-weight:700;}
