@@ -97,11 +97,17 @@ function normalizeVenueText(s) {
   return (s || '').toUpperCase().replace(/CENTER/g, 'CENTRE').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-// "ENOC Hatta" rolls up into "ENOC Dubai" for display/grouping (summary, location dropdown,
-// campaign list) - applied after tab matching, so Hatta still matches the ENOC tab on its own
-// name first.
+// Venue-name rollups applied for display/grouping (summary, location dropdown, campaign list)
+// only - the raw name is still what's matched against tab/keyword rules first, so e.g. "Royals
+// Entry 2" still matches the Royals tab on its own name/network before being merged here.
+//   - "ENOC Hatta" -> "ENOC Dubai"
+//   - "Royals Entry 1/2/3" -> "Royals Entry", "Royals Exit 1/2/3" -> "Royals Exit"
 function mergeVenueName(name) {
-  return normalizeVenueText(name) === 'ENOC HATTA' ? 'ENOC Dubai' : name;
+  const n = normalizeVenueText(name);
+  if (n === 'ENOC HATTA') return 'ENOC Dubai';
+  if (/^ROYALS ENTRY \d+$/.test(n)) return 'Royals Entry';
+  if (/^ROYALS EXIT \d+$/.test(n)) return 'Royals Exit';
+  return name;
 }
 
 function isMafVenue(venue) {
