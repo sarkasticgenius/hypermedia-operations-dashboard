@@ -9,9 +9,39 @@ import { savePermit } from '../data/permits.js';
 import { saveMetroPic, listMetroPics } from '../data/metroPics.js';
 import { saveSimCard, listSimCards } from '../data/simCards.js';
 import { saveAssetInventory, listAssetInventory } from '../data/assetsInventory.js';
+import { ensureNetwork } from '../data/networks.js';
 import { invalidateAssetInventoryCaches } from './assetsInventory.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
+
+// Networks is a many-to-many relation (asset_inventory_networks), not a plain column, so it can't
+// go through the generic updateFields()/supabase.update() path the other fields use - split on
+// comma/semicolon/pipe, dedupe case-insensitively (keeping first-seen casing), same separators an
+// admin would naturally use in a spreadsheet cell.
+function parseNetworkNames(text) {
+  const seen = new Map();
+  String(text || '').split(/[,;|]/).forEach((part) => {
+    const trimmed = part.trim();
+    if (trimmed && !seen.has(trimmed.toLowerCase())) seen.set(trimmed.toLowerCase(), trimmed);
+  });
+  return [...seen.values()];
+}
+
+function sameNameSet(a, b) {
+  const norm = (arr) => [...arr].map((s) => s.toLowerCase()).sort().join('|');
+  return norm(a) === norm(b);
+}
+
+// ensureNetwork matches an existing network case-insensitively or creates a new one - same
+// resolution the "Add Network" button on the Asset Inventory edit form uses.
+async function resolveNetworkIds(names) {
+  const ids = [];
+  for (const name of names) {
+    const net = await ensureNetwork(name);
+    if (net) ids.push(net.id);
+  }
+  return ids;
+}
 
 // Mirrors the original app's TEMPLATE_HEADERS/FIELD_ALIASES - column order/casing doesn't
 // matter, mapImportRow() matches on normalized header text.
@@ -147,8 +177,14 @@ const IMPORT_CONFIGS = {
     list: listAssetInventory,
     matchKey: (mapped, existing) => (mapped.sourceAssetId && existing.find((e) => e.source_asset_id === mapped.sourceAssetId))
       || existing.find((e) => e.name === mapped.name && e.venue === mapped.venue),
+    // Every aliased field gets applied - a bulk update must never silently skip a column just
+    // because it wasn't hand-picked here (name and sourceAssetId were previously missing, so a
+    // sheet correcting either was silently ignored on an update). Networks is handled separately
+    // below (networksField) since it isn't a plain column.
     updateFields: (m) => {
       const out = {};
+      if (m.sourceAssetId) out.source_asset_id = m.sourceAssetId;
+      if (m.name) out.name = m.name;
       if (m.venue) out.venue = m.venue;
       if (m.location) out.location = m.location;
       if (m.category) out.category = m.category;
@@ -163,6 +199,7 @@ const IMPORT_CONFIGS = {
       if (m.multiplier) out.multiplier = m.multiplier;
       return out;
     },
+    networksField: 'networks',
     save: saveAssetInventory,
     dataKey: 'assetsInventoryPage',
   },
@@ -219,6 +256,18 @@ export async function runBulkImportPreview(event, entity) {
         const changes = Object.entries(fields)
           .filter(([k, v]) => String(match[k] ?? '') !== String(v ?? ''))
           .map(([k, v]) => [k, match[k], v]);
+        // Networks isn't a plain column (asset_inventory_networks is many-to-many), so it's diffed
+        // separately and applied later via resolveNetworkIds() rather than the generic column
+        // update - but it still shows up in `changes` for the review screen like everything else.
+        let networkNamesTarget = null;
+        if (config.networksField && mapped[config.networksField] !== undefined) {
+          const targetNames = parseNetworkNames(mapped[config.networksField]);
+          const existingNames = match.networkNames || [];
+          if (!sameNameSet(targetNames, existingNames)) {
+            changes.push(['networks', existingNames.join(', '), targetNames.join(', ')]);
+            networkNamesTarget = targetNames;
+          }
+        }
         if (updateByMatchId.has(match.id)) {
           // Later row in the same file wins over an earlier one matching the same existing record.
           duplicates++;
@@ -227,8 +276,11 @@ export async function runBulkImportPreview(event, entity) {
             const i = existingUpdate.changes.findIndex(([ck]) => ck === k);
             if (i >= 0) existingUpdate.changes[i] = [k, oldVal, v]; else existingUpdate.changes.push([k, oldVal, v]);
           }
+          if (networkNamesTarget) existingUpdate.networkNamesTarget = networkNamesTarget;
         } else if (changes.length) {
-          const entry = { matchId: match.id, label: match.name || match.station || match.pic_name || match.sim_number || label, changes };
+          const entry = {
+            matchId: match.id, label: match.name || match.station || match.pic_name || match.sim_number || label, changes, networkNamesTarget,
+          };
           updateByMatchId.set(match.id, entry);
           updates.push(entry);
         }
@@ -244,7 +296,11 @@ export async function runBulkImportPreview(event, entity) {
           inserts.push(entry);
         }
       } else {
-        inserts.push({ mapped, label });
+        const entry = { mapped, label };
+        if (config.networksField && mapped[config.networksField] !== undefined) {
+          entry.networkNamesTarget = parseNetworkNames(mapped[config.networksField]);
+        }
+        inserts.push(entry);
       }
     }
     if (!inserts.length && !updates.length) {
@@ -267,14 +323,32 @@ export async function approveBulkImport(entity) {
     let inserted = 0;
     let updated = 0;
     for (const i of checkedInserts) {
-      await config.save(data.inserts[i].mapped);
+      const entry = data.inserts[i];
+      if (entry.networkNamesTarget) {
+        const networkIds = await resolveNetworkIds(entry.networkNamesTarget);
+        await saveAssetInventory(entry.mapped, networkIds);
+      } else {
+        await config.save(entry.mapped);
+      }
       inserted++;
     }
     for (const i of checkedUpdates) {
       const u = data.updates[i];
-      const fields = Object.fromEntries(u.changes.map(([k, , newVal]) => [k, newVal]));
-      const { error } = await supabase.from(config.table).update(fields).eq('id', u.matchId);
-      if (error) throw error;
+      // Networks isn't a plain column - strip it from the generic update and apply it via the
+      // asset_inventory_networks join table separately below.
+      const plainChanges = u.changes.filter(([k]) => k !== 'networks');
+      if (plainChanges.length) {
+        const fields = Object.fromEntries(plainChanges.map(([k, , newVal]) => [k, newVal]));
+        const { error } = await supabase.from(config.table).update(fields).eq('id', u.matchId);
+        if (error) throw error;
+      }
+      if (u.networkNamesTarget) {
+        const networkIds = await resolveNetworkIds(u.networkNamesTarget);
+        await supabase.from('asset_inventory_networks').delete().eq('asset_inventory_id', u.matchId);
+        if (networkIds.length) {
+          await supabase.from('asset_inventory_networks').insert(networkIds.map((id) => ({ asset_inventory_id: u.matchId, network_id: id })));
+        }
+      }
       updated++;
     }
     if (!inserted && !updated) { toast('Nothing selected to import.', 'error'); return; }
