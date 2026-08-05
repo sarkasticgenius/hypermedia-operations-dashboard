@@ -188,6 +188,12 @@ function isActiveOn(campaign, dateIso) {
   return (campaign.days || []).some((d) => d.date === dateIso && d.spots > 0);
 }
 
+function yesterdayISO() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
 function locationSummary(campaigns) {
   const map = new Map();
   campaigns.forEach((c) => {
@@ -231,6 +237,20 @@ function statusBadge(status) {
   else if (s.includes('pending') || s.includes('scheduled')) cls = 'b-amber';
   else if (s.includes('paused') || s.includes('stopped')) cls = 'b-red';
   return `<span class="badge ${cls}">${esc(status || 'Unknown')}</span>`;
+}
+
+// Quick-glance counts above everything else - scoped to the current tab/location like the rest
+// of the page. "Expiring" = endDate falls on that exact day (regardless of status text), not a
+// generic "ending soon" window.
+function renderQuickStatTiles(todayActive, todayExpiring, yesterdayActive, yesterdayExpired) {
+  return `
+    <div class="kpi-row" style="margin-bottom:16px;">
+      <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Today - Active</div><div class="value">${todayActive}</div></div>
+      <div class="kpi" style="border-left:4px solid #b45309;"><div class="label">Today - Expiring</div><div class="value">${todayExpiring}</div></div>
+      <div class="kpi" style="border-left:4px solid #2563eb;"><div class="label">Yesterday - Active</div><div class="value">${yesterdayActive}</div></div>
+      <div class="kpi" style="border-left:4px solid #6b7280;"><div class="label">Yesterday - Expired</div><div class="value">${yesterdayExpired}</div></div>
+    </div>
+  `;
 }
 
 // Each row's venue name is clickable - sets the Location dropdown to that exact venue, so
@@ -369,13 +389,19 @@ export function renderTrafficSheet() {
     : campaigns.filter((c) => withinDateRange(c, startDate, endDate));
   const summary = locationSummary(gridCampaigns);
   const totalScreens = summary.reduce((sum, s) => sum + (s.screens || 0), 0);
-  const todaysCampaigns = campaigns.filter((c) => isActiveOn(c, todayISO()));
+  const today = todayISO();
+  const yesterday = yesterdayISO();
+  const todaysCampaigns = campaigns.filter((c) => isActiveOn(c, today));
+  const todayExpiringCount = campaigns.filter((c) => c.endDate === today).length;
+  const yesterdayActiveCount = campaigns.filter((c) => isActiveOn(c, yesterday)).length;
+  const yesterdayExpiredCount = campaigns.filter((c) => c.endDate === yesterday).length;
 
   let detailHtml;
   if (!data) {
     detailHtml = `<div class="card"><div class="empty">${loading ? "Loading today's traffic sheet..." : 'Pick a date range and click "Apply Date Filter" to load the traffic sheet.'}</div></div>`;
   } else {
-    detailHtml = renderSummaryCard(gridCampaigns, summary, totalScreens)
+    detailHtml = renderQuickStatTiles(todaysCampaigns.length, todayExpiringCount, yesterdayActiveCount, yesterdayExpiredCount)
+      + renderSummaryCard(gridCampaigns, summary, totalScreens)
       + (isTodayTab ? '' : renderTodayList(todaysCampaigns))
       + renderDayGrid(gridCampaigns, isTodayTab ? '' : startDate, isTodayTab ? '' : endDate);
   }
