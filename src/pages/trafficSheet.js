@@ -229,6 +229,14 @@ function yesterdayISO() {
   return d.toISOString().slice(0, 10);
 }
 
+// Monthly campaign-slot capacity per physical screen: 15 for every category except Royals, which
+// is capped at 6. Determined by the venue's own network (not by whichever tab happens to be
+// active), so it stays correct even on cross-category tabs like Today's Campaigns or FOC /
+// Marketing where a Royals venue can show up alongside everything else.
+export function capacityPerScreen(summaryEntry) {
+  return (summaryEntry.network || '').toUpperCase().includes('ROYALS') ? 6 : 15;
+}
+
 // A single venue legitimately shows up under several different AdLive network values across
 // different campaign bookings (e.g. "ENOC Dubai" spans "ENOC AutoPro", "ENOC DUBAI", "ENOC
 // C-Store Pelmet" depending on which product line booked it - confirmed against real data, over
@@ -313,24 +321,38 @@ function renderQuickStatTiles(todayActive, todayExpiring, yesterdayActive, yeste
 // clicking a location filters the whole page down to just its campaigns. "Network" is every
 // distinct value AdLive Center's own API reports for that venue across its campaign bookings -
 // see the file-header note and locationSummary() for why it's a list rather than one value.
+// "Capacity" applies the 15-campaigns-per-screen rule (6 for Royals): a venue's `screens` count
+// x that cap is its monthly slot capacity, campaign count against it gives available/overbooked.
 function renderSummaryCard(campaigns, summary, totalScreens) {
-  const rows = summary.map((s) => `
-    <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttr(s.venue)}')" title="Click to filter to this location">
-      <td>${brandLogoTag(s.venue)} ${esc(s.venue)}</td>
-      <td>${esc(s.venueType || '-')}</td>
-      <td>${esc(s.network)}</td>
-      <td class="tright">${s.screens || 0}</td>
-      <td class="tright">${s.campaigns.size}</td>
-    </tr>
-  `).join('');
+  const rows = summary.map((s) => {
+    const cap = capacityPerScreen(s);
+    const screens = s.screens || 0;
+    const count = s.campaigns.size;
+    const capacity = screens * cap;
+    const overbooked = screens * Math.max(0, count - cap);
+    const available = Math.max(0, capacity - screens * Math.min(count, cap));
+    const capacityHtml = overbooked > 0
+      ? `<span class="badge b-red">Overbooked +${overbooked}</span>`
+      : `<span class="badge b-green">${available} available</span>`;
+    return `
+      <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttr(s.venue)}')" title="Click to filter to this location">
+        <td>${brandLogoTag(s.venue)} ${esc(s.venue)}</td>
+        <td>${esc(s.venueType || '-')}</td>
+        <td>${esc(s.network)}</td>
+        <td class="tright">${screens}</td>
+        <td class="tright">${count} / ${cap}</td>
+        <td>${capacityHtml}</td>
+      </tr>
+    `;
+  }).join('');
   return `
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head">
         <h3>Summary</h3>
-        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter.</div>
+        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Capacity is 15 campaigns/screen/month (6 for Royals).</div>
       </div>
-      <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5"><div class="empty">No data.</div></td></tr>'}</tbody></table>
+      <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns / Cap</th><th>Capacity Status</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6"><div class="empty">No data.</div></td></tr>'}</tbody></table>
     </div>
   `;
 }

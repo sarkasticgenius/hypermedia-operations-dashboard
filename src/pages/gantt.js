@@ -8,9 +8,12 @@
 //      a real month regularly has 200+ live campaigns, so per-campaign bars here would be
 //      unreadable) spanning that category's earliest start to latest end this month, clickable
 //      through to the matching Traffic Sheet tab.
-//   3. Leftover Inventory - Total screens (Asset Inventory) vs. screens booked by a live campaign
-//      this month, per category, as a grouped bar chart.
-//   4. Top Ideas - the categories with the most unbooked inventory this month, as clickable
+//   3. Leftover Inventory - monthly capacity (screens x 15 campaigns/screen, 6 for Royals) vs.
+//      campaign slots actually booked this month, per category, as a grouped bar chart with a
+//      third Overbooked series for anything past capacity.
+//   3b. Overbooked Alerts - shown above the chart, only when at least one category has a venue
+//      over its monthly capacity.
+//   4. Top Ideas - the categories with the most unbooked capacity this month, as clickable
 //      suggestion cards.
 //
 // Sections 2-4 need Traffic Sheet configured (Settings > Integrations > Traffic Sheet API) and
@@ -75,10 +78,20 @@ function totalScreensByCategory(assetInventory) {
   return totals;
 }
 
-// Distinct-venue screens (max, not sum, per venue - same reasoning as Traffic Sheet's own
-// locationSummary: the same physical venue showing up in several campaigns shouldn't multiply its
-// screen count), booked by at least one live campaign this month.
-function bookedScreensByCategory(trafficSheetData) {
+// Monthly campaign-slot capacity per physical screen: 15 for every category except Royals, capped
+// at 6 - same rule as Traffic Sheet's own capacityPerScreen(), applied here at the category level
+// since every venue folded into one of these buckets is already homogeneous by construction (the
+// 'royals' bucket only ever contains Royals venues).
+function capacityPerScreenForCategory(key) {
+  return key === 'royals' ? 6 : 15;
+}
+
+// Per-venue: screens (max across occurrences, not summed - the same physical venue appearing in
+// several campaigns shouldn't multiply its screen count) and distinct campaign count this month.
+// Rolled into category totals as "slots": booked slots are screens x min(campaigns, cap) - clamped
+// so a venue at or under capacity contributes normally - and overbooked slots are screens x
+// max(0, campaigns - cap) for whatever spills past it.
+function capacitySlotsByCategory(trafficSheetData) {
   const maps = {};
   LEFTOVER_CATEGORY_KEYS.forEach((k) => { maps[k] = new Map(); });
   (trafficSheetData?.campaigns || []).forEach((c) => {
@@ -87,13 +100,26 @@ function bookedScreensByCategory(trafficSheetData) {
         if (venueMatchesTab(v, k)) {
           const name = mergeVenueName(v.venue);
           const m = maps[k];
-          m.set(name, Math.max(m.get(name) || 0, v.screens || 0));
+          if (!m.has(name)) m.set(name, { screens: 0, campaigns: new Set() });
+          const entry = m.get(name);
+          entry.screens = Math.max(entry.screens, v.screens || 0);
+          entry.campaigns.add(c.contract);
         }
       });
     });
   });
   const out = {};
-  LEFTOVER_CATEGORY_KEYS.forEach((k) => { out[k] = [...maps[k].values()].reduce((a, b) => a + b, 0); });
+  LEFTOVER_CATEGORY_KEYS.forEach((k) => {
+    const cap = capacityPerScreenForCategory(k);
+    let booked = 0;
+    let overbooked = 0;
+    maps[k].forEach((entry) => {
+      const count = entry.campaigns.size;
+      booked += entry.screens * Math.min(count, cap);
+      overbooked += entry.screens * Math.max(0, count - cap);
+    });
+    out[k] = { booked, overbooked };
+  });
   return out;
 }
 
@@ -235,21 +261,33 @@ function renderTrafficSheetSections(tsConfigured, month, monthStart, monthEnd, d
   const ganttRows = VENUE_CATEGORY_KEYS.map((k, i) => renderTrafficSheetGanttRow(k, byCat[k], monthStart, monthEnd, daysInMonth, COLORS[i % COLORS.length])).join('');
   const totalCampaigns = tsData.campaignCount ?? (tsData.campaigns || []).length;
 
+  // Total capacity keeps coming from Asset Inventory's screen counts (Traffic Sheet only ever
+  // reports venues with at least one campaign this month, so it can't tell us about screens with
+  // zero campaigns) x the 15-per-screen cap (6 for Royals). Booked/overbooked slots come from
+  // Traffic Sheet's own per-venue screens + distinct campaign count against that same cap.
   const totals = totalScreensByCategory(assetInventory);
-  const booked = bookedScreensByCategory(tsData);
+  const slots = capacitySlotsByCategory(tsData);
   const catLabels = LEFTOVER_CATEGORY_KEYS.map((k) => TAB_LABELS[k]);
-  const bookedValues = LEFTOVER_CATEGORY_KEYS.map((k) => Math.min(booked[k] || 0, totals[k] || 0));
-  const availableValues = LEFTOVER_CATEGORY_KEYS.map((k, i) => Math.max(0, (totals[k] || 0) - bookedValues[i]));
+  const capacityValues = LEFTOVER_CATEGORY_KEYS.map((k) => (totals[k] || 0) * capacityPerScreenForCategory(k));
+  const bookedValues = LEFTOVER_CATEGORY_KEYS.map((k, i) => Math.min(slots[k].booked, capacityValues[i]));
+  const availableValues = LEFTOVER_CATEGORY_KEYS.map((k, i) => Math.max(0, capacityValues[i] - bookedValues[i]));
+  const overbookedValues = LEFTOVER_CATEGORY_KEYS.map((k) => slots[k].overbooked);
   const leftoverChart = svgGroupedBarChart(catLabels, [
     { name: 'Booked', color: '#c0392b', values: bookedValues },
     { name: 'Available', color: '#1f9d55', values: availableValues },
+    { name: 'Overbooked', color: '#7c3aed', values: overbookedValues },
   ], { width: 680, height: 240 });
 
   const ideas = LEFTOVER_CATEGORY_KEYS
-    .map((k, i) => ({ key: k, label: TAB_LABELS[k], available: availableValues[i], total: totals[k] || 0 }))
+    .map((k, i) => ({ key: k, label: TAB_LABELS[k], available: availableValues[i], total: capacityValues[i] }))
     .filter((idea) => idea.available > 0)
     .sort((a, b) => b.available - a.available)
     .slice(0, 3);
+
+  const overbookedAlerts = LEFTOVER_CATEGORY_KEYS
+    .map((k, i) => ({ key: k, label: TAB_LABELS[k], overbooked: overbookedValues[i] }))
+    .filter((a) => a.overbooked > 0)
+    .sort((a, b) => b.overbooked - a.overbooked);
 
   return `
     <div class="card" style="margin-top:16px;">
@@ -263,12 +301,26 @@ function renderTrafficSheetSections(tsConfigured, month, monthStart, monthEnd, d
         </div>
       ` : '<div class="empty">No live campaigns this month.</div>'}
     </div>
+    ${overbookedAlerts.length ? `
+      <div class="card" style="margin-top:16px;">
+        <div class="card-head"><h3>Overbooked Alerts</h3><div class="desc">More than 15 campaigns (6 for Royals) booked on a screen this month, by category - click to review in Traffic Sheet.</div></div>
+        <div class="kpi-row">
+          ${overbookedAlerts.map((a) => `
+            <div class="kpi" style="cursor:pointer;border-left:4px solid #7c3aed;" onclick="App.goToTrafficSheetCategory('${a.key}')" title="View ${esc(a.label)} in Traffic Sheet">
+              <div class="label">${esc(a.label)}</div>
+              <div class="value">+${a.overbooked}</div>
+              <div class="sub">slots over capacity</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    ` : ''}
     <div class="card" style="margin-top:16px;">
-      <div class="card-head"><h3>Leftover Inventory - Not Booked</h3><div class="desc">Total screens (Asset Inventory) vs. screens booked by a live campaign this month, by category. SHZ Bridges isn't included - Asset Inventory can't reliably separate bridge screens from regular Metro station screens by category alone.</div></div>
+      <div class="card-head"><h3>Leftover Inventory - Not Booked</h3><div class="desc">Monthly capacity (screens x 15 campaigns/screen, 6 for Royals) vs. campaign slots actually booked, by category. SHZ Bridges and Dubai Metro aren't included - Asset Inventory can't reliably separate bridge screens from regular Metro station screens by category alone.</div></div>
       ${leftoverChart}
     </div>
     <div class="card" style="margin-top:16px;">
-      <div class="card-head"><h3>Top Ideas</h3><div class="desc">Categories with the most unbooked inventory this month - click one to jump straight to that tab in Traffic Sheet.</div></div>
+      <div class="card-head"><h3>Top Ideas</h3><div class="desc">Categories with the most unbooked capacity this month - click one to jump straight to that tab in Traffic Sheet.</div></div>
       ${ideas.length ? `
         <div class="kpi-row">
           ${ideas.map((idea) => `
