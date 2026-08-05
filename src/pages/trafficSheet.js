@@ -529,7 +529,8 @@ export function renderTrafficSheet() {
           </select>
         </div>
         <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.fetchTrafficSheet()">${loading ? 'Loading...' : 'Apply Date Filter'}</button>
-        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetCsv()">Download CSV</button>
+        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetCsv()" title="Only this tab/location/date range">Download Filtered CSV</button>
+        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetCsv('full')" title="Every campaign in the loaded month(s), ignoring all filters">Download Full Traffic Sheet</button>
       </div>
     </div>
     ${error ? `<div class="login-error" style="margin-bottom:14px;">${esc(error)}</div>` : ''}
@@ -578,36 +579,62 @@ function autoFetchTrafficSheet() {
   return runTrafficSheetFetch(start, end);
 }
 
-// Exports whatever's currently on screen (current tab/location/date-range) as a wide CSV - one
-// row per campaign, one column per visible day, matching the on-screen grid.
-export function downloadTrafficSheetCsv() {
+// Matches the customer's own reference export format: Contract, Campaign Name, Start, End,
+// Campaign Days, Loop Count, Status, then one column per day (spots, blank when not running), with
+// a trailing TOTAL / "Number of Campaigns" row - the per-day count of campaigns active that day,
+// same value the day's column would show if you counted every non-blank cell in it.
+function buildTrafficSheetCsvColumns(campaigns, dates) {
+  const dayCounts = {};
+  dates.forEach((d) => { dayCounts[d] = campaigns.filter((c) => (c.days || []).some((x) => x.date === d)).length; });
+  return [
+    { label: 'Contract', value: (c) => (c.__isTotal ? 'TOTAL' : (c.contract || '')) },
+    { label: 'Campaign Name', value: (c) => (c.__isTotal ? 'Number of Campaigns' : (c.campaignName || '')) },
+    { label: 'Start', value: (c) => (c.__isTotal ? '' : (c.startDate || '')) },
+    { label: 'End', value: (c) => (c.__isTotal ? '' : (c.endDate || '')) },
+    { label: 'Campaign Days', value: (c) => (c.__isTotal ? '' : (c.campaignDays ?? '')) },
+    { label: 'Loop Count', value: (c) => (c.__isTotal ? '' : (c.loopCount ?? '')) },
+    { label: 'Status', value: (c) => (c.__isTotal ? '' : (c.status || '')) },
+    ...dates.map((d) => ({
+      label: d,
+      value: (c) => (c.__isTotal ? (dayCounts[d] || '') : ((c.days || []).find((x) => x.date === d)?.spots ?? '')),
+    })),
+  ];
+}
+
+// scope: omitted/'filtered' (default) - exactly what's currently on screen (tab/location/date
+// range all applied), same as before. 'full' - every campaign in the currently loaded month(s),
+// ignoring every filter (tab, location, Start/End Date narrowing) entirely.
+export function downloadTrafficSheetCsv(scope) {
   const data = STATE.trafficSheetData;
   if (!data) return;
-  const tab = STATE.trafficSheetTab || 'malls';
-  const isTodayTab = tab === 'today';
-  const location = STATE.trafficSheetLocation || '';
-  const defaults = defaultDateRange();
-  const startDate = STATE.trafficSheetStartDate || defaults.start;
-  const endDate = STATE.trafficSheetEndDate || defaults.end;
 
-  let campaigns = filteredCampaigns(data, tab, location);
-  if (tab === 'focMarketing') campaigns = campaigns.filter(isFocMarketingCampaign);
-  const gridCampaigns = isTodayTab
-    ? campaigns.filter((c) => isActiveOn(c, todayISO()))
-    : campaigns.filter((c) => withinDateRange(c, startDate, endDate));
-  let dates = collectDates(gridCampaigns);
-  if (!isTodayTab) dates = dates.filter((d) => inDateRange(d, startDate, endDate));
+  let campaigns;
+  let filenameTag;
+  let dates;
 
-  const columns = [
-    { label: 'Campaign Name', value: (c) => c.campaignName || '' },
-    { label: 'Venue(s)', value: (c) => (c.__matchedVenues || []).map((v) => v.venue).join('; ') },
-    { label: 'Start', value: (c) => c.startDate || '' },
-    { label: 'End', value: (c) => c.endDate || '' },
-    { label: 'Campaign Days', value: (c) => c.campaignDays ?? '' },
-    { label: 'Loop Count', value: (c) => c.loopCount ?? '' },
-    { label: 'Status', value: (c) => c.status || '' },
-    ...dates.map((d) => ({ label: d, value: (c) => (c.days || []).find((x) => x.date === d)?.spots ?? '' })),
-  ];
-  const tabLabel = (TAB_DEFS.find((t) => t.key === tab) || {}).label || tab;
-  exportToCsv(`traffic-sheet-${tabLabel.replace(/\s+/g, '-')}-${startDate}-to-${endDate}.csv`, columns, gridCampaigns);
+  if (scope === 'full') {
+    campaigns = data.campaigns || [];
+    dates = collectDates(campaigns);
+    filenameTag = `Full-Traffic-Sheet-${todayISO()}`;
+  } else {
+    const tab = STATE.trafficSheetTab || 'malls';
+    const isTodayTab = tab === 'today';
+    const location = STATE.trafficSheetLocation || '';
+    const defaults = defaultDateRange();
+    const startDate = STATE.trafficSheetStartDate || defaults.start;
+    const endDate = STATE.trafficSheetEndDate || defaults.end;
+
+    let filtered = filteredCampaigns(data, tab, location);
+    if (tab === 'focMarketing') filtered = filtered.filter(isFocMarketingCampaign);
+    campaigns = isTodayTab
+      ? filtered.filter((c) => isActiveOn(c, todayISO()))
+      : filtered.filter((c) => withinDateRange(c, startDate, endDate));
+    dates = collectDates(campaigns);
+    if (!isTodayTab) dates = dates.filter((d) => inDateRange(d, startDate, endDate));
+    const tabLabel = (TAB_DEFS.find((t) => t.key === tab) || {}).label || tab;
+    filenameTag = `${tabLabel.replace(/\s+/g, '-')}-${startDate}-to-${endDate}`;
+  }
+
+  const columns = buildTrafficSheetCsvColumns(campaigns, dates);
+  exportToCsv(`traffic-sheet-${filenameTag}.csv`, columns, [...campaigns, { __isTotal: true }]);
 }
