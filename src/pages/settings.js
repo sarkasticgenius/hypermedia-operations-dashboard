@@ -10,6 +10,7 @@ import { listLocations } from '../data/locations.js';
 import { listCampaigns } from '../data/campaigns.js';
 import { listBrandLogos, lookupBrandLogos } from '../data/brandLogos.js';
 import { brandNameForLocation } from '../data/locationStats.js';
+import { mergeVenueName } from './trafficSheet.js';
 import { supabase } from '../supabaseClient.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
@@ -514,7 +515,7 @@ function renderBrandfetchCard(settings) {
   const overridesText = Object.entries(cfg.domainOverrides || {}).map(([name, domain]) => `${name} = ${domain}`).join('\n');
   return `
     <div class="card">
-      <div class="card-head"><h3>Brandfetch (Brand Logos)</h3><div class="desc">Looks up a brand logo per venue/contractor/campaign-client name and caches it. Free tier is capped at 100 requests/month, so use "Fetch Missing Logos" rather than fetching live on every page load. Runs automatically once a week in addition to on-demand fetches below.</div></div>
+      <div class="card-head"><h3>Brandfetch (Brand Logos)</h3><div class="desc">Looks up a brand logo per venue/contractor/campaign-client name and caches it. Free tier is capped at 100 requests/month, so use "Fetch Missing Logos" rather than fetching live on every page load. The weekly automatic run covers Locations/Contractors/Campaigns only; "Fetch Missing Logos" below also pulls this month's Traffic Sheet venues (only when that integration is enabled).</div></div>
       <form onsubmit="App.saveBrandfetchForm(event)">
         <div class="field"><label>API Key</label><input id="int-brandfetch-apiKey" type="password" value="${esc(cfg.apiKey || '')}" placeholder="Brandfetch Client ID / API Key"></div>
         <div class="field"><label>Domain Overrides</label>
@@ -556,23 +557,48 @@ export async function saveBrandfetchForm(event) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-// Gathers distinct brand-lookup-worthy names across the 4 places logos are shown (venues,
-// contractors, campaign clients - Asset Inventory reuses venue names so isn't a separate source),
-// skips ones already cached (found or a recorded miss), and looks up the rest in one batch,
-// capped per click to stay well under the free-tier monthly limit.
+// Gathers distinct brand-lookup-worthy names across the 5 places logos are shown (venues,
+// contractors, campaign clients, Traffic Sheet venues - Asset Inventory reuses venue names so
+// isn't a separate source), skips ones already cached (found or a recorded miss), and looks up
+// the rest in one batch, capped per click to stay well under the free-tier monthly limit.
+//
+// Traffic Sheet venue names come from a live external API, not one of our own tables, so they
+// were previously never in this gather at all - a real Traffic Sheet page could have 150+ distinct
+// venues in a single month, so this only pulls the current month (not every month ever) to keep
+// the candidate list bounded, and only when the integration is actually configured/enabled.
 const BRANDFETCH_BATCH_CAP = 25;
+
+async function gatherTrafficSheetVenueNames(settings) {
+  const cfg = settings.trafficSheetApi || {};
+  if (!cfg.enabled || !cfg.apiKey) return [];
+  try {
+    const now = new Date();
+    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { startMonth: month, endMonth: month } });
+    if (error || data?.error) return [];
+    const names = new Set();
+    (data.campaigns || []).forEach((c) => (c.venues || []).forEach((v) => {
+      const n = mergeVenueName(v.venue);
+      if (n) names.add(n.trim());
+    }));
+    return [...names];
+  } catch (e) {
+    return [];
+  }
+}
 
 export async function runBrandfetchFetchMissing() {
   setState({ fetching_brandfetch: true });
   try {
-    const [locations, contractors, campaigns, cached] = await Promise.all([
-      listLocations(), listContractors(), listCampaigns(), listBrandLogos(),
+    const [locations, contractors, campaigns, cached, settings] = await Promise.all([
+      listLocations(), listContractors(), listCampaigns(), listBrandLogos(), getAllSettings(),
     ]);
     const cachedNames = new Set(cached.map((r) => r.name.toLowerCase()));
     const candidateNames = new Set();
     locations.forEach((l) => { const n = brandNameForLocation(l); if (n) candidateNames.add(n.trim()); });
     contractors.forEach((c) => (c.company || c.name) && candidateNames.add((c.company || c.name).trim()));
     campaigns.forEach((c) => c.client && candidateNames.add(c.client.trim()));
+    (await gatherTrafficSheetVenueNames(settings)).forEach((n) => candidateNames.add(n));
 
     const missing = [...candidateNames].filter((n) => n && !cachedNames.has(n.toLowerCase()));
     if (!missing.length) {
