@@ -49,7 +49,6 @@ import { STATE, setState, loadData } from '../state.js';
 import { loadingCard } from '../modals.js';
 import { getAllSettings } from '../data/settings.js';
 import { MAF_MALL_VENUE_KEYWORDS } from '../data/locationStats.js';
-import { listAssetInventory } from '../data/assetsInventory.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin } from '../auth.js';
 import { esc, jsAttr, todayISO } from '../lib/format.js';
@@ -154,15 +153,18 @@ function locationsForTab(data, tabKey) {
 }
 
 // Attaches __matchedVenues (the subset of a campaign's venues that belong to this tab/location,
-// with ENOC Hatta already merged into ENOC Dubai) so the summary table and campaign list stay
-// consistent with each other.
+// with rollups like ENOC Hatta -> ENOC Dubai or Royals Entry 1/2/3 -> Royals Entry already
+// applied to `venue`) so the summary table and campaign list stay consistent with each other.
+// __rawVenue keeps the pre-merge name too - locationSummary needs it to sum screens correctly
+// across distinct physical venues that got merged into one display row, instead of maxing them
+// down to just one.
 function filteredCampaigns(data, tabKey, location) {
   const campaigns = data?.campaigns || [];
   return campaigns
     .map((c) => {
       const venues = (c.venues || [])
         .filter((v) => venueMatchesTab(v, tabKey))
-        .map((v) => ({ ...v, venue: mergeVenueName(v.venue) }))
+        .map((v) => ({ ...v, __rawVenue: v.venue, venue: mergeVenueName(v.venue) }))
         .filter((v) => !location || v.venue === location);
       return venues.length ? { ...c, __matchedVenues: venues } : null;
     })
@@ -201,43 +203,36 @@ function yesterdayISO() {
   return d.toISOString().slice(0, 10);
 }
 
-// Groups Asset Inventory's own network tags (asset_inventory_networks, via listAssetInventory's
-// networkNames) by normalized venue name, so the Summary table can show what OUR system says a
-// venue's network is, alongside whatever AdLive Center's API reports for it.
-function assetInventoryNetworksByVenue(assetInventory) {
-  const map = new Map();
-  (assetInventory || []).forEach((r) => {
-    if (!r.venue) return;
-    const key = normalizeVenueText(r.venue);
-    if (!map.has(key)) map.set(key, new Set());
-    (r.networkNames || []).forEach((n) => map.get(key).add(n));
-  });
-  return map;
-}
-
 // A single venue legitimately shows up under several different AdLive network values across
 // different campaign bookings (e.g. "ENOC Dubai" spans "ENOC AutoPro", "ENOC DUBAI", "ENOC
 // C-Store Pelmet" depending on which product line booked it - confirmed against real data, over
 // half of all venues have more than one distinct network value). Picking just the first one seen
 // (the previous behavior) made the Network column look arbitrary/wrong - showing every distinct
-// value fixes that. aiNetworksByVenue is optional (falls back to '-') so this still works before
-// Asset Inventory has loaded.
-function locationSummary(campaigns, aiNetworksByVenue) {
+// value fixes that.
+//
+// Screens are tracked per __rawVenue (the pre-merge name) and summed, not maxed, across raw
+// venues - maxing was correct for the same physical venue appearing in multiple campaigns (its
+// screen count shouldn't multiply just because it's booked twice), but wrong for a merged group
+// like "Royals Entry" (Entry 1/2/3, each its own physical location with its own screen): that
+// needs 1+1+1=3, not max(1,1,1)=1. Confirmed against Asset Inventory - all 6 Royals Entry/Exit
+// venues are 1 screen each there too, so Entry should total 3 and Exit should total 3.
+function locationSummary(campaigns) {
   const map = new Map();
   campaigns.forEach((c) => {
     (c.__matchedVenues || []).forEach((v) => {
-      if (!map.has(v.venue)) map.set(v.venue, { venue: v.venue, venueType: v.venueType, networks: new Set(), screens: 0, campaigns: new Set() });
+      if (!map.has(v.venue)) map.set(v.venue, { venue: v.venue, venueType: v.venueType, networks: new Set(), campaigns: new Set(), screensByRaw: new Map() });
       const entry = map.get(v.venue);
       if (v.network) entry.networks.add(v.network);
-      entry.screens = Math.max(entry.screens, v.screens || 0);
       entry.campaigns.add(c.contract);
+      const rawKey = v.__rawVenue || v.venue;
+      entry.screensByRaw.set(rawKey, Math.max(entry.screensByRaw.get(rawKey) || 0, v.screens || 0));
     });
   });
   return [...map.values()]
     .map((e) => ({
       ...e,
+      screens: [...e.screensByRaw.values()].reduce((sum, n) => sum + n, 0),
       network: [...e.networks].sort().join(', ') || '-',
-      aiNetwork: [...((aiNetworksByVenue && aiNetworksByVenue.get(normalizeVenueText(e.venue))) || [])].sort().join(', ') || '-',
     }))
     .sort((a, b) => a.venue.localeCompare(b.venue));
 }
@@ -289,14 +284,15 @@ function renderQuickStatTiles(todayActive, todayExpiring, yesterdayActive, yeste
 }
 
 // Each row's venue name is clickable - sets the Location dropdown to that exact venue, so
-// clicking a location filters the whole page down to just its campaigns.
+// clicking a location filters the whole page down to just its campaigns. "Network" is every
+// distinct value AdLive Center's own API reports for that venue across its campaign bookings -
+// see the file-header note and locationSummary() for why it's a list rather than one value.
 function renderSummaryCard(campaigns, summary, totalScreens) {
   const rows = summary.map((s) => `
     <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttr(s.venue)}')" title="Click to filter to this location">
       <td>${esc(s.venue)}</td>
       <td>${esc(s.venueType || '-')}</td>
       <td>${esc(s.network)}</td>
-      <td>${esc(s.aiNetwork)}</td>
       <td class="tright">${s.screens || 0}</td>
       <td class="tright">${s.campaigns.size}</td>
     </tr>
@@ -305,10 +301,10 @@ function renderSummaryCard(campaigns, summary, totalScreens) {
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head">
         <h3>Summary</h3>
-        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. "Network" is every distinct value AdLive reports for that venue across its campaigns; "Asset Inventory Network" is what our own Asset Inventory has tagged for the matching venue, for cross-checking.</div>
+        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter.</div>
       </div>
-      <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th>Asset Inventory Network</th><th class="tright">Screens</th><th class="tright">Campaigns</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="6"><div class="empty">No data.</div></td></tr>'}</tbody></table>
+      <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5"><div class="empty">No data.</div></td></tr>'}</tbody></table>
     </div>
   `;
 }
@@ -416,12 +412,6 @@ export function renderTrafficSheet() {
     queueMicrotask(autoFetchTrafficSheet);
   }
 
-  // Best-effort cross-check against our own Asset Inventory network tags - not required for the
-  // page to work, so a still-loading/errored fetch just leaves the Asset Inventory Network column
-  // showing '-' rather than blocking the Traffic Sheet on it.
-  const assetInventoryRaw = loadData('assetInventory', listAssetInventory);
-  const aiNetworksByVenue = assetInventoryNetworksByVenue(Array.isArray(assetInventoryRaw) ? assetInventoryRaw : []);
-
   const locations = data ? locationsForTab(data, tab) : [];
   const campaigns = data ? filteredCampaigns(data, tab, location) : [];
   // The Today's Campaigns tab is inherently "right now", so it ignores the chosen Start/End Date
@@ -429,7 +419,7 @@ export function renderTrafficSheet() {
   const gridCampaigns = isTodayTab
     ? campaigns.filter((c) => isActiveOn(c, todayISO()))
     : campaigns.filter((c) => withinDateRange(c, startDate, endDate));
-  const summary = locationSummary(gridCampaigns, aiNetworksByVenue);
+  const summary = locationSummary(gridCampaigns);
   const totalScreens = summary.reduce((sum, s) => sum + (s.screens || 0), 0);
   const today = todayISO();
   const yesterday = yesterdayISO();
