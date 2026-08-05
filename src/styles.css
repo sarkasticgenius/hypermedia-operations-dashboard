@@ -147,6 +147,7 @@ tr:hover td{background:#fbfbfa;}
 .tsheet-table .tsheet-day{text-align:center;min-width:30px;}
 .tsheet-table .tsheet-cell{text-align:center;color:var(--text-dim);}
 .tsheet-table .tsheet-cell.tsheet-active{background:#ffe066;color:var(--text);font-weight:700;}
+.tsheet-nowrap{white-space:nowrap;}
 
 /* gantt */
 .gantt-wrap{overflow-x:auto;}

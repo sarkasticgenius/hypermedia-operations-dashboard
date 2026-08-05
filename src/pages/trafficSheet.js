@@ -1,7 +1,18 @@
 // Traffic Sheet - a live campaign schedule report proxied from the AdLive Center Traffic Sheet
 // API (see supabase/functions/traffic-sheet-proxy). Nothing here is synced into a table: the
-// current month is auto-loaded on first view, and "Apply Month Filter" re-fetches a specific
-// range on demand - held in STATE only for the current session.
+// current month is auto-loaded on first view, and Start/End Date (the primary controls - the API
+// itself only takes month granularity, derived from whichever month(s) the picked dates touch)
+// + "Apply Date Filter" re-fetches a specific range on demand - held in STATE only for the
+// current session. "Today's Campaigns" is a dedicated cross-category tab (ignores venueType/
+// network entirely) for what's live right now regardless of which venue group it's in.
+//
+// NOTE on per-venue day data: the API's `days` array is per-CAMPAIGN, not per-venue (confirmed
+// against a real campaign spanning all 3 Gems venues - one flat `days` array covering all of
+// them combined, no venue-level breakdown anywhere in the response). So when a campaign spans
+// multiple venues and the Location filter narrows to just one of them, the day-by-day spot grid
+// still shows that campaign's combined total, not a number specific to the selected venue - the
+// data to split it out doesn't exist in this endpoint's response. Screens/campaign counts in the
+// Summary table ARE per-venue (from each venue's own `screens` field) and unaffected by this.
 //
 // Sub-tab filters were built against a real August 2026 pull (206 campaigns) rather than guesses
 // - the venue objects ({ venue, venueType, network, screens }) come from a completely different
@@ -42,8 +53,12 @@ import { supabase } from '../supabaseClient.js';
 import { isAdmin } from '../auth.js';
 import { esc, jsAttr, todayISO } from '../lib/format.js';
 import { renderTabs } from '../lib/tabs.js';
+import { exportToCsv } from '../lib/csv.js';
 
+// "Today's Campaigns" is a cross-category view - venueMatchesTab('today') matches every venue,
+// so it isn't scoped to any single venueType/network the way the other tabs are.
 const TAB_DEFS = [
+  { key: 'today', label: "Today's Campaigns" },
   { key: 'shzBridges', label: 'SHZ Bridges' },
   { key: 'malls', label: 'Malls' },
   { key: 'mafMalls', label: 'MAF Malls' },
@@ -59,6 +74,20 @@ const GEMS_VENUE_KEYWORDS = ['PALM DUBAI ZUMUROD', 'PALM DUBAI RUBY', 'PALM DUBA
 function defaultMonth() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Start/End Date are the primary, user-facing controls - the API itself only takes month
+// granularity, so the default range is the current month's first/last day and any date range
+// the user picks gets rounded out to whichever month(s) it touches for the actual fetch (see
+// fetchTrafficSheet), then narrowed back down to the exact days client-side (withinDateRange).
+function monthBounds(monthStr) {
+  const [y, m] = monthStr.split('-').map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  return { start: `${monthStr}-01`, end: `${monthStr}-${String(lastDay).padStart(2, '0')}` };
+}
+
+function defaultDateRange() {
+  return monthBounds(defaultMonth());
 }
 
 // Uppercases + normalizes spelling/separator quirks seen in the real API data (US "CENTER" vs UK
@@ -88,6 +117,8 @@ function venueMatchesTab(venue, tabKey) {
   const network = (venue.network || '').toUpperCase();
   const name = normalizeVenueText(venue.venue);
   switch (tabKey) {
+    case 'today':
+      return true;
     case 'malls':
       return venueType === 'MALLS' && !isMafVenue(venue);
     case 'mafMalls':
@@ -227,22 +258,23 @@ function renderSummaryCard(campaigns, summary, totalScreens) {
 }
 
 // Always-visible live snapshot of what's running today, independent of any Start/End Date
-// narrowing applied to the grid below.
+// narrowing applied to the grid below. Start/End/Status columns are nowrap - narrow columns next
+// to Campaign Name's free text otherwise wrap "2026-06-22" onto two lines.
 function renderTodayList(campaigns) {
   const rows = campaigns.map((c) => `
     <tr>
-      <td>${esc(c.contract || '')}</td>
+      <td class="tsheet-nowrap">${esc(c.contract || '')}</td>
       <td>${esc(c.campaignName || '')}</td>
       <td>${esc((c.__matchedVenues || []).map((v) => v.venue).join(', '))}</td>
-      <td>${statusBadge(c.status)}</td>
-      <td>${esc(c.startDate || '')}</td>
-      <td>${esc(c.endDate || '')}</td>
+      <td class="tsheet-nowrap">${statusBadge(c.status)}</td>
+      <td class="tsheet-nowrap">${esc(c.startDate || '')}</td>
+      <td class="tsheet-nowrap">${esc(c.endDate || '')}</td>
     </tr>
   `).join('');
   return `
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head"><h3>Today's Active Campaigns</h3><div class="desc">${campaigns.length} campaign(s) active today for this tab/location.</div></div>
-      <table><thead><tr><th>Contract</th><th>Campaign Name</th><th>Venue(s)</th><th>Status</th><th>Start</th><th>End</th></tr></thead>
+      <table><thead><tr><th>Contract</th><th>Campaign Name</th><th>Venue(s)</th><th class="tsheet-nowrap">Status</th><th class="tsheet-nowrap">Start</th><th class="tsheet-nowrap">End</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6"><div class="empty">No active campaigns today.</div></td></tr>'}</tbody></table>
     </div>
   `;
@@ -315,11 +347,11 @@ export function renderTrafficSheet() {
   }
 
   const tab = STATE.trafficSheetTab || 'malls';
-  const start = STATE.trafficSheetStart || defaultMonth();
-  const end = STATE.trafficSheetEnd || start;
+  const isTodayTab = tab === 'today';
   const location = STATE.trafficSheetLocation || '';
-  const startDate = STATE.trafficSheetStartDate || '';
-  const endDate = STATE.trafficSheetEndDate || '';
+  const defaults = defaultDateRange();
+  const startDate = STATE.trafficSheetStartDate || defaults.start;
+  const endDate = STATE.trafficSheetEndDate || defaults.end;
   const loading = STATE.trafficSheetLoading;
   const error = STATE.trafficSheetError;
   const data = STATE.trafficSheetData;
@@ -332,35 +364,38 @@ export function renderTrafficSheet() {
 
   const locations = data ? locationsForTab(data, tab) : [];
   const campaigns = data ? filteredCampaigns(data, tab, location) : [];
-  const gridCampaigns = (startDate || endDate) ? campaigns.filter((c) => withinDateRange(c, startDate, endDate)) : campaigns;
+  // The Today's Campaigns tab is inherently "right now", so it ignores the chosen Start/End Date
+  // and always shows exactly what's active today - every other tab respects the date range.
+  const gridCampaigns = isTodayTab
+    ? campaigns.filter((c) => isActiveOn(c, todayISO()))
+    : campaigns.filter((c) => withinDateRange(c, startDate, endDate));
   const summary = locationSummary(gridCampaigns);
   const totalScreens = summary.reduce((sum, s) => sum + (s.screens || 0), 0);
   const todaysCampaigns = campaigns.filter((c) => isActiveOn(c, todayISO()));
 
   let detailHtml;
   if (!data) {
-    detailHtml = `<div class="card"><div class="empty">${loading ? "Loading today's traffic sheet..." : 'Pick a month range and click "Apply Month Filter" to load the traffic sheet.'}</div></div>`;
+    detailHtml = `<div class="card"><div class="empty">${loading ? "Loading today's traffic sheet..." : 'Pick a date range and click "Apply Date Filter" to load the traffic sheet.'}</div></div>`;
   } else {
     detailHtml = renderSummaryCard(gridCampaigns, summary, totalScreens)
-      + renderTodayList(todaysCampaigns)
-      + renderDayGrid(gridCampaigns, startDate, endDate);
+      + (isTodayTab ? '' : renderTodayList(todaysCampaigns))
+      + renderDayGrid(gridCampaigns, isTodayTab ? '' : startDate, isTodayTab ? '' : endDate);
   }
 
   return `
     ${renderTabs(TAB_DEFS, tab, 'App.setTrafficSheetTab')}
     <div class="toolbar">
       <div class="toolbar-actions" style="align-items:flex-end;flex-wrap:wrap;">
-        <div class="field" style="margin-bottom:0;"><label>Start Month</label><input type="month" id="tsheet-start" value="${esc(start)}"></div>
-        <div class="field" style="margin-bottom:0;"><label>End Month</label><input type="month" id="tsheet-end" value="${esc(end)}"></div>
-        <div class="field" style="margin-bottom:0;"><label>Start Date (optional)</label><input type="date" value="${esc(startDate)}" onchange="App.setTrafficSheetStartDate(this.value)"></div>
-        <div class="field" style="margin-bottom:0;"><label>End Date (optional)</label><input type="date" value="${esc(endDate)}" onchange="App.setTrafficSheetEndDate(this.value)"></div>
+        <div class="field" style="margin-bottom:0;"><label>Start Date</label><input type="date" id="tsheet-start-date" value="${esc(startDate)}"></div>
+        <div class="field" style="margin-bottom:0;"><label>End Date</label><input type="date" id="tsheet-end-date" value="${esc(endDate)}"></div>
         <div class="field" style="margin-bottom:0;min-width:220px;"><label>Location</label>
           <select onchange="App.setTrafficSheetLocation(this.value)">
             <option value="">All Locations</option>
             ${locations.map((l) => `<option value="${esc(l)}" ${location === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}
           </select>
         </div>
-        <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.fetchTrafficSheet()">${loading ? 'Loading...' : 'Apply Month Filter'}</button>
+        <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.fetchTrafficSheet()">${loading ? 'Loading...' : 'Apply Date Filter'}</button>
+        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetCsv()">Download CSV</button>
       </div>
     </div>
     ${error ? `<div class="login-error" style="margin-bottom:14px;">${esc(error)}</div>` : ''}
@@ -379,18 +414,14 @@ export function setTrafficSheetLocation(value) {
   setState({ trafficSheetLocation: value });
 }
 
-export function setTrafficSheetStartDate(value) {
-  setState({ trafficSheetStartDate: value });
-}
-
-export function setTrafficSheetEndDate(value) {
-  setState({ trafficSheetEndDate: value });
-}
-
-async function runTrafficSheetFetch(start, end) {
-  setState({ trafficSheetStart: start, trafficSheetEnd: end, trafficSheetLoading: true, trafficSheetError: null });
+// Re-fetches whenever the API-backed month range needs to change (a different date range was
+// picked, or the location dropdown changed doesn't need this - only the API call does).
+async function runTrafficSheetFetch(startDate, endDate) {
+  const startMonth = startDate.slice(0, 7);
+  const endMonth = endDate.slice(0, 7);
+  setState({ trafficSheetStartDate: startDate, trafficSheetEndDate: endDate, trafficSheetLoading: true, trafficSheetError: null });
   try {
-    const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { startMonth: start, endMonth: end } });
+    const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { startMonth, endMonth } });
     if (error) throw error;
     if (data?.error) throw new Error(data.error);
     setState({ trafficSheetData: data, trafficSheetLoading: false });
@@ -399,13 +430,50 @@ async function runTrafficSheetFetch(start, end) {
   }
 }
 
+// The explicit "Apply Date Filter" action - Start/End Date are the primary controls now; the
+// month(s) needed for the actual API call are derived from whatever dates are picked.
 export async function fetchTrafficSheet() {
-  const start = document.getElementById('tsheet-start').value || defaultMonth();
-  const end = document.getElementById('tsheet-end').value || start;
-  await runTrafficSheetFetch(start, end);
+  const defaults = defaultDateRange();
+  const startDate = document.getElementById('tsheet-start-date').value || defaults.start;
+  const endDate = document.getElementById('tsheet-end-date').value || defaults.end;
+  await runTrafficSheetFetch(startDate, endDate);
 }
 
 function autoFetchTrafficSheet() {
-  const start = defaultMonth();
-  return runTrafficSheetFetch(start, start);
+  const { start, end } = defaultDateRange();
+  return runTrafficSheetFetch(start, end);
+}
+
+// Exports whatever's currently on screen (current tab/location/date-range) as a wide CSV - one
+// row per campaign, one column per visible day, matching the on-screen grid.
+export function downloadTrafficSheetCsv() {
+  const data = STATE.trafficSheetData;
+  if (!data) return;
+  const tab = STATE.trafficSheetTab || 'malls';
+  const isTodayTab = tab === 'today';
+  const location = STATE.trafficSheetLocation || '';
+  const defaults = defaultDateRange();
+  const startDate = STATE.trafficSheetStartDate || defaults.start;
+  const endDate = STATE.trafficSheetEndDate || defaults.end;
+
+  const campaigns = filteredCampaigns(data, tab, location);
+  const gridCampaigns = isTodayTab
+    ? campaigns.filter((c) => isActiveOn(c, todayISO()))
+    : campaigns.filter((c) => withinDateRange(c, startDate, endDate));
+  let dates = collectDates(gridCampaigns);
+  if (!isTodayTab) dates = dates.filter((d) => inDateRange(d, startDate, endDate));
+
+  const columns = [
+    { label: 'Contract', value: (c) => c.contract || '' },
+    { label: 'Campaign Name', value: (c) => c.campaignName || '' },
+    { label: 'Venue(s)', value: (c) => (c.__matchedVenues || []).map((v) => v.venue).join('; ') },
+    { label: 'Start', value: (c) => c.startDate || '' },
+    { label: 'End', value: (c) => c.endDate || '' },
+    { label: 'Campaign Days', value: (c) => c.campaignDays ?? '' },
+    { label: 'Loop Count', value: (c) => c.loopCount ?? '' },
+    { label: 'Status', value: (c) => c.status || '' },
+    ...dates.map((d) => ({ label: d, value: (c) => (c.days || []).find((x) => x.date === d)?.spots ?? '' })),
+  ];
+  const tabLabel = (TAB_DEFS.find((t) => t.key === tab) || {}).label || tab;
+  exportToCsv(`traffic-sheet-${tabLabel.replace(/\s+/g, '-')}-${startDate}-to-${endDate}.csv`, columns, gridCampaigns);
 }
