@@ -60,7 +60,7 @@ import { exportToCsv } from '../lib/csv.js';
 // other tabs are; FOC / Marketing is further narrowed to matching campaign names on top of that
 // (see the tab === 'focMarketing' filter in renderTrafficSheet/downloadTrafficSheetCsv). Placed
 // last so it sits at the right-hand end of the tab row, beside ENOC.
-const TAB_DEFS = [
+export const TAB_DEFS = [
   { key: 'today', label: "Today's Campaigns" },
   { key: 'shzBridges', label: 'SHZ Bridges' },
   { key: 'malls', label: 'Malls' },
@@ -71,6 +71,12 @@ const TAB_DEFS = [
   { key: 'enoc', label: 'ENOC' },
   { key: 'focMarketing', label: 'FOC / Marketing' },
 ];
+
+// The subset of TAB_DEFS that are real venue categories - excludes the two cross-category views
+// ('today' matches everything by definition, 'focMarketing' is a campaign-name filter, not a
+// venue one). Used by the Campaign Calendar page to build a matching per-category breakdown
+// without duplicating this list.
+export const VENUE_CATEGORY_KEYS = TAB_DEFS.map((t) => t.key).filter((k) => k !== 'today' && k !== 'focMarketing');
 
 const STORE_KEYWORDS = ['LULU', 'UNION COOP', 'ADCOOP'];
 const GEMS_VENUE_KEYWORDS = ['PALM DUBAI ZUMUROD', 'PALM DUBAI RUBY', 'PALM DUBAI FAIROUZ'];
@@ -113,7 +119,7 @@ function normalizeVenueText(s) {
 // Entry 2" still matches the Royals tab on its own name/network before being merged here.
 //   - "ENOC Hatta" -> "ENOC Dubai"
 //   - "Royals Entry 1/2/3" -> "Royals Entry", "Royals Exit 1/2/3" -> "Royals Exit"
-function mergeVenueName(name) {
+export function mergeVenueName(name) {
   const n = normalizeVenueText(name);
   if (n === 'ENOC HATTA') return 'ENOC Dubai';
   if (/^ROYALS ENTRY \d+$/.test(n)) return 'Royals Entry';
@@ -130,7 +136,7 @@ function isMafVenue(venue) {
   return MAF_MALL_VENUE_KEYWORDS.some((k) => name.includes(k));
 }
 
-function venueMatchesTab(venue, tabKey) {
+export function venueMatchesTab(venue, tabKey) {
   const venueType = (venue.venueType || '').toUpperCase();
   const network = (venue.network || '').toUpperCase();
   const name = normalizeVenueText(venue.venue);
@@ -383,7 +389,7 @@ function renderDayGrid(campaigns, startDate, endDate) {
 
   const monthHeadRow = `<tr><th colspan="6"></th>${dateGroups.map((g) => `<th colspan="${g.dates.length}" class="tsheet-month-head">${esc(formatMonthLabel(g.month))}</th>`).join('')}</tr>`;
   const dayHeadRow = `<tr>
-    <th>Campaign Name</th><th>Start</th><th>End</th><th>Days</th><th>Loop Count</th><th>Status</th>
+    <th>Campaign Name</th><th>Start</th><th>End</th><th class="tcenter">Days</th><th class="tcenter">Loop Count</th><th>Status</th>
     ${dates.map((d) => `<th class="tsheet-day">${esc(d.slice(8, 10))}</th>`).join('')}
   </tr>`;
 
@@ -394,8 +400,8 @@ function renderDayGrid(campaigns, startDate, endDate) {
       <td>${esc(c.campaignName || '')}</td>
       <td>${esc(c.startDate || '')}</td>
       <td>${esc(c.endDate || '')}</td>
-      <td class="tright">${c.campaignDays ?? ''}</td>
-      <td class="tright">${c.loopCount ?? ''}</td>
+      <td class="tcenter">${c.campaignDays ?? ''}</td>
+      <td class="tcenter">${c.loopCount ?? ''}</td>
       <td>${statusBadge(c.status)}</td>
       ${dates.map((d) => {
         const spots = dayMap[d];
