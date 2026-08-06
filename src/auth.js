@@ -80,6 +80,14 @@ async function loadProfile(userId) {
 
   STATE.user = profile;
   STATE.permissions = permissions;
+  // A client-role login only has one real page to be on - this runs on every session restore,
+  // including a hard browser refresh (getSession() -> loadProfile() on init, same as a fresh
+  // SIGNED_IN), so a client landing back on their own Campaign Monitor after refreshing needs no
+  // separate mechanism beyond forcing it here. Left alone if they're on Account (changing their
+  // password), so this doesn't fight a page they navigated to on purpose.
+  if (profile.role === 'client' && STATE.page !== 'account') {
+    STATE.page = 'clientCampaignMonitor';
+  }
 }
 
 // Accepts either a username or an email address - signInWithPassword() only takes an email, and

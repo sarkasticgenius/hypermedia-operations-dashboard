@@ -17,9 +17,9 @@ export async function upsertPendingApproval(contract, clientId, campaignName) {
 
 // approved_by is sent explicitly (not just left to a default) because the client-side RLS policy
 // checks `approved_by = auth.uid()` against the row being written, not auto-populated server-side.
-export async function approveCampaign(id) {
+export async function approveCampaign(id, comment) {
   const { error } = await supabase.from('campaign_approvals')
-    .update({ status: 'approved', approved_by: STATE.user?.id || null, approved_at: new Date().toISOString() })
+    .update({ status: 'approved', approved_by: STATE.user?.id || null, approved_at: new Date().toISOString(), comment: comment || null })
     .eq('id', id);
   if (error) throw error;
 }

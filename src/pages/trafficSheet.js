@@ -140,11 +140,16 @@ function mergeCityCentreSpelling(name) {
 //   - "ENOC Hatta" -> "ENOC Dubai"
 //   - "Royals Entry 1/2/3" -> "Royals Entry", "Royals Exit 1/2/3" -> "Royals Exit"
 //   - "AJMAN CITY CENTER"/"AJMAN CITY CENTRE" -> "Ajman City Centre" (see mergeCityCentreSpelling)
+//   - "MALL OF THE EMIRATES"/"MALL OF EMIRATES"/"...STATION"/"...1" (the plain Metro station entry)
+//     -> "Mall of the Emirates Station" - deliberately NOT the AUH/DXB/OUTDOOR/HOLOGRAM-suffixed
+//     variants, which carry extra distinguishing words and are almost certainly separate physical
+//     surfaces, not a naming accident (same conservative-merge reasoning as City Centre above).
 export function mergeVenueName(name) {
   const n = normalizeVenueText(name);
   if (n === 'ENOC HATTA') return 'ENOC Dubai';
   if (/^ROYALS ENTRY \d+$/.test(n)) return 'Royals Entry';
   if (/^ROYALS EXIT \d+$/.test(n)) return 'Royals Exit';
+  if (/^MALL OF( THE)? EMIRATES( STATION)?( \d+)?$/.test(n)) return 'Mall of the Emirates Station';
   const cityCentre = mergeCityCentreSpelling(name);
   if (cityCentre) return cityCentre;
   return name;
@@ -497,14 +502,58 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
   `;
 }
 
+// Builds, per Network, the full set of venue names ever seen under it across the WHOLE loaded
+// dataset (every campaign, not just the current tab/filter) - the closest thing to an
+// authoritative "which stations belong to this network" roster that exists, since Traffic Sheet
+// has no static locations table of its own to check against. Feeds describeMatchedVenues() below.
+function stationsByNetwork(data) {
+  const map = new Map();
+  (data?.campaigns || []).forEach((c) => (c.venues || []).forEach((v) => {
+    if (!v.network) return;
+    if (!map.has(v.network)) map.set(v.network, new Set());
+    map.get(v.network).add(mergeVenueName(v.venue));
+  }));
+  return map;
+}
+
+// A campaign's venue list is normally every individual venue name joined together - for a
+// campaign that happens to cover EVERY station under a given network (e.g. booked across the
+// whole of "Retail NW (A) FMCG"), that's needlessly long and less useful than just naming the
+// network. Groups this campaign's own matched venues by network; any network where its coverage is
+// a superset of that network's full known roster collapses to just the network's name - everything
+// else (including venues with no network at all) still lists individually, same as before.
+function describeMatchedVenues(campaign, rosterByNetwork) {
+  const venues = campaign.__matchedVenues || [];
+  if (!venues.length) return '';
+  const byNetwork = new Map();
+  const noNetwork = [];
+  venues.forEach((v) => {
+    if (!v.network) { noNetwork.push(v.venue); return; }
+    if (!byNetwork.has(v.network)) byNetwork.set(v.network, new Set());
+    byNetwork.get(v.network).add(v.venue);
+  });
+
+  const parts = [];
+  byNetwork.forEach((covered, network) => {
+    const roster = rosterByNetwork.get(network);
+    if (roster && roster.size > 0 && [...roster].every((v) => covered.has(v))) {
+      parts.push(network);
+    } else {
+      parts.push(...covered);
+    }
+  });
+  parts.push(...noNetwork);
+  return parts.join(', ');
+}
+
 // Always-visible live snapshot of what's running today, independent of any Start/End Date
 // narrowing applied to the grid below. Start/End/Status columns are nowrap - narrow columns next
 // to Campaign Name's free text otherwise wrap "2026-06-22" onto two lines.
-function todayListTable(campaigns, emptyText) {
+function todayListTable(campaigns, emptyText, rosterByNetwork) {
   const rows = campaigns.map((c) => `
     <tr>
       <td>${esc(c.campaignName || '')}</td>
-      <td>${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]), 18, brandFallbackForVenue((c.__matchedVenues || [])[0])) : ''} ${esc((c.__matchedVenues || []).map((v) => v.venue).join(', '))}</td>
+      <td>${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]), 18, brandFallbackForVenue((c.__matchedVenues || [])[0])) : ''} ${esc(describeMatchedVenues(c, rosterByNetwork))}</td>
       <td class="tsheet-nowrap">${statusBadge(c.status)}</td>
       <td class="tsheet-nowrap">${esc(c.startDate || '')}</td>
       <td class="tsheet-nowrap">${esc(c.endDate || '')}</td>
@@ -521,12 +570,12 @@ function todayListTable(campaigns, emptyText) {
 // they're still visible in the normal Today's Active Campaigns view there. On the dedicated
 // FOC / Marketing tab itself every row is already FOC/Marketing (campaigns was pre-filtered to
 // just those), so the split would be 100% redundant - skip it and show one plain table instead.
-function renderTodayList(campaigns, tab) {
+function renderTodayList(campaigns, tab, rosterByNetwork) {
   if (tab === 'focMarketing') {
     return `
       <div class="card" style="margin-bottom:16px;">
         <div class="card-head"><h3>Today's Active Campaigns</h3><div class="desc">${campaigns.length} FOC/Marketing campaign(s) active today for this location.</div></div>
-        ${todayListTable(campaigns, 'No FOC/Marketing campaigns active today.')}
+        ${todayListTable(campaigns, 'No FOC/Marketing campaigns active today.', rosterByNetwork)}
       </div>
     `;
   }
@@ -535,17 +584,19 @@ function renderTodayList(campaigns, tab) {
   return `
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head"><h3>Today's Active Campaigns</h3><div class="desc">${campaigns.length} campaign(s) active today for this tab/location - ${regular.length} regular, ${focMarketing.length} FOC/Marketing.</div></div>
-      ${todayListTable(regular, 'No regular campaigns active today.')}
+      ${todayListTable(regular, 'No regular campaigns active today.', rosterByNetwork)}
       ${focMarketing.length ? `
         <div class="card-head" style="margin-top:16px;"><h3 style="font-size:13px;">FOC / Marketing <span class="badge b-amber">${focMarketing.length}</span></h3></div>
-        ${todayListTable(focMarketing, 'None.')}
+        ${todayListTable(focMarketing, 'None.', rosterByNetwork)}
       ` : ''}
     </div>
   `;
 }
 
-// The full day-by-day spot grid, matching the customer's original campaign sheet layout.
-function renderDayGrid(campaigns, startDate, endDate) {
+// The full day-by-day spot grid, matching the customer's original campaign sheet layout. Also
+// reused as-is by the Client Campaigns Monitor's Calendar view (see clientCampaignMonitor.js) -
+// already does exactly "month and date wise campaigns view" for whatever campaign list it's given.
+export function renderDayGrid(campaigns, startDate, endDate) {
   if (!campaigns.length) {
     return '<div class="card"><div class="empty">No campaigns found for this tab/period/location.</div></div>';
   }
@@ -672,7 +723,7 @@ export function renderTrafficSheet() {
       + (capacityMonthLoaded
         ? renderSummaryCard(gridCampaigns, summary, totalScreens, capacitySummary, capacityMonth)
         : `<div class="card" style="margin-bottom:16px;"><div class="empty">Capacity Month (${esc(formatMonthLabel(capacityMonth))}) isn't within the loaded Start/End Date range - widen the date range and click "Apply Date Filter" to check capacity for that month.</div></div>`)
-      + (isTodayTab ? '' : renderTodayList(todaysCampaigns, tab))
+      + (isTodayTab ? '' : renderTodayList(todaysCampaigns, tab, stationsByNetwork(data)))
       + renderDayGrid(gridCampaigns, isTodayTab ? '' : startDate, isTodayTab ? '' : endDate);
   }
 

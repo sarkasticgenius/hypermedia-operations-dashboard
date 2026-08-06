@@ -24,7 +24,7 @@ import * as bulkImportPage from './pages/bulkImport.js';
 import * as recycleBinPage from './pages/recycleBin.js';
 import * as clientCampaignMonitorPage from './pages/clientCampaignMonitor.js';
 import { initContractorPortal, renderContractorPortal, bindContractorPortalForm } from './pages/contractorPortal.js';
-import { renderShell, goToPage, doLogout, goToDashGroup, goToDashLink, goToClientMonitor, toggleNavExpand, stopImpersonating } from './shell.js';
+import { renderShell, goToPage, doLogout, goToDashGroup, goToDashLink, goToClientMonitor, goBack, toggleNavExpand, stopImpersonating } from './shell.js';
 import { registerPage, renderPage } from './router.js';
 import { renderModalRoot } from './modals.js';
 import { toggleSort } from './lib/sortableTable.js';
@@ -84,6 +84,7 @@ window.App = {
   goToDashGroup,
   goToDashLink,
   goToClientMonitor,
+  goBack,
   toggleNavExpand,
   stopImpersonating,
   closeModal,

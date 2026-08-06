@@ -256,7 +256,10 @@ export function renderShell(innerHtml) {
       ${renderSidebar(allSections)}
       <div class="main">
         <div class="topbar">
-          <h1>${esc(title)}</h1>
+          <div style="display:flex;align-items:center;gap:10px;">
+            ${(STATE.pageHistory || []).length ? `<button class="btn-outline btn-sm" type="button" onclick="App.goBack()" title="Return to the previous page">&larr; Back</button>` : ''}
+            <h1>${esc(title)}</h1>
+          </div>
           <div class="meta">${esc(STATE.user?.name || '')}</div>
         </div>
         <div class="content">${innerHtml}</div>
@@ -272,24 +275,48 @@ export async function stopImpersonating() {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+// Every page-changing nav action goes through this instead of a raw setState() - pushes the page
+// being LEFT onto a capped history stack whenever the destination is actually different, so a
+// single global "Back" control (see renderShell()'s topbar) can return to wherever the user was,
+// regardless of which of the several nav functions below got them to the current page. Capped at
+// 20 so a long session doesn't grow this unboundedly.
+function navigateTo(newState) {
+  const history = STATE.pageHistory || [];
+  if (newState.page && newState.page !== STATE.page) {
+    setState({ ...newState, pageHistory: [...history, STATE.page].slice(-20) });
+  } else {
+    setState(newState);
+  }
+}
+
 export function goToPage(page) {
-  setState({ page, modal: null });
+  navigateTo({ page, modal: null });
 }
 
 // Clicking a Maintenance/pDOOH panel group's label in the sidebar: jump to the Dashboards page
 // scoped to that section, keeping whichever link (if any) was last active within it.
 export function goToDashGroup(sectionId) {
-  setState({ page: 'dashboards', activeDashSection: sectionId || null, modal: null });
+  navigateTo({ page: 'dashboards', activeDashSection: sectionId || null, modal: null });
 }
 
 // Clicking a specific nested dashboard link in the sidebar.
 export function goToDashLink(sectionId, dashId) {
-  setState({ page: 'dashboards', activeDashSection: sectionId, activeDashboard: dashId, modal: null });
+  navigateTo({ page: 'dashboards', activeDashSection: sectionId, activeDashboard: dashId, modal: null });
 }
 
 // Clicking a specific client under the Client Campaigns Monitor group.
 export function goToClientMonitor(clientId) {
-  setState({ page: 'clientCampaignMonitor', activeClientId: clientId, modal: null });
+  navigateTo({ page: 'clientCampaignMonitor', activeClientId: clientId, modal: null });
+}
+
+// Pops the last entry straight into STATE.page - deliberately NOT routed through navigateTo(), so
+// clicking Back never pushes its own history entry (which would otherwise make "back" and
+// "forward" loop against each other).
+export function goBack() {
+  const history = STATE.pageHistory || [];
+  if (!history.length) return;
+  const prevPage = history[history.length - 1];
+  setState({ page: prevPage, pageHistory: history.slice(0, -1), modal: null });
 }
 
 export function toggleNavExpand(key) {
