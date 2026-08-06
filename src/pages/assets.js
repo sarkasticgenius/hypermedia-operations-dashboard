@@ -10,7 +10,7 @@ import { listAssetInventory } from '../data/assetsInventory.js';
 import { assetInventoryForLocationFull, screenLabel } from '../data/locationStats.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtMoney, fmtDate } from '../lib/format.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
@@ -128,7 +128,7 @@ function renderInventoryView(data) {
     <div class="toolbar">
       ${renderTabs(['All', 'Spare', 'Retired', 'Faulty'].map((s) => ({ key: s, label: s, count: s === 'Faulty' ? (faultyCount || null) : null })), statusTab, 'App.setAssetStatusTab')}
       <div class="toolbar-actions">
-        ${canExportArea('assets') ? `<button class="btn-sm" onclick="App.exportAssetsCsv()">Export CSV</button>` : ''}
+        ${canExportArea('assets') ? `<button class="btn-sm" onclick="App.exportAssetsExcel()">Export</button>` : ''}
         ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('assets')">Bulk Import</button>` : ''}
         ${canAdd('assets') ? `<button class="btn btn-orange" onclick="App.editAsset(null)">+ Add Asset</button>` : ''}
       </div>
@@ -245,7 +245,7 @@ function renderHistoryView(data) {
         </select>
       </div>
       <div class="toolbar-actions">
-        <button class="btn-sm" onclick="App.exportAssetHistoryCsv()">Export CSV</button>
+        <button class="btn-sm" onclick="App.exportAssetHistoryExcel()">Export</button>
       </div>
     </div>
     <div class="card">
@@ -260,9 +260,9 @@ function renderHistoryView(data) {
 }
 
 export function setAssetHistoryMonth(v) { setState({ assetHistoryMonth: v }); }
-export function exportAssetHistoryCsv() {
+export async function exportAssetHistoryExcel() {
   const assignments = pageData()?.assignments || [];
-  exportToCsv('deployment-history.csv', [
+  await exportToExcel('deployment-history.xlsx', [
     { label: 'Date', value: (a) => a.date }, { label: 'Asset', value: (a) => a.asset_name },
     { label: 'Location', value: (a) => a.location_name }, { label: 'Qty', value: (a) => a.qty },
     { label: 'Deployed By', value: (a) => a.deployed_by },
@@ -270,9 +270,9 @@ export function exportAssetHistoryCsv() {
 }
 
 // -------------------- CRUD --------------------
-export function exportAssetsCsv() {
+export async function exportAssetsExcel() {
   const assets = pageData()?.assets || [];
-  exportToCsv('hardware-assets.csv', [
+  await exportToExcel('hardware-assets.xlsx', [
     { label: 'Name', value: (a) => a.name }, { label: 'Category', value: (a) => a.category },
     { label: 'Unit Price', value: (a) => a.unit_price }, { label: 'Stock Available', value: (a) => a.stock_available },
     { label: 'Stock On Site', value: (a) => a.stock_on_site }, { label: 'Serial Number', value: (a) => a.serial_number },

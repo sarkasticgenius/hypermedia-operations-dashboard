@@ -136,9 +136,14 @@ export function mergeVenueName(name) {
 // the name that's actually safe/correct to look up a logo for, used both when gathering candidate
 // names (Settings > Brandfetch > Fetch Missing Logos) and when displaying a logo (brandLogoTag) on
 // Traffic Sheet, so the cache key and the lookup key always match:
-//   - Metro/Metro Bridges (venueType METRO / METRO OUTDOOR) -> "Dubai Metro Rail", same shared
-//     brand already used for Metro chain Locations - individual station/bridge names are
-//     unsearchable, and this reuses an already-correct cached logo instead of guessing per name.
+//   - Metro/Metro Bridges (venueType METRO / METRO OUTDOOR) -> the station/bridge's own name with
+//     the "Metro Station - "/"Metro Bridge - " prefix stripped off. Many of these are genuinely
+//     sponsor-branded (real examples in our own data: "Danube", "Equiti", "OnPassive", "Sharaf DG",
+//     "National Paints") - the literal "Metro Station - " prefix was poisoning every single Search
+//     query (100% failure rate on real data, even for names that ARE real brands), so this strips
+//     it and looks each one up individually instead of collapsing them all to one shared name.
+//     Plain area names with no real brand (e.g. "Business Bay", "Financial Centre") will still
+//     legitimately find nothing - see brandFallbackForVenue() below for what's shown instead.
 //   - Multi-location retail chains (LULU/Union Coop/ADCOOP/ENOC) -> just the chain name, not each
 //     branch's full venue string ("LULU AL KHALIFA") - one correct lookup covers every branch.
 //   - Royals/Gems (network ROYALS/GEMS) -> null, no lookup at all. These are internal-only screen
@@ -147,17 +152,31 @@ export function mergeVenueName(name) {
 //   - Everything else (malls, named venues) -> the venue name itself, unchanged.
 const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR'];
 const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour' };
-export function brandNameForVenue(venue) {
+const METRO_FALLBACK_BRAND = 'Dubai Metro Rail';
+function isMetroVenue(venue) {
   const venueType = (venue.venueType || '').toUpperCase();
-  if (venueType === 'METRO' || venueType === 'METRO OUTDOOR') return 'Dubai Metro Rail';
+  return venueType === 'METRO' || venueType === 'METRO OUTDOOR';
+}
+export function brandNameForVenue(venue) {
   const network = (venue.network || '').toUpperCase();
   if (network.includes('ROYALS') || network.includes('GEMS')) return null;
   const name = (venue.venue || '').trim();
+  if (isMetroVenue(venue)) {
+    const stripped = name.replace(/^Metro (Bridge|Station)\s*-\s*/i, '').trim();
+    return stripped || METRO_FALLBACK_BRAND;
+  }
   const normalized = normalizeVenueText(name);
   for (const prefix of LOGO_CHAIN_PREFIXES) {
     if (normalized.startsWith(prefix)) return LOGO_CHAIN_NAMES[prefix];
   }
   return name || null;
+}
+
+// Fallback brand shown (via brandLogoTag's fallbackName arg) when a Metro/Bridges station has no
+// logo of its own on file - e.g. plain area names like "Business Bay" that were never going to
+// resolve to a real company. Returns null for every non-Metro venue (no generic fallback exists).
+export function brandFallbackForVenue(venue) {
+  return isMetroVenue(venue) ? METRO_FALLBACK_BRAND : null;
 }
 
 function isMafVenue(venue) {
@@ -402,7 +421,7 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
     }
     return `
       <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttr(s.venue)}')" title="Click to filter to this location">
-        <td>${brandLogoTag(brandNameForVenue(s))} ${esc(s.venue)}</td>
+        <td>${brandLogoTag(brandNameForVenue(s), 22, brandFallbackForVenue(s))} ${esc(s.venue)}</td>
         <td>${esc(s.venueType || '-')}</td>
         <td>${esc(s.network)}</td>
         <td class="tright">${screens}</td>
@@ -430,7 +449,7 @@ function todayListTable(campaigns, emptyText) {
   const rows = campaigns.map((c) => `
     <tr>
       <td>${esc(c.campaignName || '')}</td>
-      <td>${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]), 18) : ''} ${esc((c.__matchedVenues || []).map((v) => v.venue).join(', '))}</td>
+      <td>${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]), 18, brandFallbackForVenue((c.__matchedVenues || [])[0])) : ''} ${esc((c.__matchedVenues || []).map((v) => v.venue).join(', '))}</td>
       <td class="tsheet-nowrap">${statusBadge(c.status)}</td>
       <td class="tsheet-nowrap">${esc(c.startDate || '')}</td>
       <td class="tsheet-nowrap">${esc(c.endDate || '')}</td>
@@ -608,8 +627,8 @@ export function renderTrafficSheet() {
           </select>
         </div>
         <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.fetchTrafficSheet()">${loading ? 'Loading...' : 'Apply Date Filter'}</button>
-        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel()" title="Only this tab/location/date range">Download Filtered Excel</button>
-        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel('full')" title="Every campaign in the loaded month(s), ignoring all filters">Download Full Traffic Sheet (Excel)</button>
+        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel()" title="Only this tab/location/date range">Download Filtered</button>
+        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel('full')" title="Every campaign in the loaded month(s), ignoring all filters">Download Full Traffic Sheet</button>
       </div>
     </div>
     ${error ? `<div class="login-error" style="margin-bottom:14px;">${esc(error)}</div>` : ''}
@@ -662,11 +681,13 @@ function autoFetchTrafficSheet() {
   return runTrafficSheetFetch(start, end);
 }
 
-// Matches the customer's own reference export format exactly (see lib/excelExport.js): Contract,
-// Campaign Name, Start, End, Campaign Days, Loop Count, Status, then a merged "Mon YYYY" header per
-// month spanning day-number ("01".."31") sub-columns, active-day cells filled yellow, and a
-// trailing TOTAL / "Number of Campaigns" row. A plain CSV can't do merged headers or real borders,
-// so this downloads a styled .xlsx instead.
+// Matches the customer's own reference export format (see lib/excelExport.js): Campaign Name,
+// Start, End, Campaign Days, Loop Count, Status (no Contract column - deliberately dropped), then
+// a merged "Mon YYYY" header per month spanning day-number ("01".."31") sub-columns, active-day
+// cells filled yellow, split into "Active Campaigns" / "FOC / Marketing" sections (same division
+// Today's Active Campaigns already shows on-screen), each with its own TOTAL / "Number of
+// Campaigns" row. A plain CSV can't do merged headers or real borders, so this downloads a styled
+// .xlsx instead.
 // scope: omitted/'filtered' (default) - exactly what's currently on screen (tab/location/date
 // range all applied), same as before. 'full' - every campaign in the currently loaded month(s),
 // ignoring every filter (tab, location, Start/End Date narrowing) entirely.
@@ -702,7 +723,9 @@ export async function downloadTrafficSheetExcel(scope) {
   }
 
   const dateGroups = groupDatesByMonth(dates);
+  const regularCampaigns = campaigns.filter((c) => !isFocMarketingCampaign(c));
+  const focCampaigns = campaigns.filter(isFocMarketingCampaign);
   await exportTrafficSheetExcel(`traffic-sheet-${filenameTag}.xlsx`, {
-    campaigns, dates, dateGroups, monthLabel: formatMonthLabel,
+    regularCampaigns, focCampaigns, dates, dateGroups, monthLabel: formatMonthLabel,
   });
 }

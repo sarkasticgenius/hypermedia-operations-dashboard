@@ -4,7 +4,7 @@ import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import { listCampaigns, saveCampaign, deleteCampaign } from '../data/campaigns.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, fmtMoney } from '../lib/format.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 
@@ -38,7 +38,7 @@ export function renderCampaigns() {
     <div class="toolbar">
       <div class="tabs"><div class="tab active">All Campaigns (${campaigns.length})</div></div>
       <div class="toolbar-actions">
-        ${canExportArea('campaigns') ? `<button class="btn-sm" onclick="App.exportCampaignsCsv()">Export CSV</button>` : ''}
+        ${canExportArea('campaigns') ? `<button class="btn-sm" onclick="App.exportCampaignsExcel()">Export</button>` : ''}
         ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('campaigns')">Bulk Import</button>` : ''}
         ${canAdd('campaigns') ? `<button class="btn btn-orange" onclick="App.editCampaign(null)">+ New Campaign</button>` : ''}
       </div>
@@ -54,9 +54,9 @@ export function renderCampaigns() {
   `;
 }
 
-export function exportCampaignsCsv() {
+export async function exportCampaignsExcel() {
   const campaigns = STATE.pageData.campaigns?.data || [];
-  exportToCsv('campaigns.csv', [
+  await exportToExcel('campaigns.xlsx', [
     { label: 'Name', value: (c) => c.name }, { label: 'Client', value: (c) => c.client },
     { label: 'Locations', value: (c) => c.locations }, { label: 'Start Date', value: (c) => c.start_date },
     { label: 'End Date', value: (c) => c.end_date }, { label: 'Budget', value: (c) => c.budget },

@@ -4,7 +4,7 @@ import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import { listPermits, savePermit, deletePermit, permitStatus } from '../data/permits.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate } from '../lib/format.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const STATUS_BADGE = { Active: 'b-green', 'Expiring Soon': 'b-amber', Expired: 'b-red' };
@@ -40,7 +40,7 @@ export function renderPermits() {
     <div class="toolbar">
       <div class="tabs"><div class="tab active">All Permits (${permits.length})</div></div>
       <div class="toolbar-actions">
-        ${canExportArea('permits') ? `<button class="btn-sm" onclick="App.exportPermitsCsv()">Export CSV</button>` : ''}
+        ${canExportArea('permits') ? `<button class="btn-sm" onclick="App.exportPermitsExcel()">Export</button>` : ''}
         ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('permits')">Bulk Import</button>` : ''}
         ${canAdd('permits') ? `<button class="btn btn-orange" onclick="App.editPermit(null)">+ Add Permit</button>` : ''}
       </div>
@@ -56,9 +56,9 @@ export function renderPermits() {
   `;
 }
 
-export function exportPermitsCsv() {
+export async function exportPermitsExcel() {
   const permits = STATE.pageData.permits?.data || [];
-  exportToCsv('permits.csv', [
+  await exportToExcel('permits.xlsx', [
     { label: 'Title', value: (p) => p.title }, { label: 'Type', value: (p) => p.type },
     { label: 'Location', value: (p) => p.location }, { label: 'Issued By', value: (p) => p.issued_by },
     { label: 'Issue Date', value: (p) => p.issue_date }, { label: 'Expiry Date', value: (p) => p.expiry_date },

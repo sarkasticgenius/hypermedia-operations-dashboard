@@ -8,7 +8,7 @@ import { listCategories } from '../data/categories.js';
 import { getSignedUrl } from '../lib/storage.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, todayISO } from '../lib/format.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const STATUS_BADGE = { Ordered: 'b-gray', 'In Transit': 'b-amber', Delivered: 'b-green' };
@@ -75,7 +75,7 @@ export function renderProcurement() {
     <div class="toolbar">
       <div class="tabs"><div class="tab active">All Orders (${orders.length})</div></div>
       <div class="toolbar-actions">
-        ${exportOk ? `<button class="btn-sm" onclick="App.exportOrdersCsv()">Export CSV</button>` : ''}
+        ${exportOk ? `<button class="btn-sm" onclick="App.exportOrdersExcel()">Export</button>` : ''}
         ${addOk ? `<button class="btn btn-orange" onclick="App.openNewOrderModal()">+ New Order</button>` : ''}
       </div>
     </div>
@@ -90,11 +90,11 @@ export function renderProcurement() {
   `;
 }
 
-export function exportOrdersCsv() {
+export async function exportOrdersExcel() {
   const data = pageData();
   const orders = data?.orders || [];
   const assets = data?.assets || [];
-  exportToCsv('orders.csv', [
+  await exportToExcel('orders.xlsx', [
     { label: 'Asset', value: (o) => o.asset_name }, { label: 'Qty', value: (o) => o.qty },
     { label: 'Order Date', value: (o) => o.order_date }, { label: 'Destination', value: (o) => o.destination },
     { label: 'Status', value: (o) => o.status },

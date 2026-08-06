@@ -24,11 +24,20 @@ function initialsBadgeHtml(name, size) {
 // CDN returning 403 for a domain-override URL that worked when it was first cached), by swapping
 // the broken <img> for the same initials badge markup instead of just hiding it and leaving blank
 // space.
-export function brandLogoTag(name, size = 22) {
+//
+// fallbackName: an optional second name to try when `name` itself has no logo cached - e.g. Dubai
+// Metro station names pass their generic parent brand ("Dubai Metro Rail") here, so a station
+// that's just a plain area name (no real sponsor) still shows the Metro logo instead of initials.
+export function brandLogoTag(name, size = 22, fallbackName = null) {
   if (!name) return '';
-  const row = brandLogoMap().get(String(name).toLowerCase());
+  const map = brandLogoMap();
+  const primary = map.get(String(name).toLowerCase());
+  const fallback = fallbackName ? map.get(String(fallbackName).toLowerCase()) : null;
+  const useFallback = !primary?.logo_url && fallback?.logo_url;
+  const row = useFallback ? fallback : primary;
+  const badgeName = useFallback ? fallbackName : name;
   if (row?.logo_url) {
-    const fallbackHtml = initialsBadgeHtml(name, size).replace(/"/g, '&quot;');
+    const fallbackHtml = initialsBadgeHtml(badgeName, size).replace(/"/g, '&quot;');
     return `<img src="${esc(row.logo_url)}" alt="" style="width:${size}px;height:${size}px;border-radius:6px;object-fit:contain;background:#fff;border:1px solid #eee;vertical-align:middle;" onerror="this.outerHTML='${fallbackHtml}'">`;
   }
   return initialsBadgeHtml(name, size);

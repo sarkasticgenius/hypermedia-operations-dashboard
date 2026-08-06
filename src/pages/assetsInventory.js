@@ -11,7 +11,7 @@ import { isMafRow } from '../data/locationStats.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate } from '../lib/format.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 
 const PAGE_SIZE_OPTIONS = [50, 100, 150, 200];
@@ -195,8 +195,8 @@ export function renderAssetsInventory() {
         <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);"><input type="checkbox" style="width:auto;" ${STATE.aiMafOnly ? 'checked' : ''} onchange="App.setAssetInvMafOnly(this.checked)"> MAF Malls only</label>
       </div>
       <div class="toolbar-actions">
-        ${exportOk ? `<button class="btn-sm" onclick="App.exportAssetInvCsv(false)" title="Every row, ignoring current search/filters">Download Full CSV</button>` : ''}
-        ${exportOk ? `<button class="btn-sm" onclick="App.exportAssetInvCsv(true)" title="Just the rows matching your current search/filters">Download Filtered CSV (${list.length})</button>` : ''}
+        ${exportOk ? `<button class="btn-sm" onclick="App.exportAssetInvExcel(false)" title="Every row, ignoring current search/filters">Download Full</button>` : ''}
+        ${exportOk ? `<button class="btn-sm" onclick="App.exportAssetInvExcel(true)" title="Just the rows matching your current search/filters">Download Filtered (${list.length})</button>` : ''}
         ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('assetsInventory')">Bulk Import</button>` : ''}
         ${addOk ? `<button class="btn btn-orange" onclick="App.editAssetInv(null)">+ Add Screen</button>` : ''}
       </div>
@@ -349,11 +349,11 @@ registerModal('bulkEditAssetInv', () => {
   `;
 });
 
-export function exportAssetInvCsv(filteredOnly) {
+export async function exportAssetInvExcel(filteredOnly) {
   const data = pageData();
   if (!data) return;
   const rows = filteredOnly ? sortedAndFiltered(data.rows, data.contractors) : data.rows;
-  exportToCsv('asset-inventory.csv', [
+  await exportToExcel('asset-inventory.xlsx', [
     { label: 'Asset ID', value: (r) => r.source_asset_id }, { label: 'Name', value: (r) => r.name },
     { label: 'Venue', value: (r) => r.venue }, { label: 'Location', value: (r) => r.location },
     { label: 'Category', value: (r) => r.category }, { label: 'Format', value: (r) => r.format },

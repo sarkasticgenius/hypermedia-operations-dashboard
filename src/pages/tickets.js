@@ -9,7 +9,7 @@ import { svgGroupedBarChart } from '../lib/charts.js';
 import { heatmapGrid } from '../lib/heatmapGrid.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, jsAttr, fmtDate } from '../lib/format.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { getSignedUrl } from '../lib/storage.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
@@ -85,7 +85,7 @@ export function renderTickets() {
     <div class="toolbar">
       ${viewTabs}
       <div class="toolbar-actions">
-        ${canExportArea('tickets') ? `<button class="btn-sm" onclick="App.exportTicketsCsv()">Export CSV</button>` : ''}
+        ${canExportArea('tickets') ? `<button class="btn-sm" onclick="App.exportTicketsExcel()">Export</button>` : ''}
         ${canAdd('tickets') ? `<button class="btn btn-orange" onclick="App.editTicket(null)">+ New Ticket</button>` : ''}
       </div>
     </div>
@@ -364,9 +364,9 @@ export function onTicketScreenChange(value) {
 }
 
 // -------------------- CRUD --------------------
-export function exportTicketsCsv() {
+export async function exportTicketsExcel() {
   const tickets = pageData()?.tickets || [];
-  exportToCsv('tickets.csv', [
+  await exportToExcel('tickets.xlsx', [
     { label: 'Title', value: (t) => t.title }, { label: 'Location', value: (t) => t.location },
     { label: 'Status', value: (t) => t.status }, { label: 'Priority', value: (t) => t.priority },
     { label: 'Reported', value: (t) => t.date_reported }, { label: 'Closed', value: (t) => t.date_closed },

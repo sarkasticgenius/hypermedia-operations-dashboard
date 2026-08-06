@@ -9,7 +9,7 @@ import { listLocations } from '../data/locations.js';
 import { assetInventoryForLocationFull, screenLabel } from '../data/locationStats.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtMoney } from '../lib/format.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
@@ -102,7 +102,7 @@ export function renderSimCards() {
       ${renderTabs(['All', 'Spare', 'Deployed', 'Needs Review'].map((t) => ({ key: t, label: t, count: t === 'Needs Review' ? (needsReviewCount || null) : null })), tab, 'App.setSimStatusFilter')}
       <div class="toolbar-actions">
         <input id="sim-search" placeholder="Search SIM cards..." value="${esc(STATE.simSearch || '')}" oninput="App.setSimSearch(this.value)">
-        ${canExportArea('simCards') ? `<button class="btn-sm" onclick="App.exportSimCardsCsv()">Export CSV</button>` : ''}
+        ${canExportArea('simCards') ? `<button class="btn-sm" onclick="App.exportSimCardsExcel()">Export</button>` : ''}
         ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('simCards')">Bulk Import</button>` : ''}
         ${canAdd('simCards') ? `<button class="btn btn-orange" onclick="App.editSimCard(null)">+ Add SIM</button>` : ''}
       </div>
@@ -148,9 +148,9 @@ function renderCharts(simCards) {
 }
 
 // -------------------- CRUD / actions --------------------
-export function exportSimCardsCsv() {
+export async function exportSimCardsExcel() {
   const simCards = pageData()?.simCards || [];
-  exportToCsv('sim-cards.csv', [
+  await exportToExcel('sim-cards.xlsx', [
     { label: 'SIM Number', value: (s) => s.sim_number }, { label: 'ICCID', value: (s) => s.iccid },
     { label: 'Carrier', value: (s) => s.carrier }, { label: 'Data Plan', value: (s) => s.data_plan },
     { label: 'Billing Cost', value: (s) => s.billing_cost }, { label: 'Status', value: (s) => s.status },

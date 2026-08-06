@@ -10,7 +10,7 @@ import { listLocations } from '../data/locations.js';
 import { listCampaigns } from '../data/campaigns.js';
 import { listBrandLogos, lookupBrandLogos } from '../data/brandLogos.js';
 import { brandNameForLocation } from '../data/locationStats.js';
-import { brandNameForVenue } from './trafficSheet.js';
+import { brandNameForVenue, brandFallbackForVenue } from './trafficSheet.js';
 import { supabase } from '../supabaseClient.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
@@ -571,9 +571,12 @@ export async function saveBrandfetchForm(event) {
 // that Brandfetch's Search API fuzzy-matches venue/street/station names to unrelated companies
 // far too often (real examples: "LULU" matched lululemon.com, "Energy" matched the US Department
 // of Energy, "Stadium" matched a Swedish sports retailer) - brandNameForVenue reduces multi-branch
-// chains to one lookup, maps Metro/Bridges to the already-correct shared "Dubai Metro Rail", and
-// skips Royals/Gems entirely (no real external brand exists for those). Same function Traffic
-// Sheet's own display uses, so the cache key here always matches the lookup key there.
+// chains to one lookup and skips Royals/Gems entirely (no real external brand exists for those).
+// Metro/Bridges stations are gathered individually (their "Metro Station - "/"Metro Bridge - "
+// prefix stripped) since many really are sponsor-branded ("Danube", "Equiti", "OnPassive") - this
+// also always adds the shared "Dubai Metro Rail" fallback brand (see brandFallbackForVenue) so it
+// stays cached for stations with no real sponsor of their own. Same function Traffic Sheet's own
+// display uses, so the cache key here always matches the lookup key there.
 const BRANDFETCH_BATCH_CAP = 25;
 
 async function gatherTrafficSheetVenueNames(settings) {
@@ -588,6 +591,8 @@ async function gatherTrafficSheetVenueNames(settings) {
     (data.campaigns || []).forEach((c) => (c.venues || []).forEach((v) => {
       const n = brandNameForVenue(v);
       if (n) names.add(n.trim());
+      const fb = brandFallbackForVenue(v);
+      if (fb) names.add(fb.trim());
     }));
     return [...names];
   } catch (e) {

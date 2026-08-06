@@ -16,7 +16,7 @@ import { heatmapGrid } from '../lib/heatmapGrid.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 
@@ -101,7 +101,7 @@ export function renderLocations() {
           </select>
         ` : ''}
         <input id="loc-search" placeholder="Search locations..." value="${esc(STATE.locationSearch || '')}" oninput="App.setLocationSearch(this.value)">
-        ${canExportArea('locations') ? `<button class="btn-sm" onclick="App.exportLocationsCsv()">Export CSV</button>` : ''}
+        ${canExportArea('locations') ? `<button class="btn-sm" onclick="App.exportLocationsExcel()">Export</button>` : ''}
         ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('locations')">Bulk Import</button>` : ''}
         ${canEdit('locations') ? `<button class="btn-sm" onclick="App.openCombineLocationsModal()">+ Combine Locations</button>` : ''}
         ${canAdd('locations') ? `<button class="btn-sm" onclick="App.openUnassignedAssetsModal()">Unassigned Assets</button>` : ''}
@@ -538,9 +538,9 @@ registerModal('unassignedAssets', () => {
 });
 
 // -------------------- CRUD --------------------
-export function exportLocationsCsv() {
+export async function exportLocationsExcel() {
   const locations = pageData()?.locations || [];
-  exportToCsv('locations.csv', [
+  await exportToExcel('locations.xlsx', [
     { label: 'Name', value: (l) => l.name }, { label: 'Type', value: (l) => l.type },
     { label: 'Emirate', value: (l) => guessEmirate(l) }, { label: 'Address', value: (l) => l.address },
     { label: 'Chain', value: (l) => l.chain }, { label: 'Notes', value: (l) => l.notes },

@@ -4,7 +4,7 @@ import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import { listMetroPics, saveMetroPic, deleteMetroPic, renewMetroPic, metroPicStatus } from '../data/metroPics.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate, daysUntilInfo } from '../lib/format.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const STATUS_BADGE = { Active: 'b-green', 'Expiring Soon': 'b-amber', Expired: 'b-red' };
@@ -45,7 +45,7 @@ export function renderMetroPic() {
     <div class="toolbar">
       <div class="tabs"><div class="tab active">All PICs (${pics.length})</div></div>
       <div class="toolbar-actions">
-        ${canExportArea('metroPic') ? `<button class="btn-sm" onclick="App.exportMetroPicCsv()">Export CSV</button>` : ''}
+        ${canExportArea('metroPic') ? `<button class="btn-sm" onclick="App.exportMetroPicExcel()">Export</button>` : ''}
         ${isAdmin() ? `<button class="btn-sm" onclick="App.openBulkImport('metroPic')">Bulk Import</button>` : ''}
         ${canAdd('metroPic') ? `<button class="btn btn-orange" onclick="App.editMetroPic(null)">+ Add PIC</button>` : ''}
       </div>
@@ -61,9 +61,9 @@ export function renderMetroPic() {
   `;
 }
 
-export function exportMetroPicCsv() {
+export async function exportMetroPicExcel() {
   const pics = STATE.pageData.metroPics?.data || [];
-  exportToCsv('metro-pic.csv', [
+  await exportToExcel('metro-pic.xlsx', [
     { label: 'Company Name', value: (m) => m.station }, { label: 'PIC Name', value: (m) => m.pic_name },
     { label: 'Designation', value: (m) => m.designation }, { label: 'Phone', value: (m) => m.phone },
     { label: 'Email', value: (m) => m.email }, { label: 'Validity Start', value: (m) => m.validity_start },

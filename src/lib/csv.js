@@ -1,28 +1,5 @@
 import * as XLSX from 'xlsx';
 
-function csvEscape(value) {
-  const s = value == null ? '' : String(value);
-  if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
-  return s;
-}
-
-// columns: [{label, value(row) => cell}]
-export function exportToCsv(filename, columns, rows) {
-  const lines = [columns.map((c) => csvEscape(c.label)).join(',')];
-  for (const row of rows) {
-    lines.push(columns.map((c) => csvEscape(c.value(row))).join(','));
-  }
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
 function normKey(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
