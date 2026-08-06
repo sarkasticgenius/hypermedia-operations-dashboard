@@ -8,17 +8,47 @@ import { listSimCards, simLocationDuplicateCounts, isDuplicateLocationSim } from
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { hiddenMemberIds, locationOfflineStats, locationManualStats, sourceStats, inventoryFaceTotals, mafInventoryTotals } from '../data/locationStats.js';
 import { getSetting } from '../data/settings.js';
+import { VENUE_CATEGORY_KEYS, TAB_DEFS as TS_TAB_DEFS, venueMatchesTab } from './trafficSheet.js';
+import { supabase } from '../supabaseClient.js';
 import { svgGroupedBarChart, svgDonutChart } from '../lib/charts.js';
 import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
 
 let refreshTimer = null;
+const TS_LABELS = Object.fromEntries(TS_TAB_DEFS.map((t) => [t.key, t.label]));
 
 async function loadOverview() {
-  const [locations, tickets, permits, metroPics, simCards, assetInventory, iotApi] = await Promise.all([
-    listLocations(), listTickets(), listPermits(), listMetroPics(), listSimCards(), listAssetInventory(), getSetting('iotApi'),
+  const [locations, tickets, permits, metroPics, simCards, assetInventory, iotApi, trafficSheetApi] = await Promise.all([
+    listLocations(), listTickets(), listPermits(), listMetroPics(), listSimCards(), listAssetInventory(), getSetting('iotApi'), getSetting('trafficSheetApi'),
   ]);
-  return { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi };
+  return { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi, trafficSheetApi };
+}
+
+async function fetchOpsTrafficSheet(month) {
+  setState({ opsTsLoading: true });
+  try {
+    const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { startMonth: month, endMonth: month } });
+    if (error || data?.error) { setState({ opsTsLoading: false }); return; }
+    setState({ opsTsData: data, opsTsMonth: month, opsTsLoading: false });
+  } catch (e) {
+    setState({ opsTsLoading: false });
+  }
+}
+
+// Distinct-campaign count per venue category this month, reusing Traffic Sheet's own
+// venueMatchesTab() so the breakdown here always matches what the Traffic Sheet page itself would
+// show for the same month - avoids a second, potentially-drifting categorization rule.
+function trafficSheetCategoryCounts(tsData) {
+  const counts = {};
+  const seen = {};
+  VENUE_CATEGORY_KEYS.forEach((k) => { counts[k] = 0; seen[k] = new Set(); });
+  (tsData?.campaigns || []).forEach((c) => {
+    VENUE_CATEGORY_KEYS.forEach((k) => {
+      if (seen[k].has(c.contract)) return;
+      if ((c.venues || []).some((v) => venueMatchesTab(v, k))) { seen[k].add(c.contract); counts[k]++; }
+    });
+  });
+  return counts;
 }
 
 function ensureAutoRefresh() {
@@ -175,7 +205,7 @@ export function renderOpsOverview() {
   if (data === null) return loadingCard();
   if (data.__error) return loadingCard(data.__error);
 
-  const { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi } = data;
+  const { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi, trafficSheetApi } = data;
   const openTickets = urgentOpenTickets(tickets);
   const { items: offlineAssets, networkedOfflineFaces } = allOfflineAssets(locations);
   const simIssues = allSimIssues(simCards);
@@ -194,6 +224,20 @@ export function renderOpsOverview() {
   const offlineNetworkedScreens = offlineAssets.filter((o) => o.kind === 'source').length;
   const onlineNetworkedScreens = Math.max(0, inventoryTotals.networkedScreens - offlineNetworkedScreens);
   const onlineNetworkedFaces = Math.max(0, inventoryTotals.networkedFaces - networkedOfflineFaces);
+
+  // Traffic Sheet campaigns summary - own live fetch (current month only), independent of the
+  // opsOverviewV2 cache above since it hits a different edge function with its own auth/config.
+  const tsConfigured = !!(trafficSheetApi?.enabled && trafficSheetApi?.apiKey);
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  if (tsConfigured && STATE.opsTsMonth !== currentMonth && !STATE.opsTsLoading && STATE.opsTsFetchingMonth !== currentMonth) {
+    STATE.opsTsFetchingMonth = currentMonth;
+    queueMicrotask(() => fetchOpsTrafficSheet(currentMonth));
+  }
+  const tsData = STATE.opsTsMonth === currentMonth ? STATE.opsTsData : null;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const tsTodayCount = tsData ? (tsData.campaigns || []).filter((c) => c.startDate && c.endDate && c.startDate <= todayIso && c.endDate >= todayIso).length : 0;
+  const tsMonthTotal = tsData ? (tsData.campaignCount ?? (tsData.campaigns || []).length) : 0;
+  const tsCategoryCounts = tsData ? trafficSheetCategoryCounts(tsData) : {};
 
   const kpis = [
     { key: 'tickets', label: 'Open Tickets', value: openTickets.length },
@@ -252,6 +296,19 @@ export function renderOpsOverview() {
         <div class="kpi"><div class="label">Ready</div><div class="value">${iotB.byState.Ready || 0}</div></div>
         <div class="kpi"><div class="label">Idle / Unknown</div><div class="value">${(iotB.byState.Idle || 0) + (iotB.byState.Unknown || 0)}</div></div>
       </div>
+    </div>` : ''}
+
+    ${tsConfigured ? `<div class="card">
+      <div class="card-head"><h3>Traffic Sheet Campaigns</h3><div class="desc">${tsData ? `${tsTodayCount} live today, ${tsMonthTotal} total this month.` : 'Loading...'} See <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('trafficSheet')">Traffic Sheet</a> for full detail.</div></div>
+      ${tsData ? `
+        <div class="kpi-row">
+          <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Live Today</div><div class="value">${tsTodayCount}</div></div>
+          <div class="kpi"><div class="label">This Month</div><div class="value">${tsMonthTotal}</div></div>
+        </div>
+        <div style="margin-top:16px;">
+          ${svgGroupedBarChart(VENUE_CATEGORY_KEYS.map((k) => TS_LABELS[k] || k), [{ name: 'Campaigns', color: '#2f6fb3', values: VENUE_CATEGORY_KEYS.map((k) => tsCategoryCounts[k] || 0) }], { width: 620, height: 150 })}
+        </div>
+      ` : '<div class="empty">Loading Traffic Sheet data...</div>'}
     </div>` : ''}
 
     <div id="ops-card-tickets" class="card">

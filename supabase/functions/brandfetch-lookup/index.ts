@@ -1,20 +1,28 @@
-// Looks up brand logos via Brandfetch's Search API (GET /v2/search/{name}?c={apiKey}) and caches
-// results in brand_logos, keyed by the exact name we searched for (venue/contractor/client name).
-// Runs server-side (service role) so the Brandfetch key never reaches the browser. Uses the
-// Search endpoint rather than the Brand API because it returns a usable icon URL directly per
-// result with a single query-param key - no separate Bearer-token Brand API call needed, which
-// matters given Brandfetch's free tier is only 100 requests/month.
+// Looks up a brand's DOMAIN via Brandfetch's Search API (GET /v2/search/{name}?c={apiKey}) and
+// caches a logo URL in brand_logos, keyed by the exact name we searched for (venue/contractor/
+// client name). Runs server-side (service role) so the Brandfetch key never reaches the browser.
+//
+// IMPORTANT: the persisted logo_url is built from Google's favicon service
+// (google.com/s2/favicons?domain={domain}), NOT from Brandfetch's own image hosting - discovered
+// the hard way that neither of Brandfetch's own URL types are safe to cache long-term:
+//   - Search's `icon` field is a signed, expiring URL (confirmed via real cached rows going
+//     HTTP 410 Gone after about a week - fine for showing immediately, useless for storage).
+//   - The Logo Link CDN (cdn.brandfetch.io/{domain}?c={clientId}, used below for domainOverrides)
+//     started returning HTTP 403 for every URL account-wide, including ones confirmed working
+//     days earlier - looks like an account-side issue with this Client ID specifically, not
+//     anything wrong with any individual domain.
+// Brandfetch is still genuinely useful here for resolving a fuzzy name ("Sobha") to the right
+// domain (sobha.com) - it's just not used to host the final image. domainOverrides skips Search
+// for names it can't resolve reliably (generic-sounding names, or known account-side failures).
 //
 // app_settings.brandfetch.domainOverrides is an optional {name: domain} map (set from Settings)
 // for names the Search API can't reliably resolve to the right brand (e.g. "AL HAMRA MALL" - a
-// generic-sounding name that search alone won't confidently match to alhamra.ae). When a name has
-// an override, this skips the Search API entirely and builds the logo straight from Brandfetch's
-// public Logo Link CDN (cdn.brandfetch.io/{domain}?c={clientId}), which resolves a domain directly
-// to its logo and doesn't count against the Search quota.
+// generic-sounding name that search alone won't confidently match to alhamra.ae).
 //
 // Runs two ways, same pattern as broadsign-sync/grassfish-sync/iot-sync:
 //   1. Settings > Integrations > "Fetch Missing Logos" - authenticated admin JWT, browser supplies
-//      the exact names to look up (gathered client-side from Locations/Contractors/Campaigns).
+//      the exact names to look up (gathered client-side from Locations/Contractors/Campaigns/
+//      Traffic Sheet venues).
 //   2. A weekly pg_cron job (see migration) - sends a shared secret in x-cron-secret instead of a
 //      user session (pg_cron can't hold one) and no request body, so this gathers the same
 //      candidate names itself server-side rather than relying on a browser to supply them.
@@ -26,6 +34,10 @@ const corsHeaders = {
 };
 
 const BATCH_CAP = 25;
+
+function faviconUrl(domain: string): string {
+  return `https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(domain)}`;
+}
 
 async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string, anonKey: string): Promise<boolean> {
   const cronSecret = req.headers.get('x-cron-secret');
@@ -103,7 +115,7 @@ Deno.serve(async (req) => {
       try {
         const overrideDomain = domainOverrides[name];
         if (overrideDomain) {
-          const logo_url = `https://cdn.brandfetch.io/${encodeURIComponent(overrideDomain)}?c=${encodeURIComponent(cfg.apiKey)}`;
+          const logo_url = faviconUrl(overrideDomain);
           await adminClient.from('brand_logos').upsert({
             name, domain: overrideDomain, logo_url, fetched_at: nowIso, error: null,
           }, { onConflict: 'name' });
@@ -116,12 +128,15 @@ Deno.serve(async (req) => {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const arr = await res.json();
-        const best = Array.isArray(arr) ? arr.find((b: any) => b?.icon) : null;
-        if (best?.icon) {
+        // Search only resolves the domain here - the logo itself always comes from the favicon
+        // service (see file header), never from Search's own `icon` field, which expires.
+        const best = Array.isArray(arr) ? arr.find((b: any) => b?.domain) : null;
+        if (best?.domain) {
+          const logo_url = faviconUrl(best.domain);
           await adminClient.from('brand_logos').upsert({
-            name, domain: best.domain || null, logo_url: best.icon, fetched_at: nowIso, error: null,
+            name, domain: best.domain, logo_url, fetched_at: nowIso, error: null,
           }, { onConflict: 'name' });
-          results.push({ name, logo_url: best.icon, domain: best.domain || null });
+          results.push({ name, logo_url, domain: best.domain });
         } else {
           await adminClient.from('brand_logos').upsert({
             name, domain: null, logo_url: null, fetched_at: nowIso, error: 'No match found',

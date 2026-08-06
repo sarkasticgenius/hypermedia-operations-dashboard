@@ -254,6 +254,17 @@ function isActiveOn(campaign, dateIso) {
   return (campaign.days || []).some((d) => d.date === dateIso && d.spots > 0);
 }
 
+// The 15/6-per-screen cap is inherently a per-CALENDAR-MONTH rule - counting campaigns across a
+// wide Start/End Date range (which can span many months since that range drives the day-by-day
+// grid too) would flag venues as "overbooked" just for having a busy year, not a busy month. This
+// checks whether a campaign touches a specific month at all, independent of whatever range is
+// currently loaded for the grid.
+function isActiveInMonth(campaign, monthStr) {
+  const { start, end } = monthBounds(monthStr);
+  if (campaign.startDate && campaign.endDate) return campaign.startDate <= end && campaign.endDate >= start;
+  return (campaign.days || []).some((d) => d.date >= start && d.date <= end);
+}
+
 function yesterdayISO() {
   const d = new Date();
   d.setDate(d.getDate() - 1);
@@ -354,11 +365,19 @@ function renderQuickStatTiles(todayActive, todayExpiring, yesterdayActive, yeste
 // see the file-header note and locationSummary() for why it's a list rather than one value.
 // "Capacity" applies the 15-campaigns-per-screen rule (6 for Royals): a venue's `screens` count
 // x that cap is its monthly slot capacity, campaign count against it gives available/overbooked.
-function renderSummaryCard(campaigns, summary, totalScreens) {
+// capacitySummary is a SEPARATE locationSummary() scoped to exactly one calendar month (see
+// isActiveInMonth) - Screens/Network/Venue Type still come from the main summary (whatever the
+// wider Start/End Date range currently shows), but the Campaigns/Cap/Capacity Status columns
+// always come from capacitySummary, keyed by venue, so a wide date range never inflates the count
+// the 15/6 cap is compared against.
+function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, capacityMonth) {
+  const capacityByVenue = new Map(capacitySummary.map((s) => [s.venue, s]));
+  const monthLabel = formatMonthLabel(capacityMonth);
   const rows = summary.map((s) => {
+    const capRow = capacityByVenue.get(s.venue);
     const cap = capacityPerScreen(s);
     const screens = s.screens || 0;
-    const count = s.campaigns.size;
+    const count = capRow ? capRow.campaigns.size : 0;
     const capacity = screens * cap;
     const overbooked = screens * Math.max(0, count - cap);
     const available = Math.max(0, capacity - screens * Math.min(count, cap));
@@ -380,9 +399,9 @@ function renderSummaryCard(campaigns, summary, totalScreens) {
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head">
         <h3>Summary</h3>
-        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Capacity is 15 campaigns/screen/month (6 for Royals).</div>
+        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Campaigns/Cap and Capacity Status are for ${esc(monthLabel)} only (15 campaigns/screen/month, 6 for Royals) - change the Capacity Month above to check a different month.</div>
       </div>
-      <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns / Cap</th><th>Capacity Status</th></tr></thead>
+      <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns / Cap (${esc(monthLabel)})</th><th>Capacity Status</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6"><div class="empty">No data.</div></td></tr>'}</tbody></table>
     </div>
   `;
@@ -516,6 +535,8 @@ export function renderTrafficSheet() {
     queueMicrotask(autoFetchTrafficSheet);
   }
 
+  const capacityMonth = STATE.trafficSheetCapacityMonth || defaultMonth();
+
   const locations = data ? locationsForTab(data, tab) : [];
   let campaigns = data ? filteredCampaigns(data, tab, location) : [];
   // FOC / Marketing matches every venue (venueMatchesTab), then narrows to just the campaigns
@@ -530,6 +551,14 @@ export function renderTrafficSheet() {
     : campaigns.filter((c) => withinDateRange(c, startDate, endDate));
   const summary = locationSummary(gridCampaigns);
   const totalScreens = summary.reduce((sum, s) => sum + (s.screens || 0), 0);
+  // Capacity is evaluated against `campaigns` (tab/location-filtered, but NOT narrowed to
+  // Start/End Date) so it always reflects the true full Capacity Month regardless of how wide a
+  // range is loaded for the grid - filtered down to just that one calendar month via
+  // isActiveInMonth so a multi-month Start/End Date range can never inflate the count.
+  const capacityMonthLoaded = capacityMonth >= startDate.slice(0, 7) && capacityMonth <= endDate.slice(0, 7);
+  const capacitySummary = capacityMonthLoaded
+    ? locationSummary(campaigns.filter((c) => isActiveInMonth(c, capacityMonth)))
+    : [];
   const today = todayISO();
   const yesterday = yesterdayISO();
   const todaysCampaigns = campaigns.filter((c) => isActiveOn(c, today));
@@ -542,7 +571,9 @@ export function renderTrafficSheet() {
     detailHtml = `<div class="card"><div class="empty">${loading ? "Loading today's traffic sheet..." : 'Pick a date range and click "Apply Date Filter" to load the traffic sheet.'}</div></div>`;
   } else {
     detailHtml = renderQuickStatTiles(todaysCampaigns.length, todayExpiringCount, yesterdayActiveCount, yesterdayExpiredCount)
-      + renderSummaryCard(gridCampaigns, summary, totalScreens)
+      + (capacityMonthLoaded
+        ? renderSummaryCard(gridCampaigns, summary, totalScreens, capacitySummary, capacityMonth)
+        : `<div class="card" style="margin-bottom:16px;"><div class="empty">Capacity Month (${esc(formatMonthLabel(capacityMonth))}) isn't within the loaded Start/End Date range - widen the date range and click "Apply Date Filter" to check capacity for that month.</div></div>`)
       + (isTodayTab ? '' : renderTodayList(todaysCampaigns, tab))
       + renderDayGrid(gridCampaigns, isTodayTab ? '' : startDate, isTodayTab ? '' : endDate);
   }
@@ -553,6 +584,7 @@ export function renderTrafficSheet() {
       <div class="toolbar-actions" style="align-items:flex-end;flex-wrap:wrap;">
         <div class="field" style="margin-bottom:0;"><label>Start Date</label><input type="date" id="tsheet-start-date" value="${esc(startDate)}"></div>
         <div class="field" style="margin-bottom:0;"><label>End Date</label><input type="date" id="tsheet-end-date" value="${esc(endDate)}"></div>
+        <div class="field" style="margin-bottom:0;"><label>Capacity Month</label><input type="month" value="${esc(capacityMonth)}" onchange="App.setTrafficSheetCapacityMonth(this.value)" title="Which month the 15/6-per-screen cap is checked against - independent of Start/End Date above"></div>
         <div class="field" style="margin-bottom:0;min-width:220px;"><label>Location</label>
           <select onchange="App.setTrafficSheetLocation(this.value)">
             <option value="">All Locations</option>
@@ -578,6 +610,10 @@ export function setTrafficSheetTab(tab) {
 
 export function setTrafficSheetLocation(value) {
   setState({ trafficSheetLocation: value });
+}
+
+export function setTrafficSheetCapacityMonth(value) {
+  setState({ trafficSheetCapacityMonth: value });
 }
 
 // Re-fetches whenever the API-backed month range needs to change (a different date range was
