@@ -63,20 +63,33 @@ function brandNameForLocation(loc: { name: string; chain: string | null }): stri
 }
 
 // Same "gather candidate names" logic the frontend's runBrandfetchFetchMissing() uses, needed
-// here too since a cron-triggered run has no browser to supply names.
-async function gatherMissingNames(adminClient: any): Promise<string[]> {
+// here too since a cron-triggered run has no browser to supply names. Also mirrors that function's
+// Domain Overrides handling: every override name is a candidate regardless of whether it also
+// happens to come from a location/contractor/campaign, and a name with an override is only
+// skipped once its cached row's domain already matches - so a newly-added or changed override
+// still gets (re-)applied even though that name already has a (now-stale) cached row.
+async function gatherMissingNames(adminClient: any, domainOverrides: Record<string, string>): Promise<string[]> {
   const [{ data: locations }, { data: contractors }, { data: campaigns }, { data: cached }] = await Promise.all([
     adminClient.from('locations').select('name, chain').is('deleted_at', null),
     adminClient.from('contractors').select('company, name').is('deleted_at', null),
     adminClient.from('campaigns').select('client').is('deleted_at', null),
-    adminClient.from('brand_logos').select('name'),
+    adminClient.from('brand_logos').select('name, domain'),
   ]);
-  const cachedNames = new Set((cached || []).map((r: any) => String(r.name).toLowerCase()));
+  const cachedByName = new Map((cached || []).map((r: any) => [String(r.name).toLowerCase(), r]));
+  const overridesByLowerName = new Map(Object.entries(domainOverrides || {}).map(([n, d]) => [n.trim().toLowerCase(), d]));
   const candidates = new Set<string>();
+  Object.keys(domainOverrides || {}).forEach((n) => { const t = n.trim(); if (t) candidates.add(t); });
   (locations || []).forEach((l: any) => { const n = brandNameForLocation(l); if (n) candidates.add(String(n).trim()); });
   (contractors || []).forEach((c: any) => (c.company || c.name) && candidates.add(String(c.company || c.name).trim()));
   (campaigns || []).forEach((c: any) => c.client && candidates.add(String(c.client).trim()));
-  return [...candidates].filter((n) => n && !cachedNames.has(n.toLowerCase()));
+  return [...candidates].filter((n) => {
+    if (!n) return false;
+    const cachedRow = cachedByName.get(n.toLowerCase());
+    const overrideDomain = overridesByLowerName.get(n.toLowerCase());
+    if (!cachedRow) return true;
+    if (overrideDomain) return String(cachedRow.domain || '').toLowerCase() !== overrideDomain.trim().toLowerCase();
+    return false;
+  });
 }
 
 Deno.serve(async (req) => {
@@ -100,7 +113,7 @@ Deno.serve(async (req) => {
     let names = Array.isArray(body.names)
       ? [...new Set(body.names.map((n: unknown) => String(n || '').trim()).filter(Boolean))]
       : [];
-    if (!names.length) names = (await gatherMissingNames(adminClient)).slice(0, BATCH_CAP);
+    if (!names.length) names = (await gatherMissingNames(adminClient, cfg.domainOverrides || {})).slice(0, BATCH_CAP);
     if (!names.length) {
       const summary = 'No new brand names to look up - everything already cached.';
       await adminClient.from('app_settings').update({ value: { ...cfg, lastRun: new Date().toISOString(), lastSummary: summary, lastError: '' } }).eq('key', 'brandfetch');
@@ -108,12 +121,16 @@ Deno.serve(async (req) => {
     }
 
     const domainOverrides: Record<string, string> = cfg.domainOverrides || {};
+    // Lowercased so an override typed as "Danube" still applies to a candidate name gathered as
+    // "danube"/"DANUBE" - the raw Record lookup below was case-sensitive, which silently dropped
+    // an override the moment its casing didn't exactly match whatever the app derived elsewhere.
+    const overridesByLowerName = new Map(Object.entries(domainOverrides).map(([n, d]) => [n.trim().toLowerCase(), d]));
     const results: { name: string; logo_url: string | null; domain?: string | null; error?: string }[] = [];
     const nowIso = new Date().toISOString();
 
     for (const name of names) {
       try {
-        const overrideDomain = domainOverrides[name];
+        const overrideDomain = overridesByLowerName.get(name.trim().toLowerCase());
         if (overrideDomain) {
           const logo_url = faviconUrl(overrideDomain);
           await adminClient.from('brand_logos').upsert({

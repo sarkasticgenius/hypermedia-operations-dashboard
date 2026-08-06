@@ -559,8 +559,15 @@ export async function saveBrandfetchForm(event) {
 
 // Gathers distinct brand-lookup-worthy names across the 5 places logos are shown (venues,
 // contractors, campaign clients, Traffic Sheet venues - Asset Inventory reuses venue names so
-// isn't a separate source), skips ones already cached (found or a recorded miss), and looks up
-// the rest in one batch, capped per click to stay well under the free-tier monthly limit.
+// isn't a separate source) PLUS every name in Domain Overrides, skips ones already cached (found
+// or a recorded miss) UNLESS an override now points at a different domain than what's cached, and
+// looks up the rest in one batch, capped per click to stay well under the free-tier monthly limit.
+//
+// Domain Overrides used to only ever get looked up if the exact same name also happened to be a
+// "live" candidate this run (e.g. a venue with a campaign booked this month) - an override typed
+// for anything else (a past month's venue, a name that doesn't independently occur anywhere) was
+// silently never fetched, and even a live match got skipped forever once any cached row (even a
+// stale miss from before the override existed) was on file for that name. See runBrandfetchFetchMissing().
 //
 // Traffic Sheet venue names come from a live external API, not one of our own tables, so they
 // were previously never in this gather at all - a real Traffic Sheet page could have 150+ distinct
@@ -606,14 +613,41 @@ export async function runBrandfetchFetchMissing() {
     const [locations, contractors, campaigns, cached, settings] = await Promise.all([
       listLocations(), listContractors(), listCampaigns(), listBrandLogos(), getAllSettings(),
     ]);
-    const cachedNames = new Set(cached.map((r) => r.name.toLowerCase()));
+    const cachedByName = new Map(cached.map((r) => [r.name.toLowerCase(), r]));
+    const domainOverrides = settings.brandfetch?.domainOverrides || {};
+    // Lowercased for matching (admin-typed casing doesn't have to exactly match whatever casing
+    // the venue/location/contractor data happens to use), original-cased for the actual lookup
+    // name (must match what brandLogoTag/brandNameForVenue produce elsewhere).
+    const overrideDomainByLowerName = new Map(
+      Object.entries(domainOverrides).map(([n, d]) => [n.trim().toLowerCase(), d])
+    );
+
     const candidateNames = new Set();
+    // Domain Overrides go in first - an explicit override typed by the admin is a deliberate
+    // instruction and previously never even entered this candidate list unless the exact same
+    // name also happened to come from a location/contractor/campaign/Traffic Sheet venue this
+    // month - e.g. an override for a station that isn't running any campaign right now was
+    // silently ignored. Listing them first also means they win the BRANDFETCH_BATCH_CAP slice
+    // over lower-priority candidates when there's a lot to fetch in one click.
+    Object.keys(domainOverrides).forEach((n) => { const t = n.trim(); if (t) candidateNames.add(t); });
     locations.forEach((l) => { const n = brandNameForLocation(l); if (n) candidateNames.add(n.trim()); });
     contractors.forEach((c) => (c.company || c.name) && candidateNames.add((c.company || c.name).trim()));
     campaigns.forEach((c) => c.client && candidateNames.add(c.client.trim()));
     (await gatherTrafficSheetVenueNames(settings)).forEach((n) => candidateNames.add(n));
 
-    const missing = [...candidateNames].filter((n) => n && !cachedNames.has(n.toLowerCase()));
+    // A name with no override: skip once cached (found or a recorded miss), same as before. A
+    // name WITH an override: skip only once the cached row's domain already matches the override
+    // - so a brand-new override, or one whose domain was just edited, always gets (re-)applied
+    // even though that exact name already has a (now-stale) cached row from before the override
+    // existed or from a different domain.
+    const missing = [...candidateNames].filter((n) => {
+      if (!n) return false;
+      const cachedRow = cachedByName.get(n.toLowerCase());
+      const overrideDomain = overrideDomainByLowerName.get(n.toLowerCase());
+      if (!cachedRow) return true;
+      if (overrideDomain) return (cachedRow.domain || '').toLowerCase() !== overrideDomain.trim().toLowerCase();
+      return false;
+    });
     if (!missing.length) {
       toast('No new brand names to look up - everything already cached.');
       return;
