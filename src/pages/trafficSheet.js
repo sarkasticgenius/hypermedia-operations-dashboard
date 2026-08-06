@@ -129,6 +129,37 @@ export function mergeVenueName(name) {
   return name;
 }
 
+// Brandfetch's name-Search API turned out to fuzzy-match a huge share of raw venue names to
+// completely unrelated companies (real examples: "LULU" -> lululemon.com, "Energy" -> the US
+// Department of Energy, "International City Pavillion" -> Garmin, "Stadium" -> a Swedish sports
+// retailer) - venue/street/station names aren't reliable Search queries. This maps each venue to
+// the name that's actually safe/correct to look up a logo for, used both when gathering candidate
+// names (Settings > Brandfetch > Fetch Missing Logos) and when displaying a logo (brandLogoTag) on
+// Traffic Sheet, so the cache key and the lookup key always match:
+//   - Metro/Metro Bridges (venueType METRO / METRO OUTDOOR) -> "Dubai Metro Rail", same shared
+//     brand already used for Metro chain Locations - individual station/bridge names are
+//     unsearchable, and this reuses an already-correct cached logo instead of guessing per name.
+//   - Multi-location retail chains (LULU/Union Coop/ADCOOP/ENOC) -> just the chain name, not each
+//     branch's full venue string ("LULU AL KHALIFA") - one correct lookup covers every branch.
+//   - Royals/Gems (network ROYALS/GEMS) -> null, no lookup at all. These are internal-only screen
+//     groupings with no real external brand or logo to find - searching for "Royals Entry" or
+//     "PALM-DUBAI ZUMUROD" will only ever return an unrelated company by coincidence of wording.
+//   - Everything else (malls, named venues) -> the venue name itself, unchanged.
+const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC'];
+const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC' };
+export function brandNameForVenue(venue) {
+  const venueType = (venue.venueType || '').toUpperCase();
+  if (venueType === 'METRO' || venueType === 'METRO OUTDOOR') return 'Dubai Metro Rail';
+  const network = (venue.network || '').toUpperCase();
+  if (network.includes('ROYALS') || network.includes('GEMS')) return null;
+  const name = (venue.venue || '').trim();
+  const normalized = normalizeVenueText(name);
+  for (const prefix of LOGO_CHAIN_PREFIXES) {
+    if (normalized.startsWith(prefix)) return LOGO_CHAIN_NAMES[prefix];
+  }
+  return name || null;
+}
+
 function isMafVenue(venue) {
   const network = (venue.network || '').toUpperCase();
   if (network.includes('MAF')) return true;
@@ -336,7 +367,7 @@ function renderSummaryCard(campaigns, summary, totalScreens) {
       : `<span class="badge b-green">${available} available</span>`;
     return `
       <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttr(s.venue)}')" title="Click to filter to this location">
-        <td>${brandLogoTag(s.venue)} ${esc(s.venue)}</td>
+        <td>${brandLogoTag(brandNameForVenue(s))} ${esc(s.venue)}</td>
         <td>${esc(s.venueType || '-')}</td>
         <td>${esc(s.network)}</td>
         <td class="tright">${screens}</td>
@@ -364,7 +395,7 @@ function todayListTable(campaigns, emptyText) {
   const rows = campaigns.map((c) => `
     <tr>
       <td>${esc(c.campaignName || '')}</td>
-      <td>${brandLogoTag((c.__matchedVenues || [])[0]?.venue, 18)} ${esc((c.__matchedVenues || []).map((v) => v.venue).join(', '))}</td>
+      <td>${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]), 18) : ''} ${esc((c.__matchedVenues || []).map((v) => v.venue).join(', '))}</td>
       <td class="tsheet-nowrap">${statusBadge(c.status)}</td>
       <td class="tsheet-nowrap">${esc(c.startDate || '')}</td>
       <td class="tsheet-nowrap">${esc(c.endDate || '')}</td>
