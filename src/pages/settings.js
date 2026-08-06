@@ -561,7 +561,10 @@ export async function saveBrandfetchForm(event) {
 // contractors, campaign clients, Traffic Sheet venues - Asset Inventory reuses venue names so
 // isn't a separate source) PLUS every name in Domain Overrides, skips ones already cached (found
 // or a recorded miss) UNLESS an override now points at a different domain than what's cached, and
-// looks up the rest in one batch, capped per click to stay well under the free-tier monthly limit.
+// looks up the rest in one batch. BRANDFETCH_BATCH_CAP only throttles names that need a real
+// Brandfetch Search call (protects the free-tier monthly quota) - Domain Overrides never call
+// Search at all (the edge function resolves straight from the configured domain to an image), so
+// every override name due for a fetch goes through uncapped, no matter how many there are.
 //
 // Domain Overrides used to only ever get looked up if the exact same name also happened to be a
 // "live" candidate this run (e.g. a venue with a campaign booked this month) - an override typed
@@ -652,7 +655,14 @@ export async function runBrandfetchFetchMissing() {
       toast('No new brand names to look up - everything already cached.');
       return;
     }
-    const batch = missing.slice(0, BRANDFETCH_BATCH_CAP);
+    // BRANDFETCH_BATCH_CAP exists to protect Brandfetch's own monthly Search quota - it doesn't
+    // apply to Domain Overrides at all, since those never call Search (the edge function goes
+    // straight from the configured domain to an image, see storeLogoImage). So every override name
+    // still due for a (re-)fetch goes through in one click regardless of count; only the
+    // non-override names competing for real Search quota get capped.
+    const overrideMissing = missing.filter((n) => overrideDomainByLowerName.has(n.toLowerCase()));
+    const searchMissing = missing.filter((n) => !overrideDomainByLowerName.has(n.toLowerCase()));
+    const batch = [...overrideMissing, ...searchMissing.slice(0, BRANDFETCH_BATCH_CAP)];
     const result = await lookupBrandLogos(batch);
     await logAudit('Fetch brand logos', result.summary);
     invalidate('settings');

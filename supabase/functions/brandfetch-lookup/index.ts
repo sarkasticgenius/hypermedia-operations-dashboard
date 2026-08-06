@@ -2,30 +2,37 @@
 // caches a logo URL in brand_logos, keyed by the exact name we searched for (venue/contractor/
 // client name). Runs server-side (service role) so the Brandfetch key never reaches the browser.
 //
-// IMPORTANT: the persisted logo_url is built from Google's favicon service
-// (google.com/s2/favicons?domain={domain}), NOT from Brandfetch's own image hosting - discovered
-// the hard way that neither of Brandfetch's own URL types are safe to cache long-term:
-//   - Search's `icon` field is a signed, expiring URL (confirmed via real cached rows going
-//     HTTP 410 Gone after about a week - fine for showing immediately, useless for storage).
-//   - The Logo Link CDN (cdn.brandfetch.io/{domain}?c={clientId}, used below for domainOverrides)
-//     started returning HTTP 403 for every URL account-wide, including ones confirmed working
-//     days earlier - looks like an account-side issue with this Client ID specifically, not
-//     anything wrong with any individual domain.
-// Brandfetch is still genuinely useful here for resolving a fuzzy name ("Sobha") to the right
-// domain (sobha.com) - it's just not used to host the final image. domainOverrides skips Search
-// for names it can't resolve reliably (generic-sounding names, or known account-side failures).
+// IMPORTANT: the persisted logo_url points at OUR OWN "brand-logos" Storage bucket, not at any
+// external host - discovered the hard way that no external image URL is safe to cache long-term:
+//   - Brandfetch Search's `icon` field is a signed, expiring URL (confirmed via real cached rows
+//     going HTTP 410 Gone after about a week).
+//   - Brandfetch's Logo Link CDN (cdn.brandfetch.io/{domain}?c={clientId}) started returning HTTP
+//     403 for every URL account-wide, including ones confirmed working days earlier.
+//   - Even Google's favicon service (google.com/s2/favicons?domain=...), the fix for the above
+//     two, meant every single page render re-fetched the image live from Google rather than truly
+//     caching it, and put every logo's uptime at the mercy of a service we don't control.
+// storeLogoImage() below fetches the image bytes ONCE (still via Google's favicon service, which
+// already handles the messy real-world resolution - missing root favicon.ico, redirects, apple-
+// touch-icon fallbacks) and re-uploads them into our own Storage bucket, keyed by domain so
+// multiple names sharing a domain (chain branches) reuse one image. Falls back to the live Google
+// URL if the fetch/upload ever fails, so a hiccup here never leaves a name with no logo at all.
+// Brandfetch itself is still only ever used to resolve a fuzzy name ("Sobha") to the right domain
+// (sobha.com) - never to host the final image. domainOverrides skips Search entirely for names it
+// can't resolve reliably (generic-sounding names, or known account-side failures).
 //
 // app_settings.brandfetch.domainOverrides is an optional {name: domain} map (set from Settings)
 // for names the Search API can't reliably resolve to the right brand (e.g. "AL HAMRA MALL" - a
 // generic-sounding name that search alone won't confidently match to alhamra.ae).
 //
-// Runs two ways, same pattern as broadsign-sync/grassfish-sync/iot-sync:
+// Runs three ways, same pattern as broadsign-sync/grassfish-sync/iot-sync:
 //   1. Settings > Integrations > "Fetch Missing Logos" - authenticated admin JWT, browser supplies
 //      the exact names to look up (gathered client-side from Locations/Contractors/Campaigns/
 //      Traffic Sheet venues).
 //   2. A weekly pg_cron job (see migration) - sends a shared secret in x-cron-secret instead of a
 //      user session (pg_cron can't hold one) and no request body, so this gathers the same
 //      candidate names itself server-side rather than relying on a browser to supply them.
+//   3. { backfillStorage: true } - a one-off (or safely re-runnable) migration that re-hosts every
+//      already-resolved logo into Storage without touching Brandfetch at all (see above).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
@@ -34,9 +41,48 @@ const corsHeaders = {
 };
 
 const BATCH_CAP = 25;
+const LOGO_BUCKET = 'brand-logos';
 
 function faviconUrl(domain: string): string {
   return `https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(domain)}`;
+}
+
+// Fetches the actual favicon image bytes - still resolved via Google's favicon service, which
+// already handles the messy real-world cases (missing root favicon.ico, redirects, apple-touch-
+// icon fallbacks) far better than guessing a path ourselves - and re-hosts them in our own Storage
+// bucket, so every subsequent page load serves the logo from our own infra instead of hitting
+// Google's service again on every single render. Keyed by DOMAIN (not by name) so e.g. "LULU AL
+// KHALIFA" and "LULU AL BARSHA" both resolving to lulu.com share one uploaded image, and re-runs
+// are safe (upsert just overwrites with the same fresh bytes). Falls back to returning the live
+// Google URL directly (today's original behavior) if anything about the fetch/upload fails, so a
+// hiccup here never leaves a name with no logo at all.
+async function storeLogoImage(adminClient: any, domain: string): Promise<string> {
+  const liveUrl = faviconUrl(domain);
+  try {
+    const res = await fetch(liveUrl);
+    // Google's favicon service redirects to a gstatic endpoint that, for a domain it has no
+    // specific favicon for, responds with HTTP 404 but STILL returns a real image body (a generic
+    // globe placeholder) rather than an empty/error response - confirmed via direct curl. Checking
+    // res.ok would skip every one of those (they render fine live today, just via the generic
+    // icon), so this checks the content-type is actually an image instead of the status code -
+    // that's what tells a genuine failure (an HTML error page, a timeout) from Google's own
+    // not-quite-a-404 convention.
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.startsWith('image/')) return liveUrl;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (!bytes.length) return liveUrl;
+    const path = `${domain.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.png`;
+    const { error } = await adminClient.storage.from(LOGO_BUCKET).upload(path, bytes, { contentType, upsert: true });
+    if (error) return liveUrl;
+    const { data } = adminClient.storage.from(LOGO_BUCKET).getPublicUrl(path);
+    return data?.publicUrl || liveUrl;
+  } catch (_) {
+    return liveUrl;
+  }
+}
+
+function isStorageUrl(url: string | null): boolean {
+  return !!url && url.includes(`/storage/v1/object/public/${LOGO_BUCKET}/`);
 }
 
 async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string, anonKey: string): Promise<boolean> {
@@ -103,13 +149,34 @@ Deno.serve(async (req) => {
 
     if (!(await isAuthorized(req, adminClient, supabaseUrl, anonKey))) throw new Error('Not authenticated');
 
+    const body = await req.json().catch(() => ({}));
+
+    // One-time (or re-runnable) migration: re-host every already-resolved logo's image bytes into
+    // Storage, without touching Brandfetch's Search API or its quota at all - the domain is already
+    // known from a past successful lookup, so this only needs Google's favicon service (free,
+    // unauthenticated, no cap) plus our own Storage. Doesn't require the integration to even be
+    // enabled/configured, since it never calls Brandfetch itself.
+    if (body.backfillStorage === true) {
+      const { data: rows } = await adminClient.from('brand_logos').select('name, domain, logo_url').not('domain', 'is', null);
+      const toBackfill = (rows || []).filter((r: any) => !isStorageUrl(r.logo_url));
+      let migrated = 0;
+      for (const row of toBackfill) {
+        const logo_url = await storeLogoImage(adminClient, row.domain);
+        if (isStorageUrl(logo_url)) {
+          await adminClient.from('brand_logos').update({ logo_url }).eq('name', row.name);
+          migrated++;
+        }
+      }
+      const summary = `Backfilled ${migrated} of ${toBackfill.length} existing logo(s) into Storage.`;
+      return new Response(JSON.stringify({ summary }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 });
+    }
+
     const { data: settingsRow } = await adminClient.from('app_settings').select('value').eq('key', 'brandfetch').single();
     const cfg = settingsRow?.value || {};
     if (!cfg.enabled || !cfg.apiKey) {
       throw new Error('Brandfetch integration is not fully configured (API Key, Enabled).');
     }
 
-    const body = await req.json().catch(() => ({}));
     let names = Array.isArray(body.names)
       ? [...new Set(body.names.map((n: unknown) => String(n || '').trim()).filter(Boolean))]
       : [];
@@ -132,7 +199,7 @@ Deno.serve(async (req) => {
       try {
         const overrideDomain = overridesByLowerName.get(name.trim().toLowerCase());
         if (overrideDomain) {
-          const logo_url = faviconUrl(overrideDomain);
+          const logo_url = await storeLogoImage(adminClient, overrideDomain);
           await adminClient.from('brand_logos').upsert({
             name, domain: overrideDomain, logo_url, fetched_at: nowIso, error: null,
           }, { onConflict: 'name' });
@@ -149,7 +216,7 @@ Deno.serve(async (req) => {
         // service (see file header), never from Search's own `icon` field, which expires.
         const best = Array.isArray(arr) ? arr.find((b: any) => b?.domain) : null;
         if (best?.domain) {
-          const logo_url = faviconUrl(best.domain);
+          const logo_url = await storeLogoImage(adminClient, best.domain);
           await adminClient.from('brand_logos').upsert({
             name, domain: best.domain, logo_url, fetched_at: nowIso, error: null,
           }, { onConflict: 'name' });
