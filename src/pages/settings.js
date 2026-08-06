@@ -519,7 +519,7 @@ function renderBrandfetchCard(settings) {
       <form onsubmit="App.saveBrandfetchForm(event)">
         <div class="field"><label>API Key</label><input id="int-brandfetch-apiKey" type="password" value="${esc(cfg.apiKey || '')}" placeholder="Brandfetch Client ID / API Key"></div>
         <div class="field"><label>Domain Overrides</label>
-          <textarea id="int-brandfetch-domainOverrides" rows="3" placeholder="AL HAMRA MALL = alhamra.ae">${esc(overridesText)}</textarea>
+          <textarea id="int-brandfetch-domainOverrides" rows="10" style="min-height:200px;font-family:monospace;" placeholder="AL HAMRA MALL = alhamra.ae">${esc(overridesText)}</textarea>
           <div class="small muted" style="margin-top:4px;">One per line, "Name = domain.com". For names the search-based lookup can't confidently match (e.g. a generic mall name) - resolves the logo directly from the domain instead, via Brandfetch's Logo Link (doesn't use search quota).</div>
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-brandfetch-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>

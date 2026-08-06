@@ -43,8 +43,8 @@
 //     Dubai" in the summary/location list per the customer - handled by mergeVenueName() rather
 //     than a matching rule, since Hatta still needs to match the ENOC tab, just displayed/grouped
 //     under the merged name afterward.
-//   - Stores (labeled "In-Stores") is LULU/Union Coop/ADCOOP only - ENOC deliberately has its own
-//     tab, not part of In-Stores.
+//   - Stores (labeled "In-Stores") is LULU/Union Coop/ADCOOP/Carrefour only - ENOC deliberately
+//     has its own tab, not part of In-Stores.
 import { STATE, setState, loadData } from '../state.js';
 import { loadingCard } from '../modals.js';
 import { getAllSettings } from '../data/settings.js';
@@ -53,13 +53,13 @@ import { supabase } from '../supabaseClient.js';
 import { isAdmin } from '../auth.js';
 import { esc, jsAttr, todayISO } from '../lib/format.js';
 import { renderTabs } from '../lib/tabs.js';
-import { exportToCsv } from '../lib/csv.js';
+import { exportTrafficSheetExcel } from '../lib/excelExport.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 
 // "Today's Campaigns" and "FOC / Marketing" are both cross-category views - venueMatchesTab
 // matches every venue for either, so neither is scoped to a single venueType/network the way the
 // other tabs are; FOC / Marketing is further narrowed to matching campaign names on top of that
-// (see the tab === 'focMarketing' filter in renderTrafficSheet/downloadTrafficSheetCsv). Placed
+// (see the tab === 'focMarketing' filter in renderTrafficSheet/downloadTrafficSheetExcel). Placed
 // last so it sits at the right-hand end of the tab row, beside ENOC.
 export const TAB_DEFS = [
   { key: 'today', label: "Today's Campaigns" },
@@ -80,7 +80,7 @@ export const TAB_DEFS = [
 // without duplicating this list.
 export const VENUE_CATEGORY_KEYS = TAB_DEFS.map((t) => t.key).filter((k) => k !== 'today' && k !== 'focMarketing');
 
-const STORE_KEYWORDS = ['LULU', 'UNION COOP', 'ADCOOP'];
+const STORE_KEYWORDS = ['LULU', 'UNION COOP', 'ADCOOP', 'CARREFOUR'];
 const GEMS_VENUE_KEYWORDS = ['PALM DUBAI ZUMUROD', 'PALM DUBAI RUBY', 'PALM DUBAI FAIROUZ'];
 // Also used inside the Today's Active Campaigns list on every OTHER tab, to visually group
 // FOC/marketing bookings apart from paid ones without hiding them from the normal view there.
@@ -145,8 +145,8 @@ export function mergeVenueName(name) {
 //     groupings with no real external brand or logo to find - searching for "Royals Entry" or
 //     "PALM-DUBAI ZUMUROD" will only ever return an unrelated company by coincidence of wording.
 //   - Everything else (malls, named venues) -> the venue name itself, unchanged.
-const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC'];
-const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC' };
+const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR'];
+const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour' };
 export function brandNameForVenue(venue) {
   const venueType = (venue.venueType || '').toUpperCase();
   if (venueType === 'METRO' || venueType === 'METRO OUTDOOR') return 'Dubai Metro Rail';
@@ -271,12 +271,20 @@ function yesterdayISO() {
   return d.toISOString().slice(0, 10);
 }
 
-// Monthly campaign-slot capacity per physical screen: 15 for every category except Royals, which
-// is capped at 6. Determined by the venue's own network (not by whichever tab happens to be
-// active), so it stays correct even on cross-category tabs like Today's Campaigns or FOC /
-// Marketing where a Royals venue can show up alongside everything else.
+// Monthly campaign-slot capacity per physical screen: 15 by default, 6 for Royals, and no cap at
+// all (null) for MAF Malls or Carrefour - per the customer, those two don't follow the standard
+// rotation-limit rule. Determined by the venue's own network/type (not by whichever tab happens to
+// be active), so it stays correct even on cross-category tabs like Today's Campaigns or FOC /
+// Marketing where a Royals/MAF/Carrefour venue can show up alongside everything else. Reuses
+// isMafVenue() as-is since a locationSummary() entry has the same venue/venueType/network shape
+// isMafVenue() expects.
 export function capacityPerScreen(summaryEntry) {
-  return (summaryEntry.network || '').toUpperCase().includes('ROYALS') ? 6 : 15;
+  if (isMafVenue(summaryEntry)) return null;
+  const network = (summaryEntry.network || '').toUpperCase();
+  const venue = (summaryEntry.venue || '').toUpperCase();
+  if (network.includes('CARREFOUR') || venue.includes('CARREFOUR')) return null;
+  if (network.includes('ROYALS')) return 6;
+  return 15;
 }
 
 // A single venue legitimately shows up under several different AdLive network values across
@@ -378,19 +386,27 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
     const cap = capacityPerScreen(s);
     const screens = s.screens || 0;
     const count = capRow ? capRow.campaigns.size : 0;
-    const capacity = screens * cap;
-    const overbooked = screens * Math.max(0, count - cap);
-    const available = Math.max(0, capacity - screens * Math.min(count, cap));
-    const capacityHtml = overbooked > 0
-      ? `<span class="badge b-red">Overbooked +${overbooked}</span>`
-      : `<span class="badge b-green">${available} available</span>`;
+    let countCapText;
+    let capacityHtml;
+    if (cap === null) {
+      countCapText = `${count}`;
+      capacityHtml = '<span class="badge b-gray">No cap</span>';
+    } else {
+      const capacity = screens * cap;
+      const overbooked = screens * Math.max(0, count - cap);
+      const available = Math.max(0, capacity - screens * Math.min(count, cap));
+      countCapText = `${count} / ${cap}`;
+      capacityHtml = overbooked > 0
+        ? `<span class="badge b-red">Overbooked +${overbooked}</span>`
+        : `<span class="badge b-green">${available} available</span>`;
+    }
     return `
       <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttr(s.venue)}')" title="Click to filter to this location">
         <td>${brandLogoTag(brandNameForVenue(s))} ${esc(s.venue)}</td>
         <td>${esc(s.venueType || '-')}</td>
         <td>${esc(s.network)}</td>
         <td class="tright">${screens}</td>
-        <td class="tright">${count} / ${cap}</td>
+        <td class="tright">${countCapText}</td>
         <td>${capacityHtml}</td>
       </tr>
     `;
@@ -399,7 +415,7 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head">
         <h3>Summary</h3>
-        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Campaigns/Cap and Capacity Status are for ${esc(monthLabel)} only (15 campaigns/screen/month, 6 for Royals) - change the Capacity Month above to check a different month.</div>
+        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Campaigns/Cap and Capacity Status are for ${esc(monthLabel)} only (15 campaigns/screen/month, 6 for Royals, no cap for MAF Malls/Carrefour) - change the Capacity Month above to check a different month.</div>
       </div>
       <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns / Cap (${esc(monthLabel)})</th><th>Capacity Status</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6"><div class="empty">No data.</div></td></tr>'}</tbody></table>
@@ -592,8 +608,8 @@ export function renderTrafficSheet() {
           </select>
         </div>
         <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.fetchTrafficSheet()">${loading ? 'Loading...' : 'Apply Date Filter'}</button>
-        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetCsv()" title="Only this tab/location/date range">Download Filtered CSV</button>
-        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetCsv('full')" title="Every campaign in the loaded month(s), ignoring all filters">Download Full Traffic Sheet</button>
+        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel()" title="Only this tab/location/date range">Download Filtered Excel</button>
+        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel('full')" title="Every campaign in the loaded month(s), ignoring all filters">Download Full Traffic Sheet (Excel)</button>
       </div>
     </div>
     ${error ? `<div class="login-error" style="margin-bottom:14px;">${esc(error)}</div>` : ''}
@@ -646,32 +662,15 @@ function autoFetchTrafficSheet() {
   return runTrafficSheetFetch(start, end);
 }
 
-// Matches the customer's own reference export format: Contract, Campaign Name, Start, End,
-// Campaign Days, Loop Count, Status, then one column per day (spots, blank when not running), with
-// a trailing TOTAL / "Number of Campaigns" row - the per-day count of campaigns active that day,
-// same value the day's column would show if you counted every non-blank cell in it.
-function buildTrafficSheetCsvColumns(campaigns, dates) {
-  const dayCounts = {};
-  dates.forEach((d) => { dayCounts[d] = campaigns.filter((c) => (c.days || []).some((x) => x.date === d)).length; });
-  return [
-    { label: 'Contract', value: (c) => (c.__isTotal ? 'TOTAL' : (c.contract || '')) },
-    { label: 'Campaign Name', value: (c) => (c.__isTotal ? 'Number of Campaigns' : (c.campaignName || '')) },
-    { label: 'Start', value: (c) => (c.__isTotal ? '' : (c.startDate || '')) },
-    { label: 'End', value: (c) => (c.__isTotal ? '' : (c.endDate || '')) },
-    { label: 'Campaign Days', value: (c) => (c.__isTotal ? '' : (c.campaignDays ?? '')) },
-    { label: 'Loop Count', value: (c) => (c.__isTotal ? '' : (c.loopCount ?? '')) },
-    { label: 'Status', value: (c) => (c.__isTotal ? '' : (c.status || '')) },
-    ...dates.map((d) => ({
-      label: d,
-      value: (c) => (c.__isTotal ? (dayCounts[d] || '') : ((c.days || []).find((x) => x.date === d)?.spots ?? '')),
-    })),
-  ];
-}
-
+// Matches the customer's own reference export format exactly (see lib/excelExport.js): Contract,
+// Campaign Name, Start, End, Campaign Days, Loop Count, Status, then a merged "Mon YYYY" header per
+// month spanning day-number ("01".."31") sub-columns, active-day cells filled yellow, and a
+// trailing TOTAL / "Number of Campaigns" row. A plain CSV can't do merged headers or real borders,
+// so this downloads a styled .xlsx instead.
 // scope: omitted/'filtered' (default) - exactly what's currently on screen (tab/location/date
 // range all applied), same as before. 'full' - every campaign in the currently loaded month(s),
 // ignoring every filter (tab, location, Start/End Date narrowing) entirely.
-export function downloadTrafficSheetCsv(scope) {
+export async function downloadTrafficSheetExcel(scope) {
   const data = STATE.trafficSheetData;
   if (!data) return;
 
@@ -702,6 +701,8 @@ export function downloadTrafficSheetCsv(scope) {
     filenameTag = `${tabLabel.replace(/\s+/g, '-')}-${startDate}-to-${endDate}`;
   }
 
-  const columns = buildTrafficSheetCsvColumns(campaigns, dates);
-  exportToCsv(`traffic-sheet-${filenameTag}.csv`, columns, [...campaigns, { __isTotal: true }]);
+  const dateGroups = groupDatesByMonth(dates);
+  await exportTrafficSheetExcel(`traffic-sheet-${filenameTag}.xlsx`, {
+    campaigns, dates, dateGroups, monthLabel: formatMonthLabel,
+  });
 }
