@@ -10,6 +10,7 @@ import { invalidateAssetInventoryCaches } from './assetsInventory.js';
 import { listDeletedCampaigns, restoreCampaign, permanentlyDeleteCampaign } from '../data/campaigns.js';
 import { listDeletedCategories, restoreCategory, permanentlyDeleteCategory } from '../data/categories.js';
 import { listDeletedContractors, restoreContractor, permanentlyDeleteContractor } from '../data/contractors.js';
+import { listDeletedClients, restoreClient, permanentlyDeleteClient } from '../data/clients.js';
 import { listDeletedDashboardLinks, restoreDashboardLink, permanentlyDeleteDashboardLink } from '../data/dashboards.js';
 import { listDeletedLocations, restoreLocation, permanentlyDeleteLocation } from '../data/locations.js';
 import { listDeletedMetroPics, restoreMetroPic, permanentlyDeleteMetroPic } from '../data/metroPics.js';
@@ -34,6 +35,7 @@ const RECYCLE_CONFIG = [
   { key: 'campaigns', label: 'Digital Campaign', listDeleted: listDeletedCampaigns, restore: restoreCampaign, purge: permanentlyDeleteCampaign, displayFn: (r) => r.name, cacheKeys: ['campaigns'] },
   { key: 'categories', label: 'Category', listDeleted: listDeletedCategories, restore: restoreCategory, purge: permanentlyDeleteCategory, displayFn: (r) => r.name, cacheKeys: ['categories'] },
   { key: 'contractors', label: 'Contractor', listDeleted: listDeletedContractors, restore: restoreContractor, purge: permanentlyDeleteContractor, displayFn: (r) => r.name, cacheKeys: ['contractors'] },
+  { key: 'clients', label: 'Client', listDeleted: listDeletedClients, restore: restoreClient, purge: permanentlyDeleteClient, displayFn: (r) => r.name, cacheKeys: ['clients'] },
   { key: 'dashboardLinks', label: 'Dashboard Link', listDeleted: listDeletedDashboardLinks, restore: restoreDashboardLink, purge: permanentlyDeleteDashboardLink, displayFn: (r) => r.name, cacheKeys: ['dashboardSections'] },
   { key: 'locations', label: 'Location', listDeleted: listDeletedLocations, restore: restoreLocation, purge: permanentlyDeleteLocation, displayFn: (r) => r.name, cacheKeys: ['locationsPage', 'locationsForNetworkPanel'] },
   { key: 'metroPics', label: 'Metro PIC', listDeleted: listDeletedMetroPics, restore: restoreMetroPic, purge: permanentlyDeleteMetroPic, displayFn: (r) => r.station, cacheKeys: ['metroPics'] },

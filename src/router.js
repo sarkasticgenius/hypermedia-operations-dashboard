@@ -1,4 +1,4 @@
-import { canView, isAdmin } from './auth.js';
+import { canView, isAdmin, isClientUser } from './auth.js';
 
 // Mirrors the original app's PAGE_AREA gate: null = always visible to any logged-in user,
 // 'admin' = admin role required, otherwise the named PERMISSION_AREAS entry must have view=true.
@@ -20,6 +20,7 @@ export const PAGE_AREA = {
   gantt: 'campaigns',
   staticCampaigns: 'staticCampaigns',
   trafficSheet: 'trafficSheet',
+  clientCampaignMonitor: 'clientCampaigns',
   dashboards: 'dashboards',
   admin: 'admin',
   settings: 'admin',
@@ -35,6 +36,10 @@ export function registerPage(key, renderFn) {
 }
 
 export function canViewPage(page) {
+  // A client-portal login holds no user_permissions rows at all (it's gated by profiles.client_id
+  // matching instead, see is_own_client() RLS) - it can only ever view its own monitor page,
+  // regardless of what the 'clientCampaigns' permission-area check below would otherwise say.
+  if (isClientUser()) return page === 'clientCampaignMonitor';
   const area = PAGE_AREA[page];
   if (area === undefined) return false;
   if (area === null) return true;

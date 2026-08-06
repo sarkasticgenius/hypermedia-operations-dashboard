@@ -46,12 +46,16 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
-    const { email, password, username, name, title, role, permissions } = body || {};
+    const { email, password, username, name, title, role, permissions, clientId } = body || {};
     if (!email || !password || !username) {
       throw new Error('email, password and username are required');
     }
 
-    const finalRole = isBootstrap ? 'admin' : (role === 'admin' ? 'admin' : 'team');
+    // 'client' is a restricted portal login (Client Campaigns Monitor) - gated by profiles.client_id
+    // matching (is_own_client() RLS), not by user_permissions/PERMISSION_AREAS, so it never gets
+    // permission rows seeded below the way 'team' does.
+    const finalRole = isBootstrap ? 'admin' : (role === 'admin' ? 'admin' : (role === 'client' ? 'client' : 'team'));
+    if (finalRole === 'client' && !clientId) throw new Error('clientId is required for a client-role user');
 
     const { data: created, error: createErr } = await adminClient.auth.admin.createUser({
       email,
@@ -67,10 +71,10 @@ Deno.serve(async (req) => {
     // this update just makes sure it matches exactly what was requested.
     await adminClient
       .from('profiles')
-      .update({ username, name: name || '', title: title || '', role: finalRole })
+      .update({ username, name: name || '', title: title || '', role: finalRole, client_id: finalRole === 'client' ? clientId : null })
       .eq('id', newUserId);
 
-    if (finalRole !== 'admin' && permissions && typeof permissions === 'object') {
+    if (finalRole === 'team' && permissions && typeof permissions === 'object') {
       const rows = Object.keys(permissions).map((area) => ({
         user_id: newUserId,
         area,

@@ -1,14 +1,15 @@
 import { STATE, setState, loadData, toast } from './state.js';
 import { canViewPage } from './router.js';
-import { isAdmin, canView, logout } from './auth.js';
+import { isAdmin, isClientUser, canView, logout } from './auth.js';
 import { listDashboardSections } from './data/dashboards.js';
+import { listClients } from './data/clients.js';
 import { LOGO_IMG } from './logo.js';
 import { esc } from './lib/format.js';
 import { isImpersonating, impersonationAdminName, stopImpersonation } from './impersonate.js';
 
 // Display labels for the three dashboard_sections.nav_group values - shown both as the
 // expandable sidebar group label and as the Dashboards page's dynamic topbar title.
-export const NAV_GROUP_LABELS = { dashboards: 'Maintenance Panel', campaigns: 'Digital Campaigns Panel', pdooh: 'pDOOH Campaign Panel' };
+export const NAV_GROUP_LABELS = { dashboards: 'Maintenance Panel', campaigns: 'Digital Campaigns Panel', pdooh: 'pDOOH Campaign Panel', clientCampaigns: 'Client Campaigns Monitor' };
 
 const NAV_ITEMS_TOP = [
   { page: 'opsOverview', label: 'Live Ops Overview' },
@@ -34,6 +35,7 @@ const NAV_ICONS = {
   'Procurement & Delivery': '🚚', Locations: '📍', Permits: '📄', 'Metro PIC': '🚇',
   Ticketing: '🎫', 'SIM Cards': '📶', 'Static Campaigns': '🖼️', 'Traffic Sheet': '🚦',
   'Digital Campaigns Panel': '📢', 'pDOOH Campaign Panel': '📺', 'Maintenance Panel': '🛠️',
+  'Client Campaigns Monitor': '✅', 'Campaign Monitor': '✅',
   Administration: '🛡️', Settings: '⚙️', 'My Account': '👤', 'Recycle Bin': '🗑️',
 };
 function navIcon(label) {
@@ -79,7 +81,43 @@ function flattenDashboards(sections, navGroup) {
   return out;
 }
 
+// A client-portal login only ever sees its own single Campaign Monitor link + Account - none of
+// the other nav groups apply to a restricted client account, so this bypasses the normal sidebar
+// entirely rather than trying to selectively hide pieces of it.
+function renderClientSidebar() {
+  const user = STATE.user;
+  return `
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo-badge">${LOGO_IMG}</div>
+        <div>
+          <div class="name">HYPERMEDIA</div>
+          <div class="sub">Operations</div>
+        </div>
+      </div>
+      <div class="nav-scroll">
+        <div class="nav-section">Campaigns</div>
+        ${navItem('clientCampaignMonitor', 'Campaign Monitor')}
+        <div class="nav-section">Account</div>
+        ${navItem('account', 'My Account')}
+      </div>
+      <div class="sidebar-footer">
+        <div class="u">${esc(user?.name || '')}</div>
+        <div class="r">${esc(user?.title || 'Client')}</div>
+        <button class="logout-btn" onclick="App.logout()">Log out</button>
+      </div>
+    </div>
+  `;
+}
+
+function navClientLink(client) {
+  const active = STATE.page === 'clientCampaignMonitor' && STATE.activeClientId === client.id;
+  return `<div class="nav-subitem${active ? ' active' : ''}" onclick="App.goToClientMonitor('${client.id}')">${esc(client.name)}</div>`;
+}
+
 function renderSidebar(allSections) {
+  if (isClientUser()) return renderClientSidebar();
+
   const user = STATE.user;
   const admin = isAdmin();
 
@@ -121,6 +159,16 @@ function renderSidebar(allSections) {
       + (dashExpanded ? consoleLinksHtml + dashLinksHtml : '')
     : '';
 
+  // Sub-items come from the Clients table (Settings > Clients) - one per configured client, same
+  // "one dynamic sidebar group fed by a DB table" pattern the Maintenance/Campaigns/pDOOH panels
+  // use with dashboard_sections, just fed by listClients() instead.
+  const clientCampExpanded = !!STATE.navExpanded.clientCampaigns || STATE.page === 'clientCampaignMonitor';
+  const clients = canView('clientCampaigns') ? (loadData('clients', listClients) || []) : [];
+  const clientCampGroup = canView('clientCampaigns')
+    ? navParent(NAV_GROUP_LABELS.clientCampaigns, STATE.page === 'clientCampaignMonitor' && !STATE.activeClientId, clientCampExpanded, 'clientCampaigns', "App.setPage('clientCampaignMonitor')")
+      + (clientCampExpanded ? (clients.map(navClientLink).join('') || '<div class="empty small" style="padding-left:34px;">No clients yet - add one in Settings.</div>') : '')
+    : '';
+
   const bottomItems = NAV_ITEMS_BOTTOM.map((n) => navItem(n.page, n.label)).join('');
   const adminLinks = admin ? navItem('admin', 'Administration') + navItem('settings', 'Settings') + navItem('recycleBin', 'Recycle Bin') : '';
 
@@ -139,6 +187,7 @@ function renderSidebar(allSections) {
         ${campaignsGroup}
         ${pdoohGroup}
         ${maintenanceGroup}
+        ${clientCampGroup}
         ${bottomItems}
         ${adminLinks ? `<div class="nav-section">Admin</div>${adminLinks}` : ''}
         <div class="nav-section">Account</div>
@@ -171,6 +220,7 @@ const PAGE_TITLES = {
   gantt: 'Campaign Calendar',
   staticCampaigns: 'Static Campaigns',
   trafficSheet: 'Traffic Sheet',
+  clientCampaignMonitor: 'Client Campaigns Monitor',
   dashboards: 'Maintenance Panel',
   admin: 'Administration',
   settings: 'Settings',
@@ -235,6 +285,11 @@ export function goToDashGroup(sectionId) {
 // Clicking a specific nested dashboard link in the sidebar.
 export function goToDashLink(sectionId, dashId) {
   setState({ page: 'dashboards', activeDashSection: sectionId, activeDashboard: dashId, modal: null });
+}
+
+// Clicking a specific client under the Client Campaigns Monitor group.
+export function goToClientMonitor(clientId) {
+  setState({ page: 'clientCampaignMonitor', activeClientId: clientId, modal: null });
 }
 
 export function toggleNavExpand(key) {

@@ -22,8 +22,9 @@ import * as settingsPage from './pages/settings.js';
 import * as networkPanelsPage from './pages/networkPanels.js';
 import * as bulkImportPage from './pages/bulkImport.js';
 import * as recycleBinPage from './pages/recycleBin.js';
+import * as clientCampaignMonitorPage from './pages/clientCampaignMonitor.js';
 import { initContractorPortal, renderContractorPortal, bindContractorPortalForm } from './pages/contractorPortal.js';
-import { renderShell, goToPage, doLogout, goToDashGroup, goToDashLink, toggleNavExpand, stopImpersonating } from './shell.js';
+import { renderShell, goToPage, doLogout, goToDashGroup, goToDashLink, goToClientMonitor, toggleNavExpand, stopImpersonating } from './shell.js';
 import { registerPage, renderPage } from './router.js';
 import { renderModalRoot } from './modals.js';
 import { toggleSort } from './lib/sortableTable.js';
@@ -60,6 +61,7 @@ registerPage('campaigns', campaignsPage.renderCampaigns);
 registerPage('gantt', ganttPage.renderGantt);
 registerPage('staticCampaigns', staticCampaignsPage.renderStaticCampaigns);
 registerPage('trafficSheet', trafficSheetPage.renderTrafficSheet);
+registerPage('clientCampaignMonitor', clientCampaignMonitorPage.renderClientCampaignMonitor);
 registerPage('dashboards', dashboardsPage.renderDashboards);
 registerPage('admin', adminPage.renderAdmin);
 registerPage('settings', settingsPage.renderSettings);
@@ -78,6 +80,7 @@ window.App = {
   setPage: goToPage,
   goToDashGroup,
   goToDashLink,
+  goToClientMonitor,
   toggleNavExpand,
   stopImpersonating,
   closeModal,
@@ -103,6 +106,7 @@ window.App = {
   ...networkPanelsPage,
   ...bulkImportPage,
   ...recycleBinPage,
+  ...clientCampaignMonitorPage,
 };
 
 function rootRender() {

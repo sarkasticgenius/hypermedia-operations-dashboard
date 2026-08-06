@@ -112,7 +112,7 @@ function defaultDateRange() {
 
 // Uppercases + normalizes spelling/separator quirks seen in the real API data (US "CENTER" vs UK
 // "CENTRE", hyphens vs spaces) so keyword matches don't need a variant per quirk.
-function normalizeVenueText(s) {
+export function normalizeVenueText(s) {
   return (s || '').toUpperCase().replace(/CENTER/g, 'CENTRE').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
@@ -380,7 +380,7 @@ function formatMonthLabel(monthStr) {
   return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 }
 
-function statusBadge(status) {
+export function statusBadge(status) {
   const s = (status || '').toLowerCase();
   let cls = 'b-blue';
   if (s.includes('live') || s.includes('running')) cls = 'b-green';
@@ -671,14 +671,22 @@ export function setTrafficSheetCapacityMonth(value) {
 
 // Re-fetches whenever the API-backed month range needs to change (a different date range was
 // picked, or the location dropdown changed doesn't need this - only the API call does).
+// Raw fetch against the live API, no STATE side effects - shared by Traffic Sheet's own
+// STATE-driven fetch below and by the Client Campaigns Monitor, which caches the result under its
+// own loadData() key instead of trafficSheetData.
+export async function fetchTrafficSheetCampaigns(startMonth, endMonth) {
+  const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { startMonth, endMonth } });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
 async function runTrafficSheetFetch(startDate, endDate) {
   const startMonth = startDate.slice(0, 7);
   const endMonth = endDate.slice(0, 7);
   setState({ trafficSheetStartDate: startDate, trafficSheetEndDate: endDate, trafficSheetLoading: true, trafficSheetError: null });
   try {
-    const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { startMonth, endMonth } });
-    if (error) throw error;
-    if (data?.error) throw new Error(data.error);
+    const data = await fetchTrafficSheetCampaigns(startMonth, endMonth);
     setState({ trafficSheetData: data, trafficSheetLoading: false });
   } catch (e) {
     setState({ trafficSheetLoading: false, trafficSheetError: e.message || 'Failed to fetch traffic sheet' });

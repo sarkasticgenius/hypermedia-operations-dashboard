@@ -2,6 +2,7 @@ import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } f
 import { loadingCard, registerModal } from '../modals.js';
 import { listCategories, addCategory, updateCategory, deleteCategory } from '../data/categories.js';
 import { listContractors, saveContractor, deleteContractor } from '../data/contractors.js';
+import { listClients, saveClient, deleteClient } from '../data/clients.js';
 import { listNetworks, ensureNetwork, renameNetwork, countNetworkUsage, deleteNetwork } from '../data/networks.js';
 import { getAllSettings, saveSetting } from '../data/settings.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
@@ -22,6 +23,7 @@ const TABS = [
   { key: 'categories', label: 'Asset Categories' },
   { key: 'contractors', label: 'Contractors' },
   { key: 'networks', label: 'Screen Networks' },
+  { key: 'clients', label: 'Clients' },
   { key: 'integrations', label: 'Integrations' },
 ];
 
@@ -30,6 +32,7 @@ export function renderSettings() {
   let body;
   if (tab === 'contractors') body = renderContractorsTab();
   else if (tab === 'networks') body = renderNetworksTab();
+  else if (tab === 'clients') body = renderClientsTab();
   else if (tab === 'integrations') body = renderIntegrationsTab();
   else body = renderCategoriesTab();
   return `${renderTabs(TABS, tab, 'App.setSettingsTab')}${body}`;
@@ -205,6 +208,82 @@ registerModal('contractor', (data) => `
     <div class="field"><label>Notes (optional)</label><textarea id="ct-notes" rows="2">${esc(data.notes || '')}</textarea></div>
     <div class="modal-actions">
       ${data.id ? `<button type="button" class="btn-sm" style="color:#c0392b;" onclick="App.removeContractorRow('${data.id}','${data.__screenCount || 0}')">Delete</button>` : ''}
+      <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+      <button type="submit" class="btn btn-orange">Save</button>
+    </div>
+  </form>
+`);
+
+// A Client is which Traffic Sheet venues (exact names, matched case-insensitively - see
+// normalizeVenueText in trafficSheet.js) belong to a mall/operator for the Client Campaigns
+// Monitor - not to be confused with campaigns.client/static_campaigns.client, which are unrelated
+// free-text fields on those tables.
+function renderClientsTab() {
+  const clients = loadData('clients', listClients);
+  if (clients === null) return loadingCard();
+  if (clients?.__error) return loadingCard(clients.__error);
+
+  const rows = clients.map((c) => `
+    <tr>
+      <td>${esc(c.name)}</td>
+      <td class="small">${esc((c.venue_names || []).join(', ') || '-')}</td>
+      <td>
+        <button class="btn-sm" onclick="App.editClientModal('${c.id}')">Edit</button>
+        <button class="btn-sm" onclick="App.removeClientRow('${c.id}')">Delete</button>
+      </td>
+    </tr>
+  `).join('');
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Clients</h3><div class="desc">Powers the Client Campaigns Monitor - a client's restricted login only ever sees campaigns whose venue matches one of the names listed here exactly (case-insensitive).</div></div>
+      <table><thead><tr><th>Name</th><th>Venue Names</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="3"><div class="empty">No clients yet.</div></td></tr>'}</tbody></table>
+      <button class="btn btn-orange" style="margin-top:14px;" onclick="App.editClientModal(null)">+ Add Client</button>
+    </div>
+  `;
+}
+
+export function editClientModal(id) {
+  const clients = STATE.pageData.clients?.data || [];
+  const row = id ? clients.find((c) => c.id === id) : null;
+  openModal('client', row || {});
+}
+
+export async function saveClientForm(event) {
+  event.preventDefault();
+  const id = document.getElementById('cl-id').value || null;
+  const name = document.getElementById('cl-name').value.trim();
+  const venueNames = document.getElementById('cl-venues').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  try {
+    await saveClient({ id, name, venue_names: venueNames });
+    await logAudit(id ? 'Edit client' : 'Add client', name);
+    invalidate('clients');
+    closeModal();
+    toast('Client saved');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+export async function removeClientRow(id) {
+  if (!confirm('Move this client to the Recycle Bin? Their login (if any) will no longer see any campaigns until restored.')) return;
+  try {
+    await deleteClient(id);
+    await logAudit('Delete client', id);
+    invalidate('clients');
+    closeModal();
+    toast('Client deleted');
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+registerModal('client', (data) => `
+  <h3>${data.id ? 'Edit' : 'Add'} Client</h3>
+  <form onsubmit="App.saveClientForm(event)">
+    <input type="hidden" id="cl-id" value="${esc(data.id || '')}">
+    <div class="field"><label>Name</label><input id="cl-name" value="${esc(data.name || '')}" required></div>
+    <div class="field"><label>Venue Names</label><textarea id="cl-venues" rows="4" placeholder="One exact Traffic Sheet venue name per line">${esc((data.venue_names || []).join('\n'))}</textarea>
+      <div class="small muted" style="margin-top:4px;">Must match the venue name(s) exactly as they appear in Traffic Sheet (case doesn't matter). One per line.</div>
+    </div>
+    <div class="modal-actions">
+      ${data.id ? `<button type="button" class="btn-sm" style="color:#c0392b;" onclick="App.removeClientRow('${data.id}')">Delete</button>` : ''}
       <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
       <button type="submit" class="btn btn-orange">Save</button>
     </div>
@@ -712,6 +791,10 @@ function renderIntegrationsTab() {
       { name: 'apiKey', label: 'API Key', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
     ], 'traffic-sheet-proxy')}
+    ${integrationField(settings, 'slackNotify', 'Slack Notifications', [
+      { name: 'webhookUrl', label: 'Incoming Webhook URL', type: 'password' },
+      { name: 'enabled', label: 'Enabled', type: 'checkbox' },
+    ], 'slack-notify')}
     ${integrationField(settings, 'glpiFeed', 'GLPI CSV Feed', [
       { name: 'csvUrl', label: 'CSV URL' }, { name: 'autoRefreshMinutes', label: 'Auto-refresh (minutes)', type: 'number' },
     ])}

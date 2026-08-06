@@ -18,17 +18,19 @@ export async function listUsers() {
 // Creates a brand-new auth user + profile via the admin-create-user Edge Function - the anon
 // key alone cannot call auth.admin.createUser, so this has to go through the server-side
 // function that holds the service role key.
-export async function createUser({ email, password, username, name, title, role, permissions }) {
+export async function createUser({ email, password, username, name, title, role, permissions, clientId }) {
   const { data, error } = await supabase.functions.invoke('admin-create-user', {
-    body: { email, password, username, name, title, role, permissions },
+    body: { email, password, username, name, title, role, permissions, clientId },
   });
   if (error) throw error;
   if (data?.error) throw new Error(data.error);
   return data;
 }
 
-export async function updateUserProfile(id, { name, title, role }) {
-  const { error } = await supabase.from('profiles').update({ name, title, role }).eq('id', id);
+export async function updateUserProfile(id, { name, title, role, clientId }) {
+  const { error } = await supabase.from('profiles')
+    .update({ name, title, role, client_id: role === 'client' ? (clientId || null) : null })
+    .eq('id', id);
   if (error) throw error;
 }
 

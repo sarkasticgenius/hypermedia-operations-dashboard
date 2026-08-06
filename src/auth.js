@@ -9,7 +9,7 @@ import { logAudit } from './lib/audit.js';
 // permission at split time, so this alone doesn't change anyone's access.
 export const PERMISSION_AREAS = [
   'assets', 'assetsInventory', 'orders', 'locations', 'maintenancePanels', 'campaigns', 'staticCampaigns',
-  'permits', 'metroPic', 'tickets', 'simCards', 'pdooh', 'dashboards', 'trafficSheet',
+  'permits', 'metroPic', 'tickets', 'simCards', 'pdooh', 'dashboards', 'trafficSheet', 'clientCampaigns',
 ];
 
 export const PERM_NONE = { view: false, add: false, edit: false, delete: false, export: false };
@@ -104,6 +104,13 @@ export async function changeOwnPassword(newPassword) {
 
 export function isAdmin() {
   return STATE.user?.role === 'admin';
+}
+
+// A restricted client-portal login (Client Campaigns Monitor) - holds no user_permissions rows at
+// all and is gated by profiles.client_id matching instead (see is_own_client() RLS helper), not by
+// PERMISSION_AREAS. Used to hide every other nav item/page for this role, not just gate one page.
+export function isClientUser() {
+  return STATE.user?.role === 'client';
 }
 
 export function permObj(area) {

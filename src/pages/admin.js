@@ -2,6 +2,7 @@ import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } f
 import { loadingCard, registerModal } from '../modals.js';
 import { PERMISSION_AREAS, PERM_FULL, PERM_NONE } from '../auth.js';
 import { listUsers, createUser, updateUserProfile, updateUserPermissions, setUserActive } from '../data/users.js';
+import { listClients } from '../data/clients.js';
 import { listAuditLog } from '../data/auditLog.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
@@ -31,7 +32,9 @@ function renderUsersTab() {
   });
 
   const rows = sorted.map((u) => {
-    const summary = u.role === 'admin' ? 'Full access (admin)' : PERMISSION_AREAS.filter((a) => u.permissions[a]?.view).length + ' area(s) with access';
+    const summary = u.role === 'admin' ? 'Full access (admin)'
+      : u.role === 'client' ? 'Client login'
+      : PERMISSION_AREAS.filter((a) => u.permissions[a]?.view).length + ' area(s) with access';
     return `
       <tr>
         <td>${esc(u.username)}</td>
@@ -125,6 +128,15 @@ export function togglePermCheckbox(area, field) {
   setState({});
 }
 
+// Direct DOM show/hide (same pattern as onAssetCategoryChange in assets.js) - the Permissions
+// table only applies to 'team', the Client picker only to 'client', neither to 'admin'.
+export function onUserRoleChange(value) {
+  const clientGroup = document.getElementById('u-client-group');
+  const permsGroup = document.getElementById('u-perms-group');
+  if (clientGroup) clientGroup.style.display = value === 'client' ? 'block' : 'none';
+  if (permsGroup) permsGroup.style.display = value === 'team' ? 'block' : 'none';
+}
+
 export async function saveUserForm(event) {
   event.preventDefault();
   const id = document.getElementById('u-id').value || null;
@@ -132,17 +144,18 @@ export async function saveUserForm(event) {
   const name = document.getElementById('u-name').value.trim();
   const title = document.getElementById('u-title').value.trim();
   const role = document.getElementById('u-role').value;
+  const clientId = role === 'client' ? document.getElementById('u-client-id').value : null;
   const permissions = STATE.modal?.data?.permissions || {};
 
   try {
     if (id) {
-      await updateUserProfile(id, { name, title, role });
-      if (role !== 'admin') await updateUserPermissions(id, permissions);
+      await updateUserProfile(id, { name, title, role, clientId });
+      if (role === 'team') await updateUserPermissions(id, permissions);
       await logAudit('Edit user', username);
     } else {
       const email = document.getElementById('u-email').value.trim();
       const password = document.getElementById('u-password').value;
-      await createUser({ email, password, username, name, title, role, permissions: role === 'admin' ? null : permissions });
+      await createUser({ email, password, username, name, title, role, clientId, permissions: role === 'team' ? permissions : null });
       await logAudit('Add user', username);
     }
     invalidate('users');
@@ -156,6 +169,8 @@ export async function saveUserForm(event) {
 registerModal('user', (data) => {
   const isNew = !data.id;
   const role = data.role || 'team';
+  const clients = loadData('clients', listClients) || [];
+  const clientOptions = clients.map((c) => `<option value="${c.id}" ${data.client_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
   const permissions = data.permissions || {};
   const permRows = PERMISSION_AREAS.map((area) => {
     const p = permissions[area] || { ...PERM_NONE };
@@ -182,9 +197,10 @@ registerModal('user', (data) => {
       <div class="grid2">
         <div class="field"><label>Username</label><input id="u-username" value="${esc(data.username || '')}" required ${isNew ? '' : 'disabled'}></div>
         <div class="field"><label>Role</label>
-          <select id="u-role">
+          <select id="u-role" onchange="App.onUserRoleChange(this.value)">
             <option value="team" ${role === 'team' ? 'selected' : ''}>Team</option>
             <option value="admin" ${role === 'admin' ? 'selected' : ''}>Admin</option>
+            <option value="client" ${role === 'client' ? 'selected' : ''}>Client (restricted login)</option>
           </select>
         </div>
       </div>
@@ -192,8 +208,16 @@ registerModal('user', (data) => {
         <div class="field"><label>Name</label><input id="u-name" value="${esc(data.name || '')}" required></div>
         <div class="field"><label>Title</label><input id="u-title" value="${esc(data.title || '')}"></div>
       </div>
-      <div class="field">
-        <label>Permissions (ignored if role is Admin)</label>
+      <div class="field" id="u-client-group" style="display:${role === 'client' ? 'block' : 'none'};">
+        <label>Client</label>
+        <select id="u-client-id">
+          <option value="">Select a client...</option>
+          ${clientOptions}
+        </select>
+        <div class="small muted" style="margin-top:4px;">This login will only ever see this client's Campaign Monitor - nothing else in the app.</div>
+      </div>
+      <div class="field" id="u-perms-group" style="display:${role === 'team' ? 'block' : 'none'};">
+        <label>Permissions</label>
         <div style="overflow-x:auto;">
           <table>
             <thead><tr><th>Area</th><th>View</th><th>Add</th><th>Edit</th><th>Delete</th><th>Export</th></tr></thead>
