@@ -40,6 +40,10 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # Doesn't fix a wedged Pages deployment - actions/deploy-pages@v4 has no config to make GitHub's
+    # own Pages API respond faster - but caps how long a hung attempt burns before failing, so
+    # retries surface much sooner than the default ~10 minute hang seen on the last several runs.
+    timeout-minutes: 3
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
