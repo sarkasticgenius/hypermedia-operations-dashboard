@@ -53,7 +53,7 @@ import { supabase } from '../supabaseClient.js';
 import { isAdmin } from '../auth.js';
 import { esc, jsAttr, todayISO } from '../lib/format.js';
 import { renderTabs } from '../lib/tabs.js';
-import { exportTrafficSheetExcel } from '../lib/excelExport.js';
+import { exportTrafficSheetExcel, exportOverallTrafficSheetExcel } from '../lib/excelExport.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 
 // "Today's Campaigns" and "FOC / Marketing" are both cross-category views - venueMatchesTab
@@ -116,16 +116,37 @@ export function normalizeVenueText(s) {
   return (s || '').toUpperCase().replace(/CENTER/g, 'CENTRE').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-// Venue-name rollups applied for display/grouping (summary, location dropdown, campaign list)
-// only - the raw name is still what's matched against tab/keyword rules first, so e.g. "Royals
-// Entry 2" still matches the Royals tab on its own name/network before being merged here.
+function toTitleCase(s) {
+  return s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// MAF's "City Centre" malls show up with BOTH US ("City Center") and UK ("City Centre") spelling
+// as fully distinct raw venue strings in real data (confirmed: AJMAN/SHARJAH/DEIRA/FUJAIRAH/
+// MIRDIF/ZAHIA all have both) - this merges either spelling into one canonical, Title-Cased display
+// name ("Ajman City Centre") regardless of which the raw venue used, without touching anything else
+// about the string. A suffixed variant like "SHARJAH CITY CENTER-FACADE" is left as its own
+// distinct display name from the base mall - almost certainly a genuinely separate physical
+// surface, not a spelling accident, so it isn't folded in.
+function mergeCityCentreSpelling(name) {
+  const trimmed = (name || '').trim();
+  if (!/\bcity\s+cent(?:er|re)\b/i.test(trimmed)) return null;
+  return toTitleCase(trimmed.replace(/\bcenter\b/gi, 'centre'));
+}
+
+// Venue-name rollups applied for display/grouping (summary, location dropdown, campaign list,
+// brand logo lookup key - see brandNameForVenue) only - the raw name is still what's matched
+// against tab/keyword rules first, so e.g. "Royals Entry 2" still matches the Royals tab on its own
+// name/network before being merged here.
 //   - "ENOC Hatta" -> "ENOC Dubai"
 //   - "Royals Entry 1/2/3" -> "Royals Entry", "Royals Exit 1/2/3" -> "Royals Exit"
+//   - "AJMAN CITY CENTER"/"AJMAN CITY CENTRE" -> "Ajman City Centre" (see mergeCityCentreSpelling)
 export function mergeVenueName(name) {
   const n = normalizeVenueText(name);
   if (n === 'ENOC HATTA') return 'ENOC Dubai';
   if (/^ROYALS ENTRY \d+$/.test(n)) return 'Royals Entry';
   if (/^ROYALS EXIT \d+$/.test(n)) return 'Royals Exit';
+  const cityCentre = mergeCityCentreSpelling(name);
+  if (cityCentre) return cityCentre;
   return name;
 }
 
@@ -246,6 +267,18 @@ function locationsForTab(data, tabKey) {
   return [...set].sort();
 }
 
+// Distinct Network values seen among SHZ Bridges venues in the loaded month(s) - not knowable
+// statically the way TAB_DEFS is, since real bridge network values turn out to be seasonal/
+// per-campaign branding names (e.g. "Da Vinci", "Van Ghogh", "MONET") rather than a fixed list.
+// Drives the secondary per-Network tab strip shown only on the SHZ Bridges tab.
+function bridgeNetworksAvailable(data) {
+  const set = new Set();
+  (data?.campaigns || []).forEach((c) => (c.venues || []).forEach((v) => {
+    if (venueMatchesTab(v, 'shzBridges')) set.add(v.network || '');
+  }));
+  return [...set].sort();
+}
+
 // Attaches __matchedVenues (the subset of a campaign's venues that belong to this tab/location,
 // with rollups like ENOC Hatta -> ENOC Dubai or Royals Entry 1/2/3 -> Royals Entry already
 // applied to `venue`) so the summary table and campaign list stay consistent with each other.
@@ -316,9 +349,13 @@ function yesterdayISO() {
 // isMafVenue() as-is since a locationSummary() entry has the same venue/venueType/network shape
 // isMafVenue() expects.
 export function capacityPerScreen(summaryEntry) {
-  if (isMafVenue(summaryEntry)) return null;
-  const network = (summaryEntry.network || '').toUpperCase();
   const venue = (summaryEntry.venue || '').toUpperCase();
+  // MAF Malls do have a cap after all (reversing the earlier no-cap rule) - 10/screen/month for an
+  // outdoor location, 20 for indoor. No dedicated indoor/outdoor field exists on a venue, so this
+  // goes by the "OUTDOOR" suffix convention already used in real venue names (e.g. "Dubai Festival
+  // City - Outdoor", "Mall of Emirates OUTDOOR") - an inference, not a confirmed rule.
+  if (isMafVenue(summaryEntry)) return venue.includes('OUTDOOR') ? 10 : 20;
+  const network = (summaryEntry.network || '').toUpperCase();
   if (network.includes('CARREFOUR') || venue.includes('CARREFOUR')) return null;
   if (network.includes('ROYALS')) return 6;
   return 15;
@@ -452,7 +489,7 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head">
         <h3>Summary</h3>
-        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Campaigns/Cap and Capacity Status are for ${esc(monthLabel)} only (15 campaigns/screen/month, 6 for Royals, no cap for MAF Malls/Carrefour) - change the Capacity Month above to check a different month.</div>
+        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Campaigns/Cap and Capacity Status are for ${esc(monthLabel)} only (15 campaigns/screen/month, 6 for Royals, 20 for MAF Malls indoor / 10 outdoor, no cap for Carrefour) - change the Capacity Month above to check a different month.</div>
       </div>
       <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns / Cap (${esc(monthLabel)})</th><th>Capacity Status</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6"><div class="empty">No data.</div></td></tr>'}</tbody></table>
@@ -596,6 +633,14 @@ export function renderTrafficSheet() {
   // whose name actually says FOC/Marketing/MKTG - the venue-level match alone isn't enough since
   // this tab isn't a venue category.
   if (tab === 'focMarketing') campaigns = campaigns.filter(isFocMarketingCampaign);
+  const focCategory = STATE.trafficSheetFocCategory || '';
+  if (tab === 'focMarketing' && focCategory) {
+    campaigns = campaigns.filter((c) => (c.__matchedVenues || []).some((v) => venueMatchesTab(v, focCategory)));
+  }
+  const bridgeNetwork = STATE.trafficSheetBridgeNetwork; // undefined = All Networks, '' = the blank-network bucket
+  if (tab === 'shzBridges' && bridgeNetwork !== undefined) {
+    campaigns = campaigns.filter((c) => (c.__matchedVenues || []).some((v) => (v.network || '') === bridgeNetwork));
+  }
   // The Today's Campaigns tab is inherently "right now", so it ignores the chosen Start/End Date
   // and always shows exactly what's active today - every other tab (including FOC / Marketing)
   // respects the date range.
@@ -631,8 +676,16 @@ export function renderTrafficSheet() {
       + renderDayGrid(gridCampaigns, isTodayTab ? '' : startDate, isTodayTab ? '' : endDate);
   }
 
+  const bridgeNetworks = tab === 'shzBridges' ? bridgeNetworksAvailable(data) : [];
+  const bridgeNetworkTabs = [
+    { key: '__all__', label: 'All Networks' },
+    ...bridgeNetworks.map((n) => ({ key: n || '__blank__', label: n || '(No Network)' })),
+  ];
+  const activeBridgeNetworkKey = bridgeNetwork === undefined ? '__all__' : (bridgeNetwork === '' ? '__blank__' : bridgeNetwork);
+
   return `
     ${renderTabs(TAB_DEFS, tab, 'App.setTrafficSheetTab')}
+    ${tab === 'shzBridges' && bridgeNetworks.length ? renderTabs(bridgeNetworkTabs, activeBridgeNetworkKey, 'App.setTrafficSheetBridgeNetwork') : ''}
     <div class="toolbar">
       <div class="toolbar-actions" style="align-items:flex-end;flex-wrap:wrap;">
         <div class="field" style="margin-bottom:0;"><label>Start Date</label><input type="date" id="tsheet-start-date" value="${esc(startDate)}"></div>
@@ -644,9 +697,18 @@ export function renderTrafficSheet() {
             ${locations.map((l) => `<option value="${esc(l)}" ${location === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}
           </select>
         </div>
+        ${tab === 'focMarketing' ? `
+          <div class="field" style="margin-bottom:0;min-width:180px;"><label>Category</label>
+            <select onchange="App.setTrafficSheetFocCategory(this.value)">
+              <option value="">All Categories</option>
+              ${VENUE_CATEGORY_KEYS.map((k) => `<option value="${k}" ${focCategory === k ? 'selected' : ''}>${esc((TAB_DEFS.find((t) => t.key === k) || {}).label || k)}</option>`).join('')}
+            </select>
+          </div>
+        ` : ''}
         <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.fetchTrafficSheet()">${loading ? 'Loading...' : 'Apply Date Filter'}</button>
         <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel()" title="Only this tab/location/date range">Download Filtered</button>
         <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel('full')" title="Every campaign in the loaded month(s), ignoring all filters">Download Full Traffic Sheet</button>
+        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadOverallTrafficSheetExcel()" title="One combined 'All Venues' sheet plus one sheet per venue/mall">Download Overall Traffic Sheet</button>
       </div>
     </div>
     ${error ? `<div class="login-error" style="margin-bottom:14px;">${esc(error)}</div>` : ''}
@@ -667,6 +729,22 @@ export function setTrafficSheetLocation(value) {
 
 export function setTrafficSheetCapacityMonth(value) {
   setState({ trafficSheetCapacityMonth: value });
+}
+
+// FOC / Marketing matches every venue category by design (it's a campaign-name filter, not a
+// venue one) - this lets it be narrowed back down to just one category (Malls, Dubai Metro,
+// In-Stores, etc.) for a better view when there's a lot of FOC/Marketing activity spread across
+// every category at once. Not reset on tab switch, unlike Location - there's no reason to lose it
+// just from briefly looking at another tab.
+export function setTrafficSheetFocCategory(value) {
+  setState({ trafficSheetFocCategory: value });
+}
+
+// key is one of the tab strip's own synthetic keys ('__all__' or '__blank__' for the real, blank
+// network value some bridge venues have) rather than the raw network string directly, since a tab
+// strip key can't itself be an empty string - translated back to the real filter value here.
+export function setTrafficSheetBridgeNetwork(key) {
+  setState({ trafficSheetBridgeNetwork: key === '__all__' ? undefined : (key === '__blank__' ? '' : key) });
 }
 
 // Re-fetches whenever the API-backed month range needs to change (a different date range was
@@ -753,5 +831,53 @@ export async function downloadTrafficSheetExcel(scope) {
   const focCampaigns = campaigns.filter(isFocMarketingCampaign);
   await exportTrafficSheetExcel(`traffic-sheet-${filenameTag}.xlsx`, {
     regularCampaigns, focCampaigns, dates, dateGroups, monthLabel: formatMonthLabel,
+  });
+}
+
+// Modeled on the customer's own reference "Overall Traffic Sheet" export: one combined "All
+// Venues" sheet (every campaign, one row per venue it runs on, with Venue/Venue Type columns) plus
+// one sheet per individual venue/mall with just that venue's own campaigns - "if in overall sheet
+// there are 5 malls then the main sheet shows the full summary and then split sheets by mall".
+// Uses every campaign in the currently loaded month(s), ignoring tab/location/date filters
+// entirely (same scope as the existing "Download Full Traffic Sheet" button) - Contract is still
+// excluded, consistent with the other two download buttons.
+export async function downloadOverallTrafficSheetExcel() {
+  const data = STATE.trafficSheetData;
+  if (!data) return;
+  const campaigns = data.campaigns || [];
+  const dates = collectDates(campaigns);
+  const dateGroups = groupDatesByMonth(dates);
+
+  const allVenueRows = [];
+  const byVenue = new Map();
+  campaigns.forEach((c) => {
+    (c.venues || []).forEach((v) => {
+      const venue = mergeVenueName(v.venue);
+      allVenueRows.push({ ...c, venue, venueType: v.venueType || '' });
+      if (!byVenue.has(venue)) byVenue.set(venue, []);
+      byVenue.get(venue).push(c);
+    });
+  });
+
+  const allVenuesSheet = {
+    name: 'All Venues',
+    extraColumns: [
+      { label: 'Venue', width: 24, value: (r) => r.venue || '' },
+      { label: 'Venue Type', width: 16, value: (r) => r.venueType || '' },
+    ],
+    regularRows: allVenueRows.filter((r) => !isFocMarketingCampaign(r)),
+    focRows: allVenueRows.filter(isFocMarketingCampaign),
+  };
+  const venueSheets = [...byVenue.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([venue, venueCampaigns]) => ({
+      name: venue,
+      regularRows: venueCampaigns.filter((c) => !isFocMarketingCampaign(c)),
+      focRows: venueCampaigns.filter(isFocMarketingCampaign),
+    }));
+
+  await exportOverallTrafficSheetExcel(`Overall-Traffic-Sheet-${todayISO()}.xlsx`, {
+    sheets: [allVenuesSheet, ...venueSheets],
+    dates, dateGroups, monthLabel: formatMonthLabel,
   });
 }

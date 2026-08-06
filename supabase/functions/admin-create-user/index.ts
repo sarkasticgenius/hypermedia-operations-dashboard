@@ -11,6 +11,28 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// Best-effort welcome email via the sendgrid-send edge function - calls it the same way pg_cron
+// calls brandfetch-lookup/etc (x-cron-secret instead of a user JWT, since this function itself has
+// no caller session to forward), and never throws: an email hiccup (SendGrid not configured yet,
+// API key wrong, etc.) must never fail account creation itself.
+async function sendWelcomeEmail(adminClient: any, supabaseUrl: string, opts: {
+  email: string; username: string; password: string; name: string; role: string; origin?: string;
+}) {
+  try {
+    const { data: secretRow } = await adminClient.from('app_settings').select('value').eq('key', '_cronSecret').single();
+    const secret = secretRow?.value?.secret;
+    if (!secret) return;
+    const roleNote = opts.role === 'client' ? '\n\nThis login shows you your Campaign Monitor.' : '';
+    const linkLine = opts.origin ? `\nLog in here: ${opts.origin}` : '';
+    const text = `Hi ${opts.name || opts.username},\n\nAn account has been created for you on the Hypermedia Operations Dashboard.\n\nUsername: ${opts.username}\nTemporary password: ${opts.password}\n${linkLine}${roleNote}\n\nPlease sign in and change your password once you're in (My Account).`;
+    await fetch(`${supabaseUrl}/functions/v1/sendgrid-send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-cron-secret': secret },
+      body: JSON.stringify({ to: opts.email, subject: 'Your Hypermedia Operations Dashboard account', text }),
+    });
+  } catch (_) { /* best-effort - never block account creation on an email failure */ }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -46,7 +68,7 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
-    const { email, password, username, name, title, role, permissions, clientId } = body || {};
+    const { email, password, username, name, title, role, permissions, clientId, origin } = body || {};
     if (!email || !password || !username) {
       throw new Error('email, password and username are required');
     }
@@ -88,6 +110,8 @@ Deno.serve(async (req) => {
         await adminClient.from('user_permissions').upsert(rows, { onConflict: 'user_id,area' });
       }
     }
+
+    await sendWelcomeEmail(adminClient, supabaseUrl, { email, username, password, name: name || '', role: finalRole, origin });
 
     return new Response(JSON.stringify({ id: newUserId, bootstrap: isBootstrap }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

@@ -795,6 +795,12 @@ function renderIntegrationsTab() {
       { name: 'webhookUrl', label: 'Incoming Webhook URL', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
     ], 'slack-notify')}
+    ${integrationField(settings, 'sendgridEmail', 'SendGrid Email', [
+      { name: 'apiKey', label: 'API Key', type: 'password' },
+      { name: 'fromEmail', label: 'From Email (must be a Verified Sender in SendGrid)', type: 'email' },
+      { name: 'fromName', label: 'From Name (optional)' },
+      { name: 'enabled', label: 'Enabled', type: 'checkbox' },
+    ], 'sendgrid-send')}
     ${integrationField(settings, 'glpiFeed', 'GLPI CSV Feed', [
       { name: 'csvUrl', label: 'CSV URL' }, { name: 'autoRefreshMinutes', label: 'Auto-refresh (minutes)', type: 'number' },
     ])}

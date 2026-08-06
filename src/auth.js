@@ -28,6 +28,13 @@ export async function initAuth() {
   supabase.auth.onAuthStateChange(async (event, session) => {
     if (event === 'SIGNED_OUT') {
       setState({ user: null, permissions: {}, page: 'dashboard' });
+    } else if (event === 'PASSWORD_RECOVERY') {
+      // Fires automatically once the Supabase client parses a genuine recovery link's token out of
+      // the URL (see request-password-reset edge function / src/pages/login.js's
+      // renderPasswordRecovery) - main.js's rootRender() checks this before the normal
+      // user/renderShell branch, so a recovery session never silently drops someone into the
+      // dashboard without setting a new password first.
+      setState({ passwordRecoveryMode: true });
     } else if (session && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
       if (!STATE.user || STATE.user.id !== session.user.id) {
         await loadProfile(session.user.id);
@@ -89,6 +96,18 @@ export async function login(identifier, password) {
   });
   if (sessionError) throw sessionError;
   await logAudit('Login', '');
+}
+
+// Self-service "forgot password" - always resolves to the same generic summary string regardless
+// of whether `identifier` matched a real account (see request-password-reset edge function's
+// anti-enumeration handling), so the login page never needs to branch its UI on success vs. "no
+// such user", only on whether the request itself failed to send.
+export async function requestPasswordReset(identifier) {
+  const { data, error } = await supabase.functions.invoke('request-password-reset', {
+    body: { identifier, origin: window.location.origin },
+  });
+  if (error) throw error;
+  return data?.summary || "If that account exists, we've sent a password reset link to its email address.";
 }
 
 export async function logout() {

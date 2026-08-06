@@ -1,6 +1,6 @@
 import { STATE, initRender, render, renderToasts, closeModal } from './state.js';
 import { initAuth } from './auth.js';
-import { renderLogin, doLogin } from './pages/login.js';
+import { renderLogin, doLogin, setLoginView, doRequestPasswordReset, renderPasswordRecovery, doSetRecoveredPassword } from './pages/login.js';
 import { renderAccount, saveAccountProfile, saveAccountPassword } from './pages/account.js';
 import { renderDashboard } from './pages/dashboard.js';
 import * as opsOverviewPage from './pages/opsOverview.js';
@@ -76,6 +76,9 @@ registerPage('iotPanel', networkPanelsPage.renderIotPanel);
 // page to addEventListener wiring.
 window.App = {
   doLogin,
+  setLoginView,
+  doRequestPasswordReset,
+  doSetRecoveredPassword,
   logout: doLogout,
   setPage: goToPage,
   goToDashGroup,
@@ -110,7 +113,13 @@ window.App = {
 };
 
 function rootRender() {
-  const body = STATE.user ? renderShell(renderPage(STATE.page) + renderModalRoot()) : renderLogin();
+  // Checked before the normal user/renderShell branch - a recovery session (from clicking a
+  // password-reset email link) must never silently drop someone straight into the dashboard
+  // without setting a new password first, even though Supabase's client does establish a real
+  // (recovery-scoped) session for it under the hood.
+  const body = STATE.passwordRecoveryMode
+    ? renderPasswordRecovery()
+    : (STATE.user ? renderShell(renderPage(STATE.page) + renderModalRoot()) : renderLogin());
   const toasts = renderToasts();
   return body + (toasts ? `<div class="toast-stack">${toasts}</div>` : '');
 }

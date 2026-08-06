@@ -20,7 +20,7 @@ export async function listUsers() {
 // function that holds the service role key.
 export async function createUser({ email, password, username, name, title, role, permissions, clientId }) {
   const { data, error } = await supabase.functions.invoke('admin-create-user', {
-    body: { email, password, username, name, title, role, permissions, clientId },
+    body: { email, password, username, name, title, role, permissions, clientId, origin: window.location.origin },
   });
   if (error) throw error;
   if (data?.error) throw new Error(data.error);

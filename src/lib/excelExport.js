@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
 
-// Traffic Sheet's download needs real cell borders and a merged month header row (a plain CSV
+// Traffic Sheet's downloads need real cell borders and a merged month header row (a plain CSV
 // can't do either) - this builds a styled .xlsx matching the customer's own reference export:
 // Campaign Name, Start, End, Campaign Days, Loop Count, Status, then one merged "Mon YYYY" header
 // per month spanning its day-number ("01".."31") sub-columns, active-day cells filled yellow, and
@@ -85,17 +85,25 @@ export async function exportToExcel(filename, columns, rows, sheetName = 'Sheet1
   await downloadWorkbook(wb, filename);
 }
 
-// regularCampaigns/focCampaigns: arrays of Traffic Sheet campaign objects ({ campaignName,
-// startDate, endDate, campaignDays, loopCount, status, days: [{date, spots}] }), already split by
-// isFocMarketingCampaign at the call site.
-// dates: sorted array of ISO date strings (the day columns to render) - already computed by the
-// caller (collectDates()/date-range narrowing already applied there), shared across both sections.
-// dateGroups: [{ month: 'YYYY-MM', dates: [...] }] - already computed by the caller
-// (groupDatesByMonth()) for the merged month header.
-export async function exportTrafficSheetExcel(filename, { regularCampaigns, focCampaigns, dates, dateGroups, monthLabel }) {
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('Worksheet');
-  const metaCount = META_COLUMNS.length;
+// Writes the standard Traffic Sheet table - merged month header, day-number header row, an
+// "Active Campaigns" section and (if non-empty) a "FOC / Marketing" section each with their own
+// TOTAL/"Number of Campaigns" row, borders, column widths - into a given worksheet. Shared by
+// exportTrafficSheetExcel (single tab/location download) and exportOverallTrafficSheetExcel (the
+// multi-sheet "All Venues" + one-per-venue download) so the actual cell-writing logic only exists
+// once.
+//
+// extraColumns (optional): extra {label, width, value(row)} columns prepended before the normal
+// Campaign Name/Start/.../Status columns - used by the "All Venues" sheet to show Venue/Venue Type
+// per row, since a row there can belong to a different venue than the one above it (nothing else
+// needs this, so it defaults to empty).
+//
+// regularCampaigns/focCampaigns: row objects each carrying at minimum campaignName/startDate/
+// endDate/campaignDays/loopCount/status/days (plus whatever extraColumns' value() functions read
+// off them, e.g. venue/venueType) - already split by isFocMarketingCampaign at the call site.
+// dates/dateGroups/monthLabel: as computed by the caller (collectDates()/groupDatesByMonth()).
+function writeTrafficSheetTable(ws, { regularCampaigns, focCampaigns, dates, dateGroups, monthLabel, extraColumns = [] }) {
+  const columns = [...extraColumns, ...META_COLUMNS];
+  const metaCount = columns.length;
   const totalCols = metaCount + dates.length;
 
   // Row 1: merged month header(s), starting right after the metadata columns.
@@ -112,7 +120,7 @@ export async function exportTrafficSheetExcel(filename, { regularCampaigns, focC
   });
 
   // Row 2: column headers - metadata labels, then day numbers ("01".."31").
-  META_COLUMNS.forEach((c, i) => { ws.getCell(2, i + 1).value = c.label; });
+  columns.forEach((c, i) => { ws.getCell(2, i + 1).value = c.label; });
   dates.forEach((d, i) => { ws.getCell(2, metaCount + 1 + i).value = d.slice(8, 10); });
 
   let r = 3;
@@ -130,15 +138,15 @@ export async function exportTrafficSheetExcel(filename, { regularCampaigns, focC
     hc.font = { bold: true };
     hc.alignment = { vertical: 'middle' };
 
-    campaigns.forEach((c) => {
-      const row = r++;
-      META_COLUMNS.forEach((mc, i) => { ws.getCell(row, i + 1).value = mc.value(c); });
+    campaigns.forEach((row) => {
+      const rowIdx = r++;
+      columns.forEach((c, i) => { ws.getCell(rowIdx, i + 1).value = c.value(row); });
       const dayMap = {};
-      (c.days || []).forEach((d) => { dayMap[d.date] = d.spots; });
+      (row.days || []).forEach((d) => { dayMap[d.date] = d.spots; });
       dates.forEach((d, i) => {
         const spots = dayMap[d];
         if (spots) {
-          const cell = ws.getCell(row, metaCount + 1 + i);
+          const cell = ws.getCell(rowIdx, metaCount + 1 + i);
           cell.value = spots;
           cell.fill = ACTIVE_FILL;
           cell.alignment = { horizontal: 'center' };
@@ -147,10 +155,10 @@ export async function exportTrafficSheetExcel(filename, { regularCampaigns, focC
     });
 
     const totalRow = r++;
-    ws.getCell(totalRow, 1).value = 'TOTAL';
-    ws.getCell(totalRow, 2).value = 'Number of Campaigns';
+    ws.getCell(totalRow, extraColumns.length + 1).value = 'TOTAL';
+    ws.getCell(totalRow, extraColumns.length + 2).value = 'Number of Campaigns';
     dates.forEach((d, i) => {
-      const count = campaigns.filter((c) => (c.days || []).some((x) => x.date === d)).length;
+      const count = campaigns.filter((row) => (row.days || []).some((x) => x.date === d)).length;
       const cell = ws.getCell(totalRow, metaCount + 1 + i);
       if (count) { cell.value = count; cell.alignment = { horizontal: 'center' }; }
     });
@@ -173,9 +181,59 @@ export async function exportTrafficSheetExcel(filename, { regularCampaigns, focC
     for (let c = 1; c <= totalCols; c++) ws.getCell(row, c).border = ALL_BORDERS;
   }
 
-  META_COLUMNS.forEach((mc, i) => { ws.getColumn(i + 1).width = mc.width; });
+  columns.forEach((c, i) => { ws.getColumn(i + 1).width = c.width; });
   for (let i = 0; i < dates.length; i++) ws.getColumn(metaCount + 1 + i).width = 4;
   ws.views = [{ state: 'frozen', ySplit: 2 }];
+}
 
+// regularCampaigns/focCampaigns: arrays of Traffic Sheet campaign objects ({ campaignName,
+// startDate, endDate, campaignDays, loopCount, status, days: [{date, spots}] }), already split by
+// isFocMarketingCampaign at the call site.
+// dates: sorted array of ISO date strings (the day columns to render) - already computed by the
+// caller (collectDates()/date-range narrowing already applied there), shared across both sections.
+// dateGroups: [{ month: 'YYYY-MM', dates: [...] }] - already computed by the caller
+// (groupDatesByMonth()) for the merged month header.
+export async function exportTrafficSheetExcel(filename, { regularCampaigns, focCampaigns, dates, dateGroups, monthLabel }) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Worksheet');
+  writeTrafficSheetTable(ws, { regularCampaigns, focCampaigns, dates, dateGroups, monthLabel });
+  await downloadWorkbook(wb, filename);
+}
+
+const INVALID_SHEET_NAME_CHARS = /[\\/?*[\]:]/g;
+// Excel worksheet names: max 31 chars, can't contain \ / ? * [ ] :, and must be unique within the
+// workbook - a real risk here specifically, since several distinct raw venue names can canonicalize
+// to the same merged display name (that's the whole point of mergeVenueName) and would otherwise
+// collide on the sheet name.
+function safeSheetName(name, used) {
+  const base = (String(name || 'Sheet').replace(INVALID_SHEET_NAME_CHARS, '-').trim() || 'Sheet').slice(0, 31);
+  let candidate = base;
+  let n = 2;
+  while (used.has(candidate.toLowerCase())) {
+    const suffix = ` (${n})`;
+    candidate = base.slice(0, 31 - suffix.length) + suffix;
+    n++;
+  }
+  used.add(candidate.toLowerCase());
+  return candidate;
+}
+
+// sheets: [{ name, regularRows, focRows, extraColumns? }] - one workbook, one worksheet per entry,
+// each written via writeTrafficSheetTable above. The "All Venues" overall-summary sheet is just
+// the first entry with a Venue/Venue Type extraColumns pair; every other entry is one venue's own
+// campaigns with no extraColumns, matching the reference "Overall Traffic Sheet" export this is
+// modeled on (one combined sheet + one sheet per venue/mall).
+export async function exportOverallTrafficSheetExcel(filename, { sheets, dates, dateGroups, monthLabel }) {
+  const wb = new ExcelJS.Workbook();
+  const usedNames = new Set();
+  sheets.forEach((sheet) => {
+    const ws = wb.addWorksheet(safeSheetName(sheet.name, usedNames));
+    writeTrafficSheetTable(ws, {
+      regularCampaigns: sheet.regularRows,
+      focCampaigns: sheet.focRows,
+      dates, dateGroups, monthLabel,
+      extraColumns: sheet.extraColumns || [],
+    });
+  });
   await downloadWorkbook(wb, filename);
 }
