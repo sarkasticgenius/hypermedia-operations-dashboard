@@ -10,7 +10,7 @@ import { listLocations } from '../data/locations.js';
 import { listCampaigns } from '../data/campaigns.js';
 import { listBrandLogos, lookupBrandLogos } from '../data/brandLogos.js';
 import { brandNameForLocation } from '../data/locationStats.js';
-import { brandNameForVenue, brandFallbackForVenue } from './trafficSheet.js';
+import { brandNameForVenue, brandFallbackForVenue, isBrandedMetroStation } from './trafficSheet.js';
 import { supabase } from '../supabaseClient.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
@@ -582,11 +582,15 @@ export async function saveBrandfetchForm(event) {
 // far too often (real examples: "LULU" matched lululemon.com, "Energy" matched the US Department
 // of Energy, "Stadium" matched a Swedish sports retailer) - brandNameForVenue reduces multi-branch
 // chains to one lookup and skips Royals/Gems entirely (no real external brand exists for those).
-// Metro/Bridges stations are gathered individually (their "Metro Station - "/"Metro Bridge - "
-// prefix stripped) since many really are sponsor-branded ("Danube", "Equiti", "OnPassive") - this
-// also always adds the shared "Dubai Metro Rail" fallback brand (see brandFallbackForVenue) so it
-// stays cached for stations with no real sponsor of their own. Same function Traffic Sheet's own
-// display uses, so the cache key here always matches the lookup key there.
+// Metro/Bridges stations are gated behind isBrandedMetroStation() - only the small curated list of
+// CONFIRMED real sponsor-branded stations ("Danube", "Equiti", "OnPassive", ...) ever gets proposed
+// for a Search lookup; every other station name (the vast majority - plain Dubai area names like
+// "Al Jadaf"/"Business Bay"/"Energy") is skipped entirely, since a real run confirmed Search
+// fuzzy-matches those to an unrelated company 100% of the time rather than admitting no match. The
+// shared "Dubai Metro Rail" fallback brand (see brandFallbackForVenue) is always added regardless,
+// so it stays cached and covers every non-branded station via brandLogoTag's fallback arg. Same
+// function Traffic Sheet's own display uses, so the cache key here always matches the lookup key
+// there.
 const BRANDFETCH_BATCH_CAP = 25;
 
 async function gatherTrafficSheetVenueNames(settings) {
@@ -599,9 +603,9 @@ async function gatherTrafficSheetVenueNames(settings) {
     if (error || data?.error) return [];
     const names = new Set();
     (data.campaigns || []).forEach((c) => (c.venues || []).forEach((v) => {
-      const n = brandNameForVenue(v);
-      if (n) names.add(n.trim());
       const fb = brandFallbackForVenue(v);
+      const n = brandNameForVenue(v);
+      if (n && (!fb || isBrandedMetroStation(v))) names.add(n.trim());
       if (fb) names.add(fb.trim());
     }));
     return [...names];

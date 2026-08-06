@@ -137,13 +137,16 @@ export function mergeVenueName(name) {
 // names (Settings > Brandfetch > Fetch Missing Logos) and when displaying a logo (brandLogoTag) on
 // Traffic Sheet, so the cache key and the lookup key always match:
 //   - Metro/Metro Bridges (venueType METRO / METRO OUTDOOR) -> the station/bridge's own name with
-//     the "Metro Station - "/"Metro Bridge - " prefix stripped off. Many of these are genuinely
-//     sponsor-branded (real examples in our own data: "Danube", "Equiti", "OnPassive", "Sharaf DG",
-//     "National Paints") - the literal "Metro Station - " prefix was poisoning every single Search
-//     query (100% failure rate on real data, even for names that ARE real brands), so this strips
-//     it and looks each one up individually instead of collapsing them all to one shared name.
-//     Plain area names with no real brand (e.g. "Business Bay", "Financial Centre") will still
-//     legitimately find nothing - see brandFallbackForVenue() below for what's shown instead.
+//     the "Metro Station - "/"Metro Bridge - " prefix stripped off. A handful of these really are
+//     sponsor-branded (confirmed real examples: "Danube", "Equiti", "OnPassive", "Sharaf DG",
+//     "National Paints") - but most are just Dubai area/place names ("Business Bay", "Al Jadaf",
+//     "Energy", "Stadium", "Creek"), and Brandfetch's Search API turned out to confidently
+//     fuzzy-match EVERY one of those to some unrelated company too, rather than admitting no match
+//     (a full batch of ~25 station names came back 100% wrong: "Al Jadaf"/"Al Ghubaiba"/
+//     "Al Qiyadah" all matched alfuttaim.com, "Energy" matched the US Dept of Energy, "Stadium"
+//     matched a Swedish retailer). So this still returns the stripped name for EVERY station (it's
+//     the display/cache-key), but isBrandedMetroStation() below gates which of those names are
+//     actually safe to send to Search - see its comment.
 //   - Multi-location retail chains (LULU/Union Coop/ADCOOP/ENOC) -> just the chain name, not each
 //     branch's full venue string ("LULU AL KHALIFA") - one correct lookup covers every branch.
 //   - Royals/Gems (network ROYALS/GEMS) -> null, no lookup at all. These are internal-only screen
@@ -177,6 +180,21 @@ export function brandNameForVenue(venue) {
 // resolve to a real company. Returns null for every non-Metro venue (no generic fallback exists).
 export function brandFallbackForVenue(venue) {
   return isMetroVenue(venue) ? METRO_FALLBACK_BRAND : null;
+}
+
+// Confirmed real, sponsor-branded Dubai Metro stations - the ONLY Metro/Bridges names that should
+// ever be auto-proposed as a Brandfetch Search candidate (see gatherTrafficSheetVenueNames in
+// settings.js). Everything else just uses brandFallbackForVenue()'s shared "Dubai Metro Rail" logo
+// and is never searched at all, since Search has a confirmed 100% false-positive rate on plain
+// Dubai area names. A Domain Override can still resolve any other station name manually regardless
+// of this list - that path never calls Search either way. Extend this list only for names actually
+// confirmed to be real corporate sponsors, not guessed.
+const METRO_BRAND_KEYWORDS = ['DANUBE', 'EQUITI', 'ONPASSIVE', 'SHARAF DG', 'NATIONAL PAINTS', 'ADCB'];
+export function isBrandedMetroStation(venue) {
+  if (!isMetroVenue(venue)) return false;
+  const stripped = (venue.venue || '').replace(/^Metro (Bridge|Station)\s*-\s*/i, '');
+  const normalized = normalizeVenueText(stripped);
+  return METRO_BRAND_KEYWORDS.some((k) => normalized.includes(k));
 }
 
 function isMafVenue(venue) {
