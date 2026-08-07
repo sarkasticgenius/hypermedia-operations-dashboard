@@ -450,8 +450,10 @@ function renderQuickStatTiles(todayActive, todayExpiring, yesterdayActive, yeste
 // clicking a location filters the whole page down to just its campaigns. "Network" is every
 // distinct value AdLive Center's own API reports for that venue across its campaign bookings -
 // see the file-header note and locationSummary() for why it's a list rather than one value.
-// "Capacity" applies the 15-campaigns-per-screen rule (6 for Royals): a venue's `screens` count
-// x that cap is its monthly slot capacity, campaign count against it gives available/overbooked.
+// "Capacity" applies the 15-campaigns-per-screen rule (6 for Royals): a campaign booking runs on
+// every screen at a venue at once, so the same count/cap comparison holds per screen regardless of
+// how many screens the venue has - Capacity Status is that per-screen headroom (cap - count), the
+// same units as the Campaigns/Cap column right next to it, not multiplied by screens.
 // capacitySummary is a SEPARATE locationSummary() scoped to exactly one calendar month (see
 // isActiveInMonth) - Screens/Network/Venue Type still come from the main summary (whatever the
 // wider Start/End Date range currently shows), but the Campaigns/Cap/Capacity Status columns
@@ -471,9 +473,8 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
       countCapText = `${count}`;
       capacityHtml = '<span class="badge b-gray">No cap</span>';
     } else {
-      const capacity = screens * cap;
-      const overbooked = screens * Math.max(0, count - cap);
-      const available = Math.max(0, capacity - screens * Math.min(count, cap));
+      const overbooked = Math.max(0, count - cap);
+      const available = Math.max(0, cap - count);
       countCapText = `${count} / ${cap}`;
       capacityHtml = overbooked > 0
         ? `<span class="badge b-red">Overbooked +${overbooked}</span>`
@@ -486,7 +487,7 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
         <td>${esc(s.network)}</td>
         <td class="tright">${screens}</td>
         <td class="tright">${countCapText}</td>
-        <td>${capacityHtml}</td>
+        <td class="tcenter">${capacityHtml}</td>
       </tr>
     `;
   }).join('');
@@ -496,7 +497,7 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
         <h3>Summary</h3>
         <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Campaigns/Cap and Capacity Status are for ${esc(monthLabel)} only (15 campaigns/screen/month, 6 for Royals, 20 for MAF Malls indoor / 10 outdoor, no cap for Carrefour) - change the Capacity Month above to check a different month.</div>
       </div>
-      <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns / Cap (${esc(monthLabel)})</th><th>Capacity Status</th></tr></thead>
+      <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns / Cap (${esc(monthLabel)})</th><th class="tcenter">Capacity Status</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6"><div class="empty">No data.</div></td></tr>'}</tbody></table>
     </div>
   `;
