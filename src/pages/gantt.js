@@ -98,7 +98,7 @@ function capacitySlotsByCategory(trafficSheetData) {
     (c.venues || []).forEach((v) => {
       LEFTOVER_CATEGORY_KEYS.forEach((k) => {
         if (venueMatchesTab(v, k)) {
-          const name = mergeVenueName(v.venue);
+          const name = mergeVenueName(v.venue, v.venueType);
           const m = maps[k];
           if (!m.has(name)) m.set(name, { screens: 0, campaigns: new Set() });
           const entry = m.get(name);

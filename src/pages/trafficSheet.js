@@ -144,7 +144,12 @@ function mergeCityCentreSpelling(name) {
 //     -> "Mall of the Emirates Station" - deliberately NOT the AUH/DXB/OUTDOOR/HOLOGRAM-suffixed
 //     variants, which carry extra distinguishing words and are almost certainly separate physical
 //     surfaces, not a naming accident (same conservative-merge reasoning as City Centre above).
-export function mergeVenueName(name) {
+// venueType (optional, pass the venue's own .venueType when calling this) scopes the Mall of the
+// Emirates rule below to the actual Metro station - without it, a real shopping mall also named
+// "Mall of the Emirates" (a genuine MAF mall, venueType MALLS - a totally different physical venue
+// that just happens to share a name with the station serving it) got relabeled "...Station" too,
+// which is wrong for a mall. Every call site has a venue object with .venueType on hand already.
+export function mergeVenueName(name, venueType) {
   // A venue entry with no name at all (blank/null in the source data - a real gap in that
   // venue's registration, not something this app generates) otherwise flows through untouched and
   // renders as a blank row: blank Location cell in the Summary table, and previously a literal
@@ -156,7 +161,10 @@ export function mergeVenueName(name) {
   if (n === 'ENOC HATTA') return 'ENOC Dubai';
   if (/^ROYALS ENTRY \d+$/.test(n)) return 'Royals Entry';
   if (/^ROYALS EXIT \d+$/.test(n)) return 'Royals Exit';
-  if (/^MALL OF( THE)? EMIRATES( STATION)?( \d+)?$/.test(n)) return 'Mall of the Emirates Station';
+  const vt = (venueType || '').toUpperCase();
+  const isMetro = vt === 'METRO' || vt === 'METRO OUTDOOR';
+  if (isMetro && /^MALL OF( THE)? EMIRATES( STATION)?( \d+)?$/.test(n)) return 'Mall of the Emirates Station';
+  if (!isMetro && /^MALL OF( THE)? EMIRATES$/.test(n)) return 'Mall of the Emirates';
   const cityCentre = mergeCityCentreSpelling(name);
   if (cityCentre) return cityCentre;
   return name;
@@ -274,7 +282,7 @@ export function venueMatchesTab(venue, tabKey) {
 function locationsForTab(data, tabKey) {
   const set = new Set();
   (data?.campaigns || []).forEach((c) => (c.venues || []).forEach((v) => {
-    if (venueMatchesTab(v, tabKey)) set.add(mergeVenueName(v.venue));
+    if (venueMatchesTab(v, tabKey)) set.add(mergeVenueName(v.venue, v.venueType));
   }));
   return [...set].sort();
 }
@@ -303,7 +311,7 @@ function filteredCampaigns(data, tabKey, location) {
     .map((c) => {
       const venues = (c.venues || [])
         .filter((v) => venueMatchesTab(v, tabKey))
-        .map((v) => ({ ...v, __rawVenue: v.venue, venue: mergeVenueName(v.venue) }))
+        .map((v) => ({ ...v, __rawVenue: v.venue, venue: mergeVenueName(v.venue, v.venueType) }))
         .filter((v) => !location || v.venue === location);
       return venues.length ? { ...c, __matchedVenues: venues } : null;
     })
@@ -519,7 +527,7 @@ function stationsByNetwork(data) {
   (data?.campaigns || []).forEach((c) => (c.venues || []).forEach((v) => {
     if (!v.network) return;
     if (!map.has(v.network)) map.set(v.network, new Set());
-    map.get(v.network).add(mergeVenueName(v.venue));
+    map.get(v.network).add(mergeVenueName(v.venue, v.venueType));
   }));
   return map;
 }
@@ -897,7 +905,7 @@ export async function downloadOverallTrafficSheetExcel() {
   const byVenue = new Map();
   campaigns.forEach((c) => {
     (c.venues || []).forEach((v) => {
-      const venue = mergeVenueName(v.venue);
+      const venue = mergeVenueName(v.venue, v.venueType);
       allVenueRows.push({ ...c, venue, venueType: v.venueType || '' });
       if (!byVenue.has(venue)) byVenue.set(venue, []);
       byVenue.get(venue).push(c);
