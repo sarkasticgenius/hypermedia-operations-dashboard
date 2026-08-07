@@ -58,8 +58,9 @@
   --shadow-color:rgba(0,0,0,0.4);
 }
 *{box-sizing:border-box;}
+html,body{height:100%;}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background-color .15s ease,color .15s ease;}
-#app{min-height:100vh;}
+#app{height:100%;display:flex;flex-direction:column;}
 a{color:inherit;}
 button{font-family:inherit;cursor:pointer;}
 input,select,textarea{font-family:inherit;}
@@ -89,12 +90,17 @@ input,select,textarea{font-family:inherit;}
 .login-error{background:var(--red-bg);color:var(--red);font-size:12.5px;padding:8px 10px;border-radius:7px;margin-bottom:12px;}
 
 /* ---------- Shell ---------- */
-.shell{display:flex;min-height:100vh;}
-.sidebar{width:250px;background:var(--sidebar-bg);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
+/* #app is a column flex (see above) so this takes "whatever's left" after any sibling above it
+   (the impersonation banner) rather than assuming it alone fills the viewport - min-height:0 lets
+   it actually shrink to that instead of overflowing. Either way it never grows past one screen:
+   the sidebar's own .nav-scroll and the main content's .content scroll independently inside it,
+   instead of the whole page (including the sidebar) scrolling together. */
+.shell{display:flex;flex:1;min-height:0;overflow:hidden;}
+.sidebar{width:250px;background:var(--sidebar-bg);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;min-height:0;}
 .sidebar-header{display:flex;align-items:center;gap:10px;padding:14px 14px 12px;}
 .sidebar-header .name{font-family:'Poppins',sans-serif;font-size:11.5px;font-weight:800;color:var(--brand-orange-dark);letter-spacing:.08em;}
 .sidebar-header .sub{font-family:'Poppins',sans-serif;font-size:15px;font-weight:700;color:var(--text);letter-spacing:.01em;}
-.nav-scroll{flex:1;overflow-y:auto;}
+.nav-scroll{flex:1;min-height:0;overflow-y:auto;}
 .nav-section{padding:10px 12px 2px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);font-weight:700;margin-top:8px;}
 .nav-item{display:flex;align-items:center;padding:7px 16px 7px 10px;margin:1px 8px;border-radius:8px;font-size:13.5px;color:var(--text);text-decoration:none;font-weight:500;}
 .nav-item:hover{background:var(--nav-hover);cursor:pointer;}
@@ -125,11 +131,11 @@ input,select,textarea{font-family:inherit;}
 :root[data-theme="dark"] .theme-toggle .icon-sun{display:none;}
 :root[data-theme="dark"] .theme-toggle .icon-moon{display:block;}
 
-.main{flex:1;min-width:0;display:flex;flex-direction:column;}
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid var(--border);background:var(--card-bg);}
+.main{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid var(--border);background:var(--card-bg);flex-shrink:0;}
 .topbar h1{font-size:18px;margin:0;}
 .topbar .meta{font-size:12.5px;color:var(--text-dim);}
-.content{padding:24px 28px;flex:1;}
+.content{padding:24px 28px;flex:1;min-height:0;overflow-y:auto;}
 .banner{background:var(--amber-bg);border:1px solid var(--amber);color:var(--amber);font-size:12.5px;padding:9px 14px;border-radius:9px;margin-bottom:18px;}
 
 .card{background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px;}
