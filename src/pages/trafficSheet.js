@@ -84,11 +84,15 @@ const STORE_KEYWORDS = ['LULU', 'UNION COOP', 'ADCOOP', 'CARREFOUR'];
 const GEMS_VENUE_KEYWORDS = ['PALM DUBAI ZUMUROD', 'PALM DUBAI RUBY', 'PALM DUBAI FAIROUZ'];
 // Also used inside the Today's Active Campaigns list on every OTHER tab, to visually group
 // FOC/marketing bookings apart from paid ones without hiding them from the normal view there.
-const FOC_MARKETING_KEYWORDS = ['FOC', 'MARKETING', 'MKTG'];
+// Matched with word boundaries (see FOC_MARKETING_PATTERN below), not a plain substring check -
+// "NR" in particular would false-positive on plenty of unrelated campaign names as a substring
+// (e.g. anything with "...NR..." embedded in a longer word) if it weren't boundary-anchored.
+const FOC_MARKETING_KEYWORDS = ['FOC', 'MARKETING', 'MKTG', 'NAMING RIGHTS', 'NAMING RIGHT', 'NR', 'FILLER'];
+const FOC_MARKETING_PATTERN = new RegExp(`\\b(?:${FOC_MARKETING_KEYWORDS.join('|')})\\b`);
 
 export function isFocMarketingCampaign(campaign) {
   const name = (campaign.campaignName || '').toUpperCase();
-  return FOC_MARKETING_KEYWORDS.some((k) => name.includes(k));
+  return FOC_MARKETING_PATTERN.test(name);
 }
 
 function defaultMonth() {

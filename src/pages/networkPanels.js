@@ -242,69 +242,16 @@ function donutItems(counts) {
   return Object.entries(counts || {}).sort((a, b) => b[1] - a[1]).map(([label, value]) => ({ label, value }));
 }
 
-function polarPoint(cx, cy, r, angleDeg) {
-  const rad = ((angleDeg - 90) * Math.PI) / 180;
-  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
-}
-
-// True pie (filled wedges to center), not a ring - color index comes from the item's position in
-// the full list (not the filtered/drawn list) so a wedge's color always matches its legend swatch
-// even when some items are zero-value and skipped.
-function renderPieSvg(items) {
-  const total = items.reduce((s, it) => s + it.value, 0) || 1;
-  const r = 68; const cx = 80; const cy = 80;
-  let angle = 0;
-  const wedges = items.map((it, idx) => {
-    if (!it.value) return '';
-    const slice = (it.value / total) * 360;
-    const start = polarPoint(cx, cy, r, angle);
-    const end = polarPoint(cx, cy, r, angle + slice);
-    const largeArc = slice > 180 ? 1 : 0;
-    const path = slice >= 359.99
-      ? `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx - 0.01} ${cy - r} Z`
-      : `M ${cx} ${cy} L ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y} Z`;
-    angle += slice;
-    return `<path d="${path}" fill="${CHART_PALETTE[idx % CHART_PALETTE.length]}" stroke="#fff" stroke-width="1"><title>${esc(it.label)}: ${it.value}</title></path>`;
-  }).join('');
-  return `<svg viewBox="0 0 160 160" width="160" height="160" style="display:block;margin:0 auto;">${wedges}</svg>`;
-}
-
-function chartLegend(items) {
-  return items.map((it, idx) => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;margin:2px 8px 2px 0;"><span style="width:10px;height:10px;border-radius:2px;background:${CHART_PALETTE[idx % CHART_PALETTE.length]};display:inline-block;flex:none;"></span>${esc(it.label)} (${it.value})</span>`).join('');
-}
-
-// Each "Devices by ..." card can switch between a pie and a histogram/bar view - default is pie
-// for the low-cardinality categories and bar for Version (too many distinct values for pie
-// slices to stay readable), but every card can toggle either way. Mode is per-category so
-// switching one doesn't affect the others. Bar mode reuses the app's shared svgGroupedBarChart
-// (same component Live Ops Overview's charts use) for visual consistency, rather than a bespoke
-// bar renderer just for this page.
-const IOT_CHART_DEFAULT_MODE = { platform: 'pie', state: 'pie', cameraType: 'pie', version: 'bar' };
-
-export function setIotChartMode(key, mode) {
-  setState({ iotChartMode: { ...(STATE.iotChartMode || {}), [key]: mode } });
-}
-
-function chartModeToggle(key, mode) {
-  return `<div style="display:flex;gap:4px;flex:none;">
-    <button class="btn-sm${mode === 'pie' ? ' btn-orange' : ''}" onclick="App.setIotChartMode('${key}','pie')">Pie</button>
-    <button class="btn-sm${mode === 'bar' ? ' btn-orange' : ''}" onclick="App.setIotChartMode('${key}','bar')">Bar</button>
-  </div>`;
-}
-
-function renderIotChartCard(key, title, items) {
-  const mode = (STATE.iotChartMode && STATE.iotChartMode[key]) || IOT_CHART_DEFAULT_MODE[key] || 'pie';
+// Bar-only now (the pie/bar toggle and pie renderer were removed) - each of the 4 cards below gets
+// its own accent color (cycled from CHART_PALETTE by card index) rather than a bespoke per-wedge
+// palette, and renders inside a .bento-tile to match Live Ops' tile styling instead of a plain
+// .card.
+function renderIotChartCard(title, items, colorIndex) {
   const total = items.reduce((s, it) => s + it.value, 0);
-  if (mode === 'bar') {
-    return `<div class="card">
-      <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:10px;"><h3>${esc(title)}</h3>${chartModeToggle(key, mode)}</div>
-      ${total ? svgGroupedBarChart(items.map((it) => it.label), [{ name: title, color: CHART_PALETTE[0], values: items.map((it) => it.value) }], { width: 300, height: 190 }) : '<div class="empty">No data</div>'}
-    </div>`;
-  }
-  return `<div class="card" style="text-align:center;">
-    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;"><h3>${esc(title)}</h3>${chartModeToggle(key, mode)}</div>
-    <div style="display:flex;flex-wrap:wrap;justify-content:center;margin-bottom:10px;">${chartLegend(items) || '<span class="small muted">No data</span>'}</div>
-    ${total ? renderPieSvg(items) : ''}
+  const color = CHART_PALETTE[colorIndex % CHART_PALETTE.length];
+  return `<div class="bento-tile bento-span-2">
+    <div class="card-head"><h3>${esc(title)}</h3></div>
+    ${total ? svgGroupedBarChart(items.map((it) => it.label), [{ name: title, color, values: items.map((it) => it.value) }], { width: 460, height: 190 }) : '<div class="empty">No data</div>'}
   </div>`;
 }
 
@@ -452,11 +399,11 @@ export function renderIotPanel() {
 
   return `${statusBar}
   <div class="small muted" style="margin:10px 0 8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${c.lastSync ? new Date(c.lastSync).toLocaleString() : 'last sync'}.</div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:14px;">
-    ${renderIotChartCard('platform', 'Devices by Platform', donutItems(b.byPlatform))}
-    ${renderIotChartCard('state', 'Devices by State', canonicalStateItems(b.byState))}
-    ${renderIotChartCard('cameraType', 'Devices by Camera Type', donutItems(b.byCameraType))}
-    ${renderIotChartCard('version', 'Devices by Version', donutItems(b.byVersion))}
+  <div class="bento-grid">
+    ${renderIotChartCard('Devices by Platform', donutItems(b.byPlatform), 0)}
+    ${renderIotChartCard('Devices by State', canonicalStateItems(b.byState), 1)}
+    ${renderIotChartCard('Devices by Camera Type', donutItems(b.byCameraType), 2)}
+    ${renderIotChartCard('Devices by Version', donutItems(b.byVersion), 3)}
   </div>
   ${renderIotDeviceTable(c)}`;
 }
