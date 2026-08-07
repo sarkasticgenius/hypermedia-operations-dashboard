@@ -905,7 +905,12 @@ export async function downloadOverallTrafficSheetExcel() {
     regularRows: allVenueRows.filter((r) => !isFocMarketingCampaign(r)),
     focRows: allVenueRows.filter(isFocMarketingCampaign),
   };
+  // A venue-less row (blank venue name in the source data - happens occasionally) still counts
+  // in the "All Venues" summary above via allVenueRows, but doesn't get its own sheet here - there's
+  // no meaningful venue to name that sheet after, and safeSheetName()'s fallback for a blank name
+  // is the literal string "Sheet", which reads as a stray/default tab rather than real data.
   const venueSheets = [...byVenue.entries()]
+    .filter(([venue]) => venue)
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([venue, venueCampaigns]) => ({
       name: venue,
