@@ -3,12 +3,14 @@ import { login, requestPasswordReset } from '../auth.js';
 import { supabase } from '../supabaseClient.js';
 import { LOGO_IMG } from '../logo.js';
 import { esc } from '../lib/format.js';
+import { renderThemeToggle } from '../theme.js';
 
 export function renderLogin() {
   if (STATE.loginView === 'forgot') return renderForgotPassword();
   const err = STATE.loginError ? `<div class="login-error">${esc(STATE.loginError)}</div>` : '';
   return `
     <div class="login-wrap">
+      <div class="theme-toggle-corner">${renderThemeToggle()}</div>
       <div class="login-card">
         <div class="login-logo">
           <div class="logo-badge logo-badge-lg">${LOGO_IMG}</div>
@@ -67,6 +69,7 @@ function renderForgotPassword() {
   const err = STATE.forgotError ? `<div class="login-error">${esc(STATE.forgotError)}</div>` : '';
   return `
     <div class="login-wrap">
+      <div class="theme-toggle-corner">${renderThemeToggle()}</div>
       <div class="login-card">
         <div class="login-logo">
           <div class="logo-badge logo-badge-lg">${LOGO_IMG}</div>
@@ -111,6 +114,7 @@ export function renderPasswordRecovery() {
   const err = STATE.recoveryError ? `<div class="login-error">${esc(STATE.recoveryError)}</div>` : '';
   return `
     <div class="login-wrap">
+      <div class="theme-toggle-corner">${renderThemeToggle()}</div>
       <div class="login-card">
         <div class="login-logo">
           <div class="logo-badge logo-badge-lg">${LOGO_IMG}</div>

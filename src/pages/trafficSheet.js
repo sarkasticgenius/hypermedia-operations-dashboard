@@ -758,7 +758,6 @@ export function renderTrafficSheet() {
         ` : ''}
         <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.fetchTrafficSheet()">${loading ? 'Loading...' : 'Apply Date Filter'}</button>
         <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel()" title="Only this tab/location/date range">Download Filtered</button>
-        <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadTrafficSheetExcel('full')" title="Every campaign in the loaded month(s), ignoring all filters">Download Full Traffic Sheet</button>
         <button class="btn-outline btn-sm" type="button" ${data ? '' : 'disabled'} onclick="App.downloadOverallTrafficSheetExcel()" title="One combined 'All Venues' sheet plus one sheet per venue/mall">Download Overall Traffic Sheet</button>
       </div>
     </div>
@@ -843,39 +842,27 @@ function autoFetchTrafficSheet() {
 // Today's Active Campaigns already shows on-screen), each with its own TOTAL / "Number of
 // Campaigns" row. A plain CSV can't do merged headers or real borders, so this downloads a styled
 // .xlsx instead.
-// scope: omitted/'filtered' (default) - exactly what's currently on screen (tab/location/date
-// range all applied), same as before. 'full' - every campaign in the currently loaded month(s),
-// ignoring every filter (tab, location, Start/End Date narrowing) entirely.
-export async function downloadTrafficSheetExcel(scope) {
+// Exactly what's currently on screen (tab/location/date range all applied).
+export async function downloadTrafficSheetExcel() {
   const data = STATE.trafficSheetData;
   if (!data) return;
 
-  let campaigns;
-  let filenameTag;
-  let dates;
+  const tab = STATE.trafficSheetTab || 'malls';
+  const isTodayTab = tab === 'today';
+  const location = STATE.trafficSheetLocation || '';
+  const defaults = defaultDateRange();
+  const startDate = STATE.trafficSheetStartDate || defaults.start;
+  const endDate = STATE.trafficSheetEndDate || defaults.end;
 
-  if (scope === 'full') {
-    campaigns = data.campaigns || [];
-    dates = collectDates(campaigns);
-    filenameTag = `Full-Traffic-Sheet-${todayISO()}`;
-  } else {
-    const tab = STATE.trafficSheetTab || 'malls';
-    const isTodayTab = tab === 'today';
-    const location = STATE.trafficSheetLocation || '';
-    const defaults = defaultDateRange();
-    const startDate = STATE.trafficSheetStartDate || defaults.start;
-    const endDate = STATE.trafficSheetEndDate || defaults.end;
-
-    let filtered = filteredCampaigns(data, tab, location);
-    if (tab === 'focMarketing') filtered = filtered.filter(isFocMarketingCampaign);
-    campaigns = isTodayTab
-      ? filtered.filter((c) => isActiveOn(c, todayISO()))
-      : filtered.filter((c) => withinDateRange(c, startDate, endDate));
-    dates = collectDates(campaigns);
-    if (!isTodayTab) dates = dates.filter((d) => inDateRange(d, startDate, endDate));
-    const tabLabel = (TAB_DEFS.find((t) => t.key === tab) || {}).label || tab;
-    filenameTag = `${tabLabel.replace(/\s+/g, '-')}-${startDate}-to-${endDate}`;
-  }
+  let filtered = filteredCampaigns(data, tab, location);
+  if (tab === 'focMarketing') filtered = filtered.filter(isFocMarketingCampaign);
+  const campaigns = isTodayTab
+    ? filtered.filter((c) => isActiveOn(c, todayISO()))
+    : filtered.filter((c) => withinDateRange(c, startDate, endDate));
+  let dates = collectDates(campaigns);
+  if (!isTodayTab) dates = dates.filter((d) => inDateRange(d, startDate, endDate));
+  const tabLabel = (TAB_DEFS.find((t) => t.key === tab) || {}).label || tab;
+  const filenameTag = `${tabLabel.replace(/\s+/g, '-')}-${startDate}-to-${endDate}`;
 
   const dateGroups = groupDatesByMonth(dates);
   const regularCampaigns = campaigns.filter((c) => !isFocMarketingCampaign(c));
@@ -890,8 +877,7 @@ export async function downloadTrafficSheetExcel(scope) {
 // one sheet per individual venue/mall with just that venue's own campaigns - "if in overall sheet
 // there are 5 malls then the main sheet shows the full summary and then split sheets by mall".
 // Uses every campaign in the currently loaded month(s), ignoring tab/location/date filters
-// entirely (same scope as the existing "Download Full Traffic Sheet" button) - Contract is still
-// excluded, consistent with the other two download buttons.
+// entirely - Contract is still excluded, consistent with the Filtered download.
 export async function downloadOverallTrafficSheetExcel() {
   const data = STATE.trafficSheetData;
   if (!data) return;

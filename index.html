@@ -5,6 +5,18 @@
 <title>Hypermedia Operations</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/png" href="/logo.png">
+<script>
+// Applied before first paint so a saved dark-mode choice never flashes light first - the toggle
+// itself (src/theme.js) writes this same key. Manual opt-in only, so this intentionally ignores
+// the OS's prefers-color-scheme; no saved choice means the normal (light) look, unchanged.
+(function () {
+  try {
+    if (localStorage.getItem('hm-ops-theme') === 'dark') {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  } catch (e) { /* private-browsing storage block */ }
+})();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/src/styles.css">

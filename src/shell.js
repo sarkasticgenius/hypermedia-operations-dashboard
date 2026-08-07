@@ -6,6 +6,7 @@ import { listClients } from './data/clients.js';
 import { LOGO_IMG } from './logo.js';
 import { esc } from './lib/format.js';
 import { isImpersonating, impersonationAdminName, stopImpersonation } from './impersonate.js';
+import { renderThemeToggle } from './theme.js';
 
 // Display labels for the three dashboard_sections.nav_group values - shown both as the
 // expandable sidebar group label and as the Dashboards page's dynamic topbar title.
@@ -28,19 +29,40 @@ const NAV_ITEMS_BOTTOM = [
   { page: 'trafficSheet', label: 'Traffic Sheet' },
 ];
 
-// A small icon per workspace, keyed by nav label/key so it stays attached even as pages get
-// renamed - purely visual, doesn't affect routing.
+// A small gradient-chip line icon per workspace, keyed by nav label/key so it stays attached even
+// as pages get renamed - purely visual, doesn't affect routing. Replaced the old flat single-color
+// emoji set (looked dated, inconsistent across OSes/fonts) with hand-drawn stroke icons in colored
+// rounded-square badges - same idea Linear/Notion-style sidebars use, renders identically
+// everywhere since it's plain SVG rather than relying on the platform's emoji font.
 const NAV_ICONS = {
-  'Live Ops Overview': '📊', Home: '🏠', 'Asset Inventory': '🖥️', 'Hardware Inventory': '📦',
-  'Procurement & Delivery': '🚚', Locations: '📍', Permits: '📄', 'Metro PIC': '🚇',
-  Ticketing: '🎫', 'SIM Cards': '📶', 'Static Campaigns': '🖼️', 'Traffic Sheet': '🚦',
-  'Digital Campaigns Panel': '📢', 'pDOOH Campaign Panel': '📺', 'Maintenance Panel': '🛠️',
-  'Client Campaigns Monitor': '✅', 'Campaign Monitor': '✅',
-  Administration: '🛡️', Settings: '⚙️', 'My Account': '👤', 'Recycle Bin': '🗑️',
+  'Live Ops Overview': { grad: ['#6366f1', '#8b5cf6'], svg: '<path d="M3 17l5-5 4 4 8-9"/><path d="M14 7h7v7"/>' },
+  Home: { grad: ['#f59e0b', '#ea580c'], svg: '<path d="M4 11.5L12 4l8 7.5"/><path d="M6 10v9h12v-9"/><path d="M10 19v-5h4v5"/>' },
+  'Asset Inventory': { grad: ['#14b8a6', '#06b6d4'], svg: '<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8"/><path d="M12 16v4"/>' },
+  'Hardware Inventory': { grad: ['#a16207', '#c2853a'], svg: '<path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/>' },
+  'Procurement & Delivery': { grad: ['#16a34a', '#22c55e'], svg: '<rect x="2" y="8" width="12" height="8" rx="1"/><path d="M14 11h4l3 3v2h-7z"/><circle cx="6.5" cy="18" r="1.6"/><circle cx="16.5" cy="18" r="1.6"/>' },
+  Locations: { grad: ['#e11d48', '#f43f5e'], svg: '<path d="M12 21s7-6.5 7-12a7 7 0 10-14 0c0 5.5 7 12 7 12z"/><circle cx="12" cy="9" r="2.4"/>' },
+  Permits: { grad: ['#4f46e5', '#6366f1'], svg: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M9.5 12h6M9.5 15.5h6M9.5 8.5h3"/>' },
+  'Metro PIC': { grad: ['#0891b2', '#0ea5e9'], svg: '<rect x="5" y="3" width="14" height="12" rx="4"/><path d="M8 19l-2 2M16 19l2 2"/><circle cx="9" cy="11" r="1.1"/><circle cx="15" cy="11" r="1.1"/><path d="M5 11h14"/>' },
+  Ticketing: { grad: ['#7c3aed', '#a855f7'], svg: '<path d="M3 8a2 2 0 012-2h14a2 2 0 012 2v2a2 2 0 000 4v2a2 2 0 01-2 2H5a2 2 0 01-2-2v-2a2 2 0 000-4z"/><path d="M14 6v12" stroke-dasharray="2 2"/>' },
+  'SIM Cards': { grad: ['#0284c7', '#38bdf8'], svg: '<path d="M4 20h2v-4H4z"/><path d="M9 20h2v-8H9z"/><path d="M14 20h2v-12h-2z"/><path d="M19 20h2v-16h-2z"/>' },
+  'Static Campaigns': { grad: ['#db2777', '#f472b6'], svg: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-6-6-4 4-2-2-6 6"/>' },
+  'Traffic Sheet': { grad: ['#ea580c', '#dc2626'], svg: '<rect x="9" y="2" width="6" height="16" rx="3"/><circle cx="12" cy="6" r="1.3"/><circle cx="12" cy="10" r="1.3"/><circle cx="12" cy="14" r="1.3"/><path d="M9 20h6"/>' },
+  'Digital Campaigns Panel': { grad: ['#9333ea', '#d946ef'], svg: '<path d="M3 10v4h3l6 4V6l-6 4H3z"/><path d="M14 9a4 4 0 010 6"/><path d="M17 6a8 8 0 010 12"/>' },
+  'pDOOH Campaign Panel': { grad: ['#2563eb', '#4f46e5'], svg: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M10 9l4 2-4 2z"/>' },
+  'Maintenance Panel': { grad: ['#475569', '#64748b'], svg: '<path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2z"/>' },
+  'Client Campaigns Monitor': { grad: ['#059669', '#10b981'], svg: '<path d="M12 3l7 3v6c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V6z"/><path d="M9 12l2 2 4-4"/>' },
+  'Campaign Monitor': { grad: ['#059669', '#10b981'], svg: '<path d="M12 3l7 3v6c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V6z"/><path d="M9 12l2 2 4-4"/>' },
+  Administration: { grad: ['#9f1239', '#be123c'], svg: '<path d="M12 3l7 3v6c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V6z"/>' },
+  Settings: { grad: ['#525252', '#737373'], svg: '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 00-2-1.2L14 3h-4l-.5 2.6a7 7 0 00-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 005 12a7 7 0 00.1 1.2l-2 1.6 2 3.4 2.4-1a7 7 0 002 1.2L10 21h4l.5-2.6a7 7 0 002-1.2l2.4 1 2-3.4-2-1.6a7 7 0 00.1-1.2z"/>' },
+  'My Account': { grad: ['#f59e0b', '#f97316'], svg: '<circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.5-7 8-7s8 3 8 7"/>' },
+  'Recycle Bin': { grad: ['#dc2626', '#f87171'], svg: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>' },
 };
 function navIcon(label) {
-  const icon = NAV_ICONS[label];
-  return icon ? `<span aria-hidden="true" style="margin-right:8px;">${icon}</span>` : '';
+  const def = NAV_ICONS[label];
+  if (!def) return '';
+  return `<span class="nav-icon-chip" aria-hidden="true" style="background:linear-gradient(135deg,${def.grad[0]},${def.grad[1]})">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${def.svg}</svg>
+  </span>`;
 }
 
 function navItem(page, label) {
@@ -257,10 +279,13 @@ export function renderShell(innerHtml) {
       <div class="main">
         <div class="topbar">
           <div style="display:flex;align-items:center;gap:10px;">
-            ${(STATE.pageHistory || []).length ? `<button class="btn-outline btn-sm" type="button" onclick="App.goBack()" title="Return to the previous page">&larr; Back</button>` : ''}
+            ${canGoBack() ? `<button class="btn-outline btn-sm" type="button" onclick="App.goBack()" title="${esc(backButtonTitle())}" aria-label="Back">&larr;</button>` : ''}
             <h1>${esc(title)}</h1>
           </div>
-          <div class="meta">${esc(STATE.user?.name || '')}</div>
+          <div class="meta" style="display:flex;align-items:center;gap:12px;">
+            ${renderThemeToggle()}
+            <span>${esc(STATE.user?.name || '')}</span>
+          </div>
         </div>
         <div class="content">${innerHtml}</div>
       </div>
@@ -309,10 +334,32 @@ export function goToClientMonitor(clientId) {
   navigateTo({ page: 'clientCampaignMonitor', activeClientId: clientId, modal: null });
 }
 
+// Traffic Sheet's Location drill-down (clicking a mall/venue row) filters the current page in
+// place rather than changing STATE.page, so it never shows up in pageHistory - without this, Back
+// would skip straight past it to whatever page was open before Traffic Sheet entirely, which is
+// exactly the "takes me to a different workspace" complaint. Checked ahead of page-history popping
+// so Back always undoes the most recent thing the user did, whether that was a drill-down or a
+// page change.
+function trafficSheetDrilledIn() {
+  return STATE.page === 'trafficSheet' && !!STATE.trafficSheetLocation;
+}
+
+export function canGoBack() {
+  return trafficSheetDrilledIn() || (STATE.pageHistory || []).length > 0;
+}
+
+export function backButtonTitle() {
+  return trafficSheetDrilledIn() ? 'Back to the location list' : 'Return to the previous page';
+}
+
 // Pops the last entry straight into STATE.page - deliberately NOT routed through navigateTo(), so
 // clicking Back never pushes its own history entry (which would otherwise make "back" and
 // "forward" loop against each other).
 export function goBack() {
+  if (trafficSheetDrilledIn()) {
+    setState({ trafficSheetLocation: '' });
+    return;
+  }
   const history = STATE.pageHistory || [];
   if (!history.length) return;
   const prevPage = history[history.length - 1];
