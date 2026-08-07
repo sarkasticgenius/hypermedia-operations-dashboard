@@ -636,6 +636,48 @@ export async function saveBrandfetchForm(event) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+// Admin-managed venue-name merges for Traffic Sheet (see venueAliasMap()/mergeVenueName() in
+// trafficSheet.js) - lets an admin fix a typo/spelling variant splitting one real location into
+// several rows in the Summary table, Location dropdown, and every export, without needing a code
+// change each time one turns up. Same shape and UI pattern as Brandfetch's Domain Overrides above
+// (a plain "raw = canonical" textarea, one merge per line) - stored as its own app_settings row
+// rather than nested under trafficSheetApi/brandfetch, since it's a data-normalization concern
+// independent of either integration's own connection config.
+function renderVenueAliasesCard(settings) {
+  const aliases = settings.venueAliases || {};
+  const aliasesText = Object.entries(aliases).map(([from, to]) => `${from} = ${to}`).join('\n');
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Traffic Sheet Venue Aliases</h3><div class="desc">Merges venue-name typos/spelling variants from the Traffic Sheet source data into one location - e.g. a stray extra space or misspelling that's currently showing up as its own separate row in the Summary table.</div></div>
+      <form onsubmit="App.saveVenueAliasesForm(event)">
+        <div class="field"><label>Merges</label>
+          <textarea id="int-venue-aliases" rows="8" style="min-height:160px;font-family:monospace;" placeholder="AJMAN CITY CENTRE TYPO = Ajman City Centre">${esc(aliasesText)}</textarea>
+          <div class="small muted" style="margin-top:4px;">One per line, "Raw name from Traffic Sheet = Canonical name to display". The raw name only needs to match on spelling/spacing/case - not case-sensitive.</div>
+        </div>
+        <button class="btn btn-orange" type="submit">Save</button>
+      </form>
+    </div>
+  `;
+}
+
+export async function saveVenueAliasesForm(event) {
+  event.preventDefault();
+  const text = document.getElementById('int-venue-aliases').value;
+  const aliases = {};
+  text.split('\n').forEach((line) => {
+    const [from, to] = line.split('=').map((s) => s && s.trim());
+    if (from && to) aliases[from] = to;
+  });
+  try {
+    await saveSetting('venueAliases', aliases);
+    await logAudit('Save venue aliases', `${Object.keys(aliases).length} merge(s)`);
+    invalidate('settings');
+    invalidate('venueAliases');
+    toast('Venue aliases saved');
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
 // Gathers distinct brand-lookup-worthy names across the 5 places logos are shown (venues,
 // contractors, campaign clients, Traffic Sheet venues - Asset Inventory reuses venue names so
 // isn't a separate source) PLUS every name in Domain Overrides, skips ones already cached (found
@@ -791,6 +833,7 @@ function renderIntegrationsTab() {
       { name: 'apiKey', label: 'API Key', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
     ], 'traffic-sheet-proxy')}
+    ${renderVenueAliasesCard(settings)}
     ${integrationField(settings, 'slackNotify', 'Slack Notifications', [
       { name: 'webhookUrl', label: 'Incoming Webhook URL', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },

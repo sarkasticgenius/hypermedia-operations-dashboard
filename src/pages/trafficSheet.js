@@ -47,7 +47,7 @@
 //     has its own tab, not part of In-Stores.
 import { STATE, setState, loadData } from '../state.js';
 import { loadingCard } from '../modals.js';
-import { getAllSettings } from '../data/settings.js';
+import { getAllSettings, getSetting } from '../data/settings.js';
 import { MAF_MALL_VENUE_KEYWORDS } from '../data/locationStats.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin } from '../auth.js';
@@ -133,6 +133,20 @@ function mergeCityCentreSpelling(name) {
   return toTitleCase(trimmed.replace(/\bcenter\b/gi, 'centre'));
 }
 
+// Admin-managed venue-name merges (Settings > Integrations > Traffic Sheet Venue Aliases) - for
+// one-off typos/spelling variants in the source data that keep splitting one real location into
+// several rows, without needing a hardcoded rule added here every time one turns up. Stored as a
+// plain {raw name: canonical name} map (same shape/pattern as Brandfetch's Domain Overrides),
+// checked first in mergeVenueName() so an admin-defined alias always wins over the built-in rules
+// below. loadData() self-heals once the setting loads - returns an empty map (no aliases applied
+// yet) on the render before that, same as every other page-level loadData() call in this app.
+function venueAliasMap() {
+  const raw = loadData('venueAliases', () => getSetting('venueAliases'));
+  const map = new Map();
+  if (raw) Object.entries(raw).forEach(([from, to]) => { if (from && to) map.set(normalizeVenueText(from), to); });
+  return map;
+}
+
 // Venue-name rollups applied for display/grouping (summary, location dropdown, campaign list,
 // brand logo lookup key - see brandNameForVenue) only - the raw name is still what's matched
 // against tab/keyword rules first, so e.g. "Royals Entry 2" still matches the Royals tab on its own
@@ -158,6 +172,8 @@ export function mergeVenueName(name, venueType) {
   // distinct, clearly-flagged venue instead of colliding with "no venue name" everywhere it's used.
   if (!name || !String(name).trim()) return '(Unnamed Venue)';
   const n = normalizeVenueText(name);
+  const alias = venueAliasMap().get(n);
+  if (alias) return alias;
   if (n === 'ENOC HATTA') return 'ENOC Dubai';
   if (/^ROYALS ENTRY \d+$/.test(n)) return 'Royals Entry';
   if (/^ROYALS EXIT \d+$/.test(n)) return 'Royals Exit';
@@ -188,14 +204,18 @@ export function mergeVenueName(name, venueType) {
 //     matched a Swedish retailer). So this still returns the stripped name for EVERY station (it's
 //     the display/cache-key), but isBrandedMetroStation() below gates which of those names are
 //     actually safe to send to Search - see its comment.
-//   - Multi-location retail chains (LULU/Union Coop/ADCOOP/ENOC) -> just the chain name, not each
-//     branch's full venue string ("LULU AL KHALIFA") - one correct lookup covers every branch.
+//   - Multi-location retail chains (LULU/Union Coop/ADCOOP/ENOC/Nakheel Pavilion) -> just the
+//     chain name, not each branch's full venue string ("LULU AL KHALIFA", "Nakheel Pavilion - Al
+//     Furjan West") - one correct lookup covers every branch instead of each one needing its own
+//     (every branch of Nakheel Pavilion previously failed Search individually - real example:
+//     "Nakheel Pavilion - Al Furjan West"/"...Discovery Gardens"/"...International City" etc all
+//     came back "No match found" on their own, before this was added).
 //   - Royals/Gems (network ROYALS/GEMS) -> null, no lookup at all. These are internal-only screen
 //     groupings with no real external brand or logo to find - searching for "Royals Entry" or
 //     "PALM-DUBAI ZUMUROD" will only ever return an unrelated company by coincidence of wording.
 //   - Everything else (malls, named venues) -> the venue name itself, unchanged.
-const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR'];
-const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour' };
+const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR', 'NAKHEEL PAVILION'];
+const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour', 'NAKHEEL PAVILION': 'Nakheel Pavilion' };
 const METRO_FALLBACK_BRAND = 'Dubai Metro Rail';
 function isMetroVenue(venue) {
   const venueType = (venue.venueType || '').toUpperCase();
