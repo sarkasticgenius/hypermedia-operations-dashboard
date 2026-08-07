@@ -170,6 +170,15 @@ function filteredOfflineAssets(items) {
   return items.filter((i) => i.kind === 'source' && i.source === filter);
 }
 
+// Status icon for the hero stat tiles - a plain checkmark when that metric is clear (value 0),
+// a warning triangle when it needs attention (value > 0). One shared icon pair rather than a
+// unique glyph per KPI keeps the strip visually calm instead of noisy.
+const STAT_ICON_OK = '<path d="M20 6L9 17l-5-5"/>';
+const STAT_ICON_ALERT = '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>';
+function statIcon(alert) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${alert ? STAT_ICON_ALERT : STAT_ICON_OK}</svg>`;
+}
+
 const OFFLINE_FILTER_TABS = [
   { key: 'All', label: 'All' }, { key: 'Manual', label: 'Manual' },
   { key: 'Broadsign', label: 'Broadsign' }, { key: 'Grassfish', label: 'Grassfish' },
@@ -250,108 +259,111 @@ export function renderOpsOverview() {
   return `
     <div class="banner"><span class="live-pulse-dot"></span>Live — updated ${new Date().toLocaleTimeString()}. This page auto-refreshes and only surfaces what needs attention right now. For a broader daily snapshot across every workspace, see <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('dashboard')">Home</a>.</div>
 
-    <div class="kpi-row">
+    <div class="bento-stats">
       ${kpis.map((k) => `
-        <div class="kpi" style="border-left:4px solid ${k.value > 0 ? '#c0392b' : '#1f9d55'};cursor:pointer;" onclick="App.scrollToOpsCard('${k.key === 'offlineFaces' ? 'offline' : k.key}')">
-          <div class="label">${esc(k.label)}</div>
-          <div class="value">${k.value}</div>
-          ${k.sub ? `<div class="sub">${esc(k.sub)}</div>` : ''}
+        <div class="bento-stat ${k.value > 0 ? 'alert' : 'ok'}" onclick="App.scrollToOpsCard('${k.key === 'offlineFaces' ? 'offline' : k.key}')">
+          <div class="stat-icon">${statIcon(k.value > 0)}</div>
+          <div class="stat-label">${esc(k.label)}</div>
+          <div class="stat-value">${k.value}</div>
+          ${k.sub ? `<div class="stat-sub">${esc(k.sub)}</div>` : ''}
         </div>
       `).join('')}
     </div>
 
-    <div class="card">
-      <div class="card-head"><h3>Network Health</h3><div class="desc">${health.total - health.offline} of ${health.total} tracked items online</div></div>
-      <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
-        ${svgDonutChart(health.healthPct, donutColor(health.offline, health.total), 130, health.healthPct + '%', 'Online')}
-        <div style="flex:1;min-width:220px;">
-          ${svgGroupedBarChart(['Manual', 'Broadsign', 'Grassfish'], [{ name: 'Offline', color: '#c0392b', values: [offlineAssets.filter((o) => o.kind === 'manual').length, offlineAssets.filter((o) => o.kind === 'source' && o.source === 'Broadsign').length, offlineAssets.filter((o) => o.kind === 'source' && o.source === 'Grassfish').length] }], { width: 300, height: 130 })}
+    <div class="bento-grid">
+      <div class="bento-tile bento-span-4">
+        <div class="card-head"><h3>Network Health</h3><div class="desc">${health.total - health.offline} of ${health.total} tracked items online</div></div>
+        <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
+          ${svgDonutChart(health.healthPct, donutColor(health.offline, health.total), 130, health.healthPct + '%', 'Online')}
+          <div style="flex:1;min-width:220px;">
+            ${svgGroupedBarChart(['Manual', 'Broadsign', 'Grassfish'], [{ name: 'Offline', color: '#c0392b', values: [offlineAssets.filter((o) => o.kind === 'manual').length, offlineAssets.filter((o) => o.kind === 'source' && o.source === 'Broadsign').length, offlineAssets.filter((o) => o.kind === 'source' && o.source === 'Grassfish').length] }], { width: 300, height: 130 })}
+          </div>
         </div>
-      </div>
-      <div class="kpi-row" style="margin-top:16px;">
-        <div class="kpi"><div class="label">Total Screens (full inventory)</div><div class="value">${inventoryTotals.totalScreens}</div><div class="sub">${inventoryTotals.totalFaces} faces</div></div>
-        <div class="kpi"><div class="label">MAF Mall Screens</div><div class="value">${mafTotals.screens}</div></div>
-        <div class="kpi"><div class="label">MAF Mall Faces</div><div class="value">${mafTotals.faces}</div></div>
-      </div>
-      <div class="card-head" style="margin-top:16px;margin-bottom:8px;"><h3 style="font-size:13.5px;">Broadsign + Grassfish, combined</h3></div>
-      <div class="kpi-row">
-        <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Online Screens</div><div class="value">${onlineNetworkedScreens}</div></div>
-        <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline Screens</div><div class="value">${offlineNetworkedScreens}</div></div>
-        <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Online Faces</div><div class="value">${onlineNetworkedFaces}</div></div>
-        <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline Faces</div><div class="value">${networkedOfflineFaces}</div></div>
-      </div>
-    </div>
-
-    ${iotB && iotB.totalDevices ? `<div class="card">
-      <div class="card-head"><h3>IoT Devices</h3><div class="desc">${iotB.totalDevices} device(s) via the aioo IoT Admin Console${iotApi.lastSync ? `, last synced ${new Date(iotApi.lastSync).toLocaleTimeString()}` : ''}. See <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('iotPanel')">IoT Panel</a> for the full breakdown.</div></div>
-      <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
-        ${svgDonutChart(iotTrackingPct, donutColor(iotB.totalDevices - iotTracking, iotB.totalDevices), 130, iotTrackingPct + '%', 'Tracking')}
-        <div style="flex:1;min-width:220px;">
-          ${svgGroupedBarChart(Object.keys(iotB.byState), [{ name: 'Devices', color: '#2f6fb3', values: Object.values(iotB.byState) }], { width: 300, height: 130 })}
+        <div class="kpi-row" style="margin-top:16px;">
+          <div class="kpi"><div class="label">Total Screens (full inventory)</div><div class="value">${inventoryTotals.totalScreens}</div><div class="sub">${inventoryTotals.totalFaces} faces</div></div>
+          <div class="kpi"><div class="label">MAF Mall Screens</div><div class="value">${mafTotals.screens}</div></div>
+          <div class="kpi"><div class="label">MAF Mall Faces</div><div class="value">${mafTotals.faces}</div></div>
         </div>
-      </div>
-      <div class="kpi-row" style="margin-top:16px;">
-        <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Tracking</div><div class="value">${iotTracking}</div></div>
-        <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline</div><div class="value">${iotB.byState.Offline || 0}</div></div>
-        <div class="kpi"><div class="label">Ready</div><div class="value">${iotB.byState.Ready || 0}</div></div>
-        <div class="kpi"><div class="label">Idle / Unknown</div><div class="value">${(iotB.byState.Idle || 0) + (iotB.byState.Unknown || 0)}</div></div>
-      </div>
-    </div>` : ''}
-
-    ${tsConfigured ? `<div class="card">
-      <div class="card-head"><h3>Traffic Sheet Campaigns</h3><div class="desc">${tsData ? `${tsTodayCount} live today, ${tsMonthTotal} total this month.` : 'Loading...'} See <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('trafficSheet')">Traffic Sheet</a> for full detail.</div></div>
-      ${tsData ? `
+        <div class="card-head" style="margin-top:16px;margin-bottom:8px;"><h3 style="font-size:13.5px;">Broadsign + Grassfish, combined</h3></div>
         <div class="kpi-row">
-          <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Live Today</div><div class="value">${tsTodayCount}</div></div>
-          <div class="kpi"><div class="label">This Month</div><div class="value">${tsMonthTotal}</div></div>
+          <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Online Screens</div><div class="value">${onlineNetworkedScreens}</div></div>
+          <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline Screens</div><div class="value">${offlineNetworkedScreens}</div></div>
+          <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Online Faces</div><div class="value">${onlineNetworkedFaces}</div></div>
+          <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline Faces</div><div class="value">${networkedOfflineFaces}</div></div>
         </div>
-        <div style="margin-top:16px;">
-          ${svgGroupedBarChart(VENUE_CATEGORY_KEYS.map((k) => TS_LABELS[k] || k), [{ name: 'Campaigns', color: '#2f6fb3', values: VENUE_CATEGORY_KEYS.map((k) => tsCategoryCounts[k] || 0) }], { width: 620, height: 150 })}
+      </div>
+
+      ${iotB && iotB.totalDevices ? `<div class="bento-tile bento-span-2">
+        <div class="card-head"><h3>IoT Devices</h3><div class="desc">${iotB.totalDevices} device(s) via the aioo IoT Admin Console${iotApi.lastSync ? `, last synced ${new Date(iotApi.lastSync).toLocaleTimeString()}` : ''}. See <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('iotPanel')">IoT Panel</a> for the full breakdown.</div></div>
+        <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
+          ${svgDonutChart(iotTrackingPct, donutColor(iotB.totalDevices - iotTracking, iotB.totalDevices), 130, iotTrackingPct + '%', 'Tracking')}
+          <div style="flex:1;min-width:220px;">
+            ${svgGroupedBarChart(Object.keys(iotB.byState), [{ name: 'Devices', color: '#2f6fb3', values: Object.values(iotB.byState) }], { width: 300, height: 130 })}
+          </div>
         </div>
-      ` : '<div class="empty">Loading Traffic Sheet data...</div>'}
-    </div>` : ''}
+        <div class="kpi-row" style="margin-top:16px;">
+          <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Tracking</div><div class="value">${iotTracking}</div></div>
+          <div class="kpi" style="border-left:4px solid #c0392b;"><div class="label">Offline</div><div class="value">${iotB.byState.Offline || 0}</div></div>
+          <div class="kpi"><div class="label">Ready</div><div class="value">${iotB.byState.Ready || 0}</div></div>
+          <div class="kpi"><div class="label">Idle / Unknown</div><div class="value">${(iotB.byState.Idle || 0) + (iotB.byState.Unknown || 0)}</div></div>
+        </div>
+      </div>` : ''}
 
-    <div id="ops-card-tickets" class="card">
-      <div class="card-head"><h3>Open Tickets <span class="badge b-red">${openTickets.length}</span></h3></div>
-      ${svgGroupedBarChart(ageBuckets.labels, [{ name: 'Tickets', color: '#e07a2c', values: ageBuckets.values }])}
-      ${opsListRows(openTickets.slice(0, 8), (t) => ({
-        main: t.title, sub: t.location || '-', tag: `${t.daysOpen}d open`, tagClass: t.daysOpen >= 3 ? 'b-red' : 'b-amber',
-        onclick: `App.openOpsItem('ticket','${t.id}')`,
-      }))}
-      ${openTickets.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${openTickets.length - 8} more</div>` : ''}
-      <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('tickets')">View all</button>
-    </div>
+      ${tsConfigured ? `<div class="bento-tile bento-span-2">
+        <div class="card-head"><h3>Traffic Sheet Campaigns</h3><div class="desc">${tsData ? `${tsTodayCount} live today, ${tsMonthTotal} total this month.` : 'Loading...'} See <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('trafficSheet')">Traffic Sheet</a> for full detail.</div></div>
+        ${tsData ? `
+          <div class="kpi-row">
+            <div class="kpi" style="border-left:4px solid #1f9d55;"><div class="label">Live Today</div><div class="value">${tsTodayCount}</div></div>
+            <div class="kpi"><div class="label">This Month</div><div class="value">${tsMonthTotal}</div></div>
+          </div>
+          <div style="margin-top:16px;">
+            ${svgGroupedBarChart(VENUE_CATEGORY_KEYS.map((k) => TS_LABELS[k] || k), [{ name: 'Campaigns', color: '#2f6fb3', values: VENUE_CATEGORY_KEYS.map((k) => tsCategoryCounts[k] || 0) }], { width: 620, height: 150 })}
+          </div>
+        ` : '<div class="empty">Loading Traffic Sheet data...</div>'}
+      </div>` : ''}
 
-    <div id="ops-card-offline" class="card">
-      <div class="card-head"><h3>Offline Screens <span class="badge b-red">${offlineAssets.length}</span></h3><div class="desc">${networkedOfflineFaces} faces offline across Broadsign + Grassfish</div></div>
-      ${renderTabs(OFFLINE_FILTER_TABS, STATE.opsOfflineFilter || 'All', 'App.setOpsOfflineFilter')}
-      ${opsListRows(visibleOffline.slice(0, 8), (o) => ({ main: o.name, sub: o.location, tag: o.kind === 'manual' ? 'Manual' : o.source, tagClass: 'b-gray' }))}
-      ${visibleOffline.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${visibleOffline.length - 8} more</div>` : ''}
-      <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('locations')">View all</button>
-    </div>
+      <div id="ops-card-tickets" class="bento-tile bento-span-2 bento-row-2">
+        <div class="card-head"><h3>Open Tickets <span class="badge b-red">${openTickets.length}</span></h3></div>
+        ${svgGroupedBarChart(ageBuckets.labels, [{ name: 'Tickets', color: '#e07a2c', values: ageBuckets.values }])}
+        ${opsListRows(openTickets.slice(0, 8), (t) => ({
+          main: t.title, sub: t.location || '-', tag: `${t.daysOpen}d open`, tagClass: t.daysOpen >= 3 ? 'b-red' : 'b-amber',
+          onclick: `App.openOpsItem('ticket','${t.id}')`,
+        }))}
+        ${openTickets.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${openTickets.length - 8} more</div>` : ''}
+        <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('tickets')">View all</button>
+      </div>
 
-    <div id="ops-card-sims" class="card">
-      <div class="card-head"><h3>SIM Issues <span class="badge b-amber">${simIssues.length}</span></h3></div>
-      ${svgGroupedBarChart(['Duplicate', 'Mismatch'], [{ name: 'Count', color: '#8e44ad', values: [simIssues.filter((s) => s.issueType === 'Duplicate').length, simIssues.filter((s) => s.issueType === 'Mismatch').length] }])}
-      ${opsListRows(simIssues.slice(0, 8), (s) => ({
-        main: s.sim_number || '(no number)', sub: s.deployed_location_name || '-', tag: s.issueType, tagClass: s.issueType === 'Duplicate' ? 'b-red' : 'b-amber',
-        onclick: `App.openOpsItem('sim','${s.id}')`,
-      }))}
-      ${simIssues.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${simIssues.length - 8} more</div>` : ''}
-      <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('simCards')">View all</button>
-    </div>
+      <div id="ops-card-offline" class="bento-tile bento-span-2 bento-row-2">
+        <div class="card-head"><h3>Offline Screens <span class="badge b-red">${offlineAssets.length}</span></h3><div class="desc">${networkedOfflineFaces} faces offline across Broadsign + Grassfish</div></div>
+        ${renderTabs(OFFLINE_FILTER_TABS, STATE.opsOfflineFilter || 'All', 'App.setOpsOfflineFilter')}
+        ${opsListRows(visibleOffline.slice(0, 8), (o) => ({ main: o.name, sub: o.location, tag: o.kind === 'manual' ? 'Manual' : o.source, tagClass: 'b-gray' }))}
+        ${visibleOffline.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${visibleOffline.length - 8} more</div>` : ''}
+        <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('locations')">View all</button>
+      </div>
 
-    <div id="ops-card-compliance" class="card">
-      <div class="card-head"><h3>Compliance Due <span class="badge b-amber">${compliance.length}</span></h3></div>
-      ${svgGroupedBarChart(['Permit', 'Metro PIC'], [{ name: 'Due', color: '#3a7ca5', values: [compliance.filter((c) => c.type === 'Permit').length, compliance.filter((c) => c.type === 'Metro PIC').length] }])}
-      ${opsListRows(compliance.slice(0, 8), (c) => ({
-        main: c.label, sub: c.type, tag: c.status, tagClass: c.status === 'Expired' ? 'b-red' : 'b-amber',
-        onclick: `App.openOpsItem('${c.kind}','${c.id}')`,
-      }))}
-      ${compliance.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${compliance.length - 8} more</div>` : ''}
-      <div style="display:flex;gap:8px;margin-top:8px;">
-        <button class="btn-sm" onclick="App.setPage('permits')">View Permits</button>
-        <button class="btn-sm" onclick="App.setPage('metroPic')">View Metro PIC</button>
+      <div id="ops-card-sims" class="bento-tile bento-span-2">
+        <div class="card-head"><h3>SIM Issues <span class="badge b-amber">${simIssues.length}</span></h3></div>
+        ${svgGroupedBarChart(['Duplicate', 'Mismatch'], [{ name: 'Count', color: '#8e44ad', values: [simIssues.filter((s) => s.issueType === 'Duplicate').length, simIssues.filter((s) => s.issueType === 'Mismatch').length] }])}
+        ${opsListRows(simIssues.slice(0, 8), (s) => ({
+          main: s.sim_number || '(no number)', sub: s.deployed_location_name || '-', tag: s.issueType, tagClass: s.issueType === 'Duplicate' ? 'b-red' : 'b-amber',
+          onclick: `App.openOpsItem('sim','${s.id}')`,
+        }))}
+        ${simIssues.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${simIssues.length - 8} more</div>` : ''}
+        <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('simCards')">View all</button>
+      </div>
+
+      <div id="ops-card-compliance" class="bento-tile bento-span-2">
+        <div class="card-head"><h3>Compliance Due <span class="badge b-amber">${compliance.length}</span></h3></div>
+        ${svgGroupedBarChart(['Permit', 'Metro PIC'], [{ name: 'Due', color: '#3a7ca5', values: [compliance.filter((c) => c.type === 'Permit').length, compliance.filter((c) => c.type === 'Metro PIC').length] }])}
+        ${opsListRows(compliance.slice(0, 8), (c) => ({
+          main: c.label, sub: c.type, tag: c.status, tagClass: c.status === 'Expired' ? 'b-red' : 'b-amber',
+          onclick: `App.openOpsItem('${c.kind}','${c.id}')`,
+        }))}
+        ${compliance.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${compliance.length - 8} more</div>` : ''}
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button class="btn-sm" onclick="App.setPage('permits')">View Permits</button>
+          <button class="btn-sm" onclick="App.setPage('metroPic')">View Metro PIC</button>
+        </div>
       </div>
     </div>
   `;
