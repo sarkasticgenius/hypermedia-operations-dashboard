@@ -145,6 +145,13 @@ function mergeCityCentreSpelling(name) {
 //     variants, which carry extra distinguishing words and are almost certainly separate physical
 //     surfaces, not a naming accident (same conservative-merge reasoning as City Centre above).
 export function mergeVenueName(name) {
+  // A venue entry with no name at all (blank/null in the source data - a real gap in that
+  // venue's registration, not something this app generates) otherwise flows through untouched and
+  // renders as a blank row: blank Location cell in the Summary table, and previously a literal
+  // "Sheet" tab in the Overall Traffic Sheet export. Labeling it clearly here fixes both at the
+  // source instead of patching each display separately - it now groups/filters/exports as one
+  // distinct, clearly-flagged venue instead of colliding with "no venue name" everywhere it's used.
+  if (!name || !String(name).trim()) return '(Unnamed Venue)';
   const n = normalizeVenueText(name);
   if (n === 'ENOC HATTA') return 'ENOC Dubai';
   if (/^ROYALS ENTRY \d+$/.test(n)) return 'Royals Entry';
