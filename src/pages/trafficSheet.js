@@ -86,7 +86,7 @@ const GEMS_VENUE_KEYWORDS = ['PALM DUBAI ZUMUROD', 'PALM DUBAI RUBY', 'PALM DUBA
 // FOC/marketing bookings apart from paid ones without hiding them from the normal view there.
 const FOC_MARKETING_KEYWORDS = ['FOC', 'MARKETING', 'MKTG'];
 
-function isFocMarketingCampaign(campaign) {
+export function isFocMarketingCampaign(campaign) {
   const name = (campaign.campaignName || '').toUpperCase();
   return FOC_MARKETING_KEYWORDS.some((k) => name.includes(k));
 }
