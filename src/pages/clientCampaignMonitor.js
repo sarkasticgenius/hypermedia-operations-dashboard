@@ -14,10 +14,59 @@ import { listClients } from '../data/clients.js';
 import { listApprovalsForClient, upsertPendingApproval, approveCampaign, markCampaignLive } from '../data/campaignApprovals.js';
 import { notifySlack } from '../data/slack.js';
 import { fetchTrafficSheetCampaigns, normalizeVenueText, statusBadge, renderDayGrid } from './trafficSheet.js';
+import { renderTabs } from '../lib/tabs.js';
 
 const ALL_CLIENTS_KEY = '__all__';
 const PENDING_ALERT_MINUTES = 15;
 const AUTO_REFRESH_MS = 10 * 60 * 1000;
+
+// "Approved" here is deliberately broad - anything past the client's own approval step (whether
+// or not Ops has flipped it live yet), so Pending + Approved are two non-overlapping buckets that
+// together cover every campaign. Overview shows both combined.
+const MONITOR_TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'pending', label: 'Pending Approval' },
+  { key: 'approved', label: 'Approved' },
+];
+
+function approvalStatus(c) { return c.__approval?.status || 'pending'; }
+function filterByMonitorTab(rows, tab) {
+  if (tab === 'pending') return rows.filter((c) => approvalStatus(c) === 'pending');
+  if (tab === 'approved') return rows.filter((c) => approvalStatus(c) !== 'pending');
+  return rows;
+}
+
+const STAT_ICONS = {
+  total: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
+  pending: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
+  approved: '<path d="M20 6L9 17l-5-5"/>',
+  completed: '<circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/>',
+};
+function statTile(kind, variant, label, value) {
+  return `<div class="bento-stat ${variant}" onclick="App.setClientMonitorTab('${kind === 'completed' ? 'approved' : kind === 'total' ? 'overview' : kind}')">
+    <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAT_ICONS[kind]}</svg></div>
+    <div class="stat-label">${esc(label)}</div>
+    <div class="stat-value">${value}</div>
+  </div>`;
+}
+
+// "Overall campaign details" at a glance - Total is always neutral; Pending/Approved/Completed
+// each reflect whether that bucket needs attention (a non-zero Pending count is the one thing a
+// client actually needs to act on) using the same ok/alert/info gradient vocabulary Live Ops uses.
+function renderCampaignStatTiles(rows) {
+  const total = rows.length;
+  const pending = rows.filter((c) => approvalStatus(c) === 'pending').length;
+  const approved = rows.filter((c) => approvalStatus(c) === 'approved').length;
+  const completed = rows.filter((c) => approvalStatus(c) === 'live').length;
+  return `
+    <div class="bento-stats">
+      ${statTile('total', 'info', 'Total Campaigns', total)}
+      ${statTile('pending', pending > 0 ? 'alert' : 'ok', 'Pending Approval', pending)}
+      ${statTile('approved', 'info', 'Approved - Awaiting Ops', approved)}
+      ${statTile('completed', 'ok', 'Completed', completed)}
+    </div>
+  `;
+}
 
 function currentMonth() {
   const d = new Date();
@@ -199,8 +248,10 @@ export function renderClientCampaignMonitor() {
   const sorted = sortNewestFirst(data);
   const canMarkLive = !isClient && (isAdmin() || canEdit('clientCampaigns'));
   const view = STATE.clientMonitorView || 'list';
+  const monitorTab = STATE.clientMonitorTab || 'overview';
+  const tabbed = filterByMonitorTab(sorted, monitorTab);
 
-  const rows = sorted.map((c) => `
+  const rows = tabbed.map((c) => `
     <tr>
       <td>${esc(c.campaignName || '')}</td>
       <td>${esc((c.__matchedVenues || []).map((v) => v.venue).join(', '))}</td>
@@ -214,6 +265,7 @@ export function renderClientCampaignMonitor() {
   return `
     ${!isClient ? renderClientPicker(clients, activeClient.id) : ''}
     ${isClient ? renderNotifyBanner() : ''}
+    ${renderCampaignStatTiles(sorted)}
     <div class="card">
       <div class="card-head" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
         <div><h3>${esc(activeClient.name)} - Campaign Monitor</h3><div class="desc">${data.length} campaign(s) this month matched to this client's venues.</div></div>
@@ -222,10 +274,11 @@ export function renderClientCampaignMonitor() {
           <button class="btn-sm ${view === 'calendar' ? 'btn-orange' : ''}" onclick="App.setClientMonitorView('calendar')">Calendar</button>
         </div>
       </div>
-      ${view === 'calendar' ? renderDayGrid(sorted, '', '') : `
+      ${renderTabs(MONITOR_TABS, monitorTab, 'App.setClientMonitorTab')}
+      ${view === 'calendar' ? renderDayGrid(tabbed, '', '') : `
         <table>
           <thead><tr><th>Campaign Name</th><th>Venue(s)</th><th>Start</th><th>End</th><th>Status</th><th>Approval</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="6"><div class="empty">No campaigns matched this client\'s venues this month.</div></td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="6"><div class="empty">No campaigns in this view.</div></td></tr>'}</tbody>
         </table>
       `}
     </div>
@@ -242,7 +295,9 @@ function renderCombinedView(clients) {
 
   const canMarkLive = isAdmin() || canEdit('clientCampaigns');
   const sorted = sortNewestFirst(data);
-  const rows = sorted.map((c) => `
+  const monitorTab = STATE.clientMonitorTab || 'overview';
+  const tabbed = filterByMonitorTab(sorted, monitorTab);
+  const rows = tabbed.map((c) => `
     <tr>
       <td>${esc(c.__clientName || '')}</td>
       <td>${esc(c.campaignName || '')}</td>
@@ -256,11 +311,13 @@ function renderCombinedView(clients) {
 
   return `
     ${renderClientPicker(clients, ALL_CLIENTS_KEY)}
+    ${renderCampaignStatTiles(sorted)}
     <div class="card">
       <div class="card-head"><h3>All Clients - Campaign Monitor</h3><div class="desc">${data.length} campaign(s) this month across ${clients.length} client(s).</div></div>
+      ${renderTabs(MONITOR_TABS, monitorTab, 'App.setClientMonitorTab')}
       <table>
         <thead><tr><th>Client</th><th>Campaign Name</th><th>Venue(s)</th><th>Start</th><th>End</th><th>Status</th><th>Approval</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="7"><div class="empty">No campaigns matched any client\'s venues this month.</div></td></tr>'}</tbody>
+        <tbody>${rows || '<tr><td colspan="7"><div class="empty">No campaigns in this view.</div></td></tr>'}</tbody>
       </table>
     </div>
   `;
@@ -272,6 +329,10 @@ export function setActiveClient(id) {
 
 export function setClientMonitorView(view) {
   setState({ clientMonitorView: view });
+}
+
+export function setClientMonitorTab(tab) {
+  setState({ clientMonitorTab: tab });
 }
 
 function invalidateClientMonitorCaches() {

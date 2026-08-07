@@ -173,21 +173,22 @@ input,select,textarea{font-family:inherit;}
 @media (max-width:600px){.bento-grid{grid-template-columns:1fr;}.bento-tile{grid-column:span 1 !important;grid-row:span 1 !important;}}
 
 /* Hero stat strip - the 5 headline KPIs, each its own rounded stat card with a status icon,
-   tinted green/red by whether that metric currently needs attention (value > 0). */
+   tinted green/red by whether that metric currently needs attention (value > 0). Styled as a
+   vibrant gradient "widget" (iOS-style) rather than a flat tinted card - white text/icon on a
+   saturated multi-stop brand gradient, so it reads the same in light and dark mode without needing
+   separate theme overrides (it's fully opaque and colorful either way). Three semantic variants:
+   ok (all clear), alert (needs attention), info (neutral count, e.g. a running total). */
 .bento-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:16px;}
-.bento-stat{border-radius:20px;padding:18px 20px;border:1px solid var(--border);background:var(--card-bg);cursor:pointer;transition:transform .18s ease,box-shadow .18s ease;display:flex;flex-direction:column;gap:10px;}
-.bento-stat:hover{transform:translateY(-3px);box-shadow:0 12px 26px rgba(0,0,0,0.09);}
-.bento-stat.ok{background:var(--green-bg);border-color:transparent;}
-.bento-stat.alert{background:var(--red-bg);border-color:transparent;}
-.bento-stat .stat-icon{width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;}
-.bento-stat.ok .stat-icon{background:rgba(31,157,85,0.16);color:var(--green);}
-.bento-stat.alert .stat-icon{background:rgba(192,57,43,0.16);color:var(--red);}
+.bento-stat{border-radius:22px;padding:18px 20px;border:none;cursor:pointer;transition:transform .18s ease,box-shadow .18s ease;display:flex;flex-direction:column;gap:10px;box-shadow:0 10px 26px rgba(0,0,0,0.14),inset 0 1px 0 rgba(255,255,255,0.18);}
+.bento-stat:hover{transform:translateY(-3px);box-shadow:0 16px 36px rgba(0,0,0,0.2),inset 0 1px 0 rgba(255,255,255,0.18);}
+.bento-stat.ok{background:linear-gradient(135deg,#34d399 0%,#10b981 45%,#0891b2 100%);}
+.bento-stat.alert{background:linear-gradient(135deg,#fbbf24 0%,#f97316 45%,#dc2626 100%);}
+.bento-stat.info{background:linear-gradient(135deg,#f7b955 0%,#e8951f 45%,#7c3aed 100%);}
+.bento-stat .stat-icon{width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.22);color:#fff;}
 .bento-stat .stat-icon svg{width:18px;height:18px;}
-.bento-stat .stat-label{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);}
-.bento-stat .stat-value{font-size:32px;font-weight:800;line-height:1;}
-.bento-stat.ok .stat-value{color:var(--green);}
-.bento-stat.alert .stat-value{color:var(--red);}
-.bento-stat .stat-sub{font-size:11.5px;color:var(--text-dim);}
+.bento-stat .stat-label{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:rgba(255,255,255,0.88);}
+.bento-stat .stat-value{font-size:32px;font-weight:800;line-height:1;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,0.15);}
+.bento-stat .stat-sub{font-size:11.5px;color:rgba(255,255,255,0.78);}
 
 table{width:100%;border-collapse:collapse;font-size:13px;}
 th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-dim);padding:9px 10px;border-bottom:1px solid var(--border);font-weight:700;}
