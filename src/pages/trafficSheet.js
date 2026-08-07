@@ -163,27 +163,50 @@ function venueAliasMap() {
 // "Mall of the Emirates" (a genuine MAF mall, venueType MALLS - a totally different physical venue
 // that just happens to share a name with the station serving it) got relabeled "...Station" too,
 // which is wrong for a mall. Every call site has a venue object with .venueType on hand already.
-export function mergeVenueName(name, venueType) {
-  // A venue entry with no name at all (blank/null in the source data - a real gap in that
-  // venue's registration, not something this app generates) otherwise flows through untouched and
-  // renders as a blank row: blank Location cell in the Summary table, and previously a literal
-  // "Sheet" tab in the Overall Traffic Sheet export. Labeling it clearly here fixes both at the
-  // source instead of patching each display separately - it now groups/filters/exports as one
-  // distinct, clearly-flagged venue instead of colliding with "no venue name" everywhere it's used.
-  if (!name || !String(name).trim()) return '(Unnamed Venue)';
+// Single source of truth behind both mergeVenueName() and venueRawKeyForScreens() below.
+// `identity: true` means the raw name is just noise (typo/spelling/casing) for the SAME physical
+// venue - ENOC Hatta and Royals Entry/Exit are the opposite case: genuinely distinct physical
+// installs (different petrol stations, different physical entry points) that get rolled into one
+// DISPLAY group but should still have their own screens counted separately and summed. Every other
+// rule here (admin aliases, City Centre spelling, Mall of the Emirates) is fixing name noise for
+// what's really one physical venue, so those default to identity: true.
+function resolveVenueName(name, venueType) {
+  if (!name || !String(name).trim()) return { name: '(Unnamed Venue)', identity: true };
   const n = normalizeVenueText(name);
   const alias = venueAliasMap().get(n);
-  if (alias) return alias;
-  if (n === 'ENOC HATTA') return 'ENOC Dubai';
-  if (/^ROYALS ENTRY \d+$/.test(n)) return 'Royals Entry';
-  if (/^ROYALS EXIT \d+$/.test(n)) return 'Royals Exit';
+  if (alias) return { name: alias, identity: true };
+  if (n === 'ENOC HATTA') return { name: 'ENOC Dubai', identity: false };
+  if (/^ROYALS ENTRY \d+$/.test(n)) return { name: 'Royals Entry', identity: false };
+  if (/^ROYALS EXIT \d+$/.test(n)) return { name: 'Royals Exit', identity: false };
   const vt = (venueType || '').toUpperCase();
   const isMetro = vt === 'METRO' || vt === 'METRO OUTDOOR';
-  if (isMetro && /^MALL OF( THE)? EMIRATES( STATION)?( \d+)?$/.test(n)) return 'Mall of the Emirates Station';
-  if (!isMetro && /^MALL OF( THE)? EMIRATES$/.test(n)) return 'Mall of the Emirates';
+  if (isMetro && /^MALL OF( THE)? EMIRATES( STATION)?( \d+)?$/.test(n)) return { name: 'Mall of the Emirates Station', identity: true };
+  if (!isMetro && /^MALL OF( THE)? EMIRATES$/.test(n)) return { name: 'Mall of the Emirates', identity: true };
   const cityCentre = mergeCityCentreSpelling(name);
-  if (cityCentre) return cityCentre;
-  return name;
+  if (cityCentre) return { name: cityCentre, identity: true };
+  return { name, identity: true };
+}
+
+// A venue entry with no name at all (blank/null in the source data - a real gap in that venue's
+// registration, not something this app generates) otherwise flows through untouched and renders as
+// a blank row: blank Location cell in the Summary table, and previously a literal "Sheet" tab in
+// the Overall Traffic Sheet export. Labeling it clearly here fixes both at the source instead of
+// patching each display separately - it now groups/filters/exports as one distinct, clearly-
+// flagged venue instead of colliding with "no venue name" everywhere it's used.
+export function mergeVenueName(name, venueType) {
+  return resolveVenueName(name, venueType).name;
+}
+
+// The key locationSummary() buckets a venue's screens by (see __rawVenue in filteredCampaigns()) -
+// the ORIGINAL raw name for a genuine multi-location rollup (ENOC branches, Royals Entry 1/2/3),
+// so each one's own screens still get summed into the group's total; the CANONICAL merged name for
+// a pure name-noise merge (admin alias, spelling variant), so every variant collapses into one
+// bucket and its screens are maxed instead of summed - otherwise a typo fix (or the City Centre/
+// Mall of the Emirates spelling merges) looked like it doubled a venue's screen count, since the
+// same physical screens were being reported under two different raw spellings and both got added.
+export function venueRawKeyForScreens(name, venueType) {
+  const r = resolveVenueName(name, venueType);
+  return r.identity ? r.name : name;
 }
 
 // Brandfetch's name-Search API turned out to fuzzy-match a huge share of raw venue names to
@@ -331,7 +354,7 @@ function filteredCampaigns(data, tabKey, location) {
     .map((c) => {
       const venues = (c.venues || [])
         .filter((v) => venueMatchesTab(v, tabKey))
-        .map((v) => ({ ...v, __rawVenue: v.venue, venue: mergeVenueName(v.venue, v.venueType) }))
+        .map((v) => ({ ...v, __rawVenue: venueRawKeyForScreens(v.venue, v.venueType), venue: mergeVenueName(v.venue, v.venueType) }))
         .filter((v) => !location || v.venue === location);
       return venues.length ? { ...c, __matchedVenues: venues } : null;
     })
