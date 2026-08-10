@@ -22,6 +22,7 @@ import { supabase } from '../supabaseClient.js';
 import { getSetting } from '../data/settings.js';
 import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
+import { exportReportingCampaignExcel } from '../lib/excelExport.js';
 
 const REPORTING_TABS = [
   { key: 'adsStats', label: 'Ads Stats' },
@@ -210,6 +211,118 @@ function detectAllFields(rows) {
   return fields;
 }
 
+// Per-campaign report download (Ads Stats tab) - user picks which of these to include; only the
+// ones actually present in the current response are offered (see renderReportDownloadPanel).
+const REPORT_FIELD_OPTIONS = [
+  { key: 'date', label: 'Date' },
+  { key: 'advertiser', label: 'Advertiser' },
+  { key: 'ad', label: 'Ad' },
+  { key: 'creative', label: 'Creative' },
+  { key: 'site', label: 'Site' },
+  { key: 'placement', label: 'Placement' },
+  { key: 'playouts', label: 'Playouts' },
+  { key: 'impressions', label: 'Impressions' },
+  { key: 'impressionsOntarget', label: 'Impressions (On-target)' },
+  { key: 'revenue', label: 'Revenue' },
+];
+const NUMERIC_REPORT_FIELDS = new Set(['playouts', 'impressions', 'impressionsOntarget', 'revenue']);
+
+export function setReportCampaign(v) { setState({ reportingSelectedCampaign: v }); }
+export function toggleReportField(key) {
+  const current = STATE.reportingSelectedFields || REPORT_FIELD_OPTIONS.map((f) => f.key);
+  const set = new Set(current);
+  if (set.has(key)) set.delete(key); else set.add(key);
+  setState({ reportingSelectedFields: [...set] });
+}
+
+// Builds and downloads the .xlsx: a Report sheet with the selected fields for every row of the
+// chosen campaign, and a Screen Detail sheet with those rows aggregated per screen (Site +
+// Placement, summing whichever numeric fields were selected - falls back to a plain row count per
+// screen if none of the selected fields are numeric, so the sheet is never just a bare list).
+export async function downloadCampaignReport() {
+  const raw = STATE.reportingAdsStats;
+  if (!raw) { toast('Load Ads Stats data first', 'error'); return; }
+  const allRows = extractRows(raw);
+  const fields = detectAllFields(allRows);
+  if (!fields.campaign) { toast("Can't build a report without a recognizable Campaign column in the response.", 'error'); return; }
+
+  const campaign = STATE.reportingSelectedCampaign;
+  if (!campaign) { toast('Select a campaign first', 'error'); return; }
+
+  const campaignRows = allRows.filter((r) => String(r[fields.campaign] ?? '') === campaign);
+  if (!campaignRows.length) { toast('No rows for that campaign in the current date range', 'error'); return; }
+
+  const selected = STATE.reportingSelectedFields || REPORT_FIELD_OPTIONS.map((f) => f.key);
+  const activeFields = REPORT_FIELD_OPTIONS.filter((f) => selected.includes(f.key) && fields[f.key]);
+  if (!activeFields.length) { toast('Select at least one field to include', 'error'); return; }
+
+  const columns = activeFields.map((f) => ({ label: f.label, value: (row) => row[fields[f.key]] ?? '' }));
+
+  const defaults = defaultDateRange();
+  const startDate = STATE.reportingStartDate || defaults.start;
+  const endDate = STATE.reportingEndDate || defaults.end;
+  const duration = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
+
+  const screenNumericFields = activeFields.filter((f) => NUMERIC_REPORT_FIELDS.has(f.key));
+  const rowCountFallback = screenNumericFields.length === 0;
+  const screenMap = new Map();
+  campaignRows.forEach((row) => {
+    const site = fields.site ? String(row[fields.site] ?? '') : '';
+    const placement = fields.placement ? String(row[fields.placement] ?? '') : '';
+    const key = `${site} ${placement}`;
+    if (!screenMap.has(key)) {
+      const entry = { site, placement, rowCount: 0 };
+      screenNumericFields.forEach((f) => { entry[f.key] = 0; });
+      screenMap.set(key, entry);
+    }
+    const entry = screenMap.get(key);
+    entry.rowCount += 1;
+    screenNumericFields.forEach((f) => { entry[f.key] += Number(row[fields[f.key]]) || 0; });
+  });
+  const screenRows = [...screenMap.values()].sort((a, b) => a.site.localeCompare(b.site) || a.placement.localeCompare(b.placement));
+  const screenColumns = [
+    ...(fields.site ? [{ label: 'Site', value: (r) => r.site }] : []),
+    ...(fields.placement ? [{ label: 'Placement', value: (r) => r.placement }] : []),
+    ...screenNumericFields.map((f) => ({ label: f.label, value: (r) => r[f.key] })),
+    ...(rowCountFallback ? [{ label: 'Rows', value: (r) => r.rowCount }] : []),
+  ];
+
+  const safeCampaign = campaign.replace(/[\\/?*[\]:]/g, '-').slice(0, 60);
+  await exportReportingCampaignExcel(`${safeCampaign}-report-${startDate}_${endDate}.xlsx`, {
+    campaignName: campaign, duration, columns, rows: campaignRows, screenColumns, screenRows,
+  });
+}
+
+function renderReportDownloadPanel(rows, fields) {
+  if (!fields.campaign) return '';
+  const campaigns = [...new Set(rows.map((r) => String(r[fields.campaign] ?? '')))].filter(Boolean).sort();
+  if (!campaigns.length) return '';
+  const selectedCampaign = STATE.reportingSelectedCampaign && campaigns.includes(STATE.reportingSelectedCampaign) ? STATE.reportingSelectedCampaign : '';
+  const selectedFields = STATE.reportingSelectedFields || REPORT_FIELD_OPTIONS.map((f) => f.key);
+  const availableFields = REPORT_FIELD_OPTIONS.filter((f) => fields[f.key]);
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Download Report</h3><div class="desc">Per-campaign .xlsx - a Report sheet with the fields you pick below, and a Screen Detail sheet with the same data split per screen.</div></div>
+      <div class="field"><label>Campaign</label>
+        <select id="report-campaign" onchange="App.setReportCampaign(this.value)">
+          <option value="">Select a campaign...</option>
+          ${campaigns.map((c) => `<option value="${esc(c)}" ${c === selectedCampaign ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Fields to include</label>
+        <div style="display:flex;flex-wrap:wrap;gap:14px;">
+          ${availableFields.map((f) => `
+            <label style="display:flex;align-items:center;gap:6px;font-weight:normal;">
+              <input type="checkbox" onchange="App.toggleReportField('${f.key}')" ${selectedFields.includes(f.key) ? 'checked' : ''}> ${esc(f.label)}
+            </label>
+          `).join('')}
+        </div>
+      </div>
+      <button class="btn btn-orange" type="button" onclick="App.downloadCampaignReport()">Download Report (.xlsx)</button>
+    </div>
+  `;
+}
+
 function statTile(variant, label, value) {
   return `<div class="bento-stat ${variant}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(String(value))}</div></div>`;
 }
@@ -239,6 +352,7 @@ function renderOverview(rows, fields) {
       ${totalPlayouts != null ? statTile('ok', 'Total Playouts', totalPlayouts.toLocaleString()) : ''}
       ${totalRevenue != null ? statTile('info', 'Total Revenue', totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 2 })) : ''}
     </div>
+    ${renderReportDownloadPanel(rows, fields)}
     <div class="card">
       <div class="card-head"><h3>Ads Stats</h3><div class="desc">${rows.length} row(s)${rows.length > 200 ? ' (showing first 200)' : ''} from GET /stats-ads. Columns shown exactly as returned by the API.</div></div>
       <div class="tsheet-wrap">

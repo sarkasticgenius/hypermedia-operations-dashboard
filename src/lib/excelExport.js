@@ -200,6 +200,60 @@ export async function exportTrafficSheetExcel(filename, { regularCampaigns, focC
   await downloadWorkbook(wb, filename);
 }
 
+const BRAND_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } };
+
+// Writes the "Hypermedia" brand banner + Campaign Name/Duration meta rows + a bordered data table
+// starting at row 5 - shared by both sheets of exportReportingCampaignExcel (Report / Screen
+// Detail) so the report header stays visually identical whichever sheet you're looking at.
+function writeReportSheet(ws, { campaignName, duration, columns, rows }) {
+  const totalCols = Math.max(columns.length, 2);
+  ws.mergeCells(1, 1, 1, totalCols);
+  const brandCell = ws.getCell(1, 1);
+  brandCell.value = 'Hypermedia';
+  brandCell.font = { bold: true, size: 18, color: { argb: 'FFFFFFFF' } };
+  brandCell.fill = BRAND_FILL;
+  brandCell.alignment = { vertical: 'middle' };
+  ws.getRow(1).height = 30;
+
+  ws.getCell(2, 1).value = 'Campaign Name:';
+  ws.getCell(2, 1).font = { bold: true };
+  ws.getCell(2, 2).value = campaignName;
+  ws.getCell(3, 1).value = 'Duration:';
+  ws.getCell(3, 1).font = { bold: true };
+  ws.getCell(3, 2).value = duration;
+
+  const headerRow = 5;
+  columns.forEach((c, i) => { ws.getCell(headerRow, i + 1).value = c.label; });
+  rows.forEach((row, rIdx) => {
+    columns.forEach((c, i) => { ws.getCell(headerRow + 1 + rIdx, i + 1).value = c.value(row) ?? ''; });
+  });
+  for (let c = 1; c <= columns.length; c++) {
+    const cell = ws.getCell(headerRow, c);
+    cell.fill = HEADER_FILL;
+    cell.font = { bold: true };
+  }
+  const lastRow = headerRow + rows.length;
+  for (let r = headerRow; r <= lastRow; r++) {
+    for (let c = 1; c <= columns.length; c++) ws.getCell(r, c).border = ALL_BORDERS;
+  }
+  columns.forEach((c, i) => {
+    const maxLen = rows.reduce((m, row) => Math.max(m, String(c.value(row) ?? '').length), c.label.length);
+    ws.getColumn(i + 1).width = Math.min(Math.max(maxLen + 2, 10), 50);
+  });
+  ws.views = [{ state: 'frozen', ySplit: headerRow }];
+}
+
+// Reporting workspace's per-campaign download (Ads Stats tab): a "Hypermedia"-branded report with
+// Campaign Name/Duration on both sheets - a Report sheet with the raw rows (only the fields the
+// user selected) and a Screen Detail sheet with those same rows aggregated per screen (Site +
+// Placement, summed across whichever numeric fields were selected).
+export async function exportReportingCampaignExcel(filename, { campaignName, duration, columns, rows, screenColumns, screenRows }) {
+  const wb = new ExcelJS.Workbook();
+  writeReportSheet(wb.addWorksheet('Report'), { campaignName, duration, columns, rows });
+  writeReportSheet(wb.addWorksheet('Screen Detail'), { campaignName, duration, columns: screenColumns, rows: screenRows });
+  await downloadWorkbook(wb, filename);
+}
+
 const INVALID_SHEET_NAME_CHARS = /[\\/?*[\]:]/g;
 // Excel worksheet names: max 31 chars, can't contain \ / ? * [ ] :, and must be unique within the
 // workbook - a real risk here specifically, since several distinct raw venue names can canonicalize
