@@ -30,6 +30,10 @@
 // Three outputs from the same pull:
 //   - lastDevices: a trimmed copy of every device the API returned (excluded or not), so the IoT
 //     Panel can show a full checkable list without needing a live device pull just to render it.
+//     Each device is matched to Asset Inventory by boxIdField (unconditionally, not gated behind
+//     Offline Status Values) purely to attach a Venue name for the table/search. Devices without a
+//     friendly name set on the vendor's side have their MAC address in display_name instead - that
+//     gets split out into its own macAddress field rather than shown to look like a real name.
 //   - deviceBreakdown: a fleet-wide count by platform/state/camera type/version over the
 //     non-excluded devices only. Always computed - platform/state/camera/version are plain
 //     labels, not undocumented codes, so there's nothing to calibrate before showing them.
@@ -161,21 +165,50 @@ Deno.serve(async (req) => {
     const excludedSet = new Set<string>((cfg.excludedDeviceIds || []).map((id: any) => String(id)));
     const activeDevices = devices.filter((d: any) => !excludedSet.has(String(d.device_id)));
 
+    // Matched to Asset Inventory by boxIdField unconditionally (not just when Offline Status
+    // Values is calibrated below) so a Venue name can be attached to every device for the IoT
+    // Panel's table/search - previously this lookup only ran inside the calibrated branch, so
+    // Venue was blank (and unsearchable) until that separate calibration step was done.
+    const inventoryForVenue = await fetchAllInventory(adminClient, 'IoT');
+    const inventoryIndexByBoxId = new Map<string, any[]>();
+    for (const r of inventoryForVenue) {
+      const key = String(r.player_box_id).trim();
+      if (!key) continue;
+      if (!inventoryIndexByBoxId.has(key)) inventoryIndexByBoxId.set(key, []);
+      inventoryIndexByBoxId.get(key)!.push(r);
+    }
+    function venueForDevice(d: any): string {
+      const key = String(getPath(d, boxIdField) ?? '').trim();
+      const assets = key ? inventoryIndexByBoxId.get(key) : null;
+      return assets && assets.length ? String(assets[0].venue || '') : '';
+    }
+
+    // The vendor doesn't send a separate MAC address field - on devices without a friendly name
+    // set on their side, display_name IS the device's MAC address (confirmed from real data), so
+    // that's flagged here rather than shown to look like a real name.
+    const MAC_RE = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
+
     // Trimmed snapshot of every pulled device (excluded or not) - lets the IoT Panel render a full
     // checkable device table without a separate live pull, and lets a previously-excluded device
     // be found again to re-include it.
-    const lastDevices = devices.map((d: any) => ({
-      deviceId: String(d.device_id),
-      displayName: d.display_name || String(d.device_id),
-      storeName: d.store_name || d.location?.store || '',
-      asset: d.location?.asset || '',
-      entrance: d.location?.entrance || '',
-      platform: String(d.status?.platform || 'Unknown').toUpperCase(),
-      state: titleCase(String(getPath(d, statusField) || '')),
-      cameraType: d.status?.available_cameras || d.status?.camera_mode || 'Unknown',
-      version: `${d.status?.task_version || '?'} - ${d.status?.core_version || '?'}`,
-      ts: d.status?.ts || null,
-    }));
+    const lastDevices = devices.map((d: any) => {
+      const rawName = d.display_name || String(d.device_id);
+      const isMac = MAC_RE.test(rawName.trim());
+      return {
+        deviceId: String(d.device_id),
+        displayName: isMac ? '' : rawName,
+        macAddress: isMac ? rawName : '',
+        venue: venueForDevice(d),
+        storeName: d.store_name || d.location?.store || '',
+        asset: d.location?.asset || '',
+        entrance: d.location?.entrance || '',
+        platform: String(d.status?.platform || 'Unknown').toUpperCase(),
+        state: titleCase(String(getPath(d, statusField) || '')),
+        cameraType: d.status?.available_cameras || d.status?.camera_mode || 'Unknown',
+        version: `${d.status?.task_version || '?'} - ${d.status?.core_version || '?'}`,
+        ts: d.status?.ts || null,
+      };
+    });
 
     // Fleet-wide breakdown over ACTIVE devices only - excluded ones never count, including right
     // after a fresh pull that still contains them.
@@ -203,14 +236,8 @@ Deno.serve(async (req) => {
     if (!offlineSet.size) {
       summary = `${pulledLine} Raw device states seen: ${Object.entries(deviceBreakdown.byState).map(([k, v]) => `${k} (${v}x)`).join(', ') || 'none'}. Set "Offline Status Values" below (comparing against devices you know are down) to start applying online/offline status to Locations.`;
     } else {
-      const inventory = await fetchAllInventory(adminClient, 'IoT');
-      const inventoryIndex = new Map<string, any[]>();
-      for (const r of inventory) {
-        const key = String(r.player_box_id).trim();
-        if (!key) continue;
-        if (!inventoryIndex.has(key)) inventoryIndex.set(key, []);
-        inventoryIndex.get(key)!.push(r);
-      }
+      // Reuses inventoryForVenue/inventoryIndexByBoxId computed above (venueForDevice) rather than
+      // fetching Asset Inventory a second time.
 
       // Excludes soft-deleted locations - see broadsign-sync for why this matters (a deleted
       // wrapper location's stale manual links would otherwise compete with real locations for the
@@ -226,7 +253,7 @@ Deno.serve(async (req) => {
       for (const device of activeDevices) {
         const key = String(getPath(device, boxIdField) ?? '').trim();
         if (!key) continue;
-        const assets = inventoryIndex.get(key);
+        const assets = inventoryIndexByBoxId.get(key);
         if (assets) for (const asset of assets) matchedRows.push({ asset, device });
       }
       matchedCount = matchedRows.length;

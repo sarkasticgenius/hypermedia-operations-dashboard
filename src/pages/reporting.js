@@ -27,7 +27,7 @@ import { exportCampaignPptxReport } from '../lib/pptxReport.js';
 
 const REPORTING_TABS = [
   { key: 'adsStats', label: 'Ads Stats' },
-  { key: 'trafficSheet', label: 'Additional Traffic Sheet' },
+  { key: 'trafficSheet', label: 'Traffic Data' },
   { key: 'programmatic', label: 'Programmatic Stats' },
   { key: 'placementsStats', label: 'Placements Stats' },
   { key: 'lastPlayouts', label: 'Last Playouts' },
@@ -241,6 +241,8 @@ const FIELD_CANDIDATES = {
   impressions: ['impressions', 'plays', 'count'],
   impressionsOntarget: ['impressions_ontarget'],
   revenue: ['revenue'],
+  dsp: ['dsp_name'],
+  dspSeat: ['dsp_seat'],
 };
 function detectField(row, logicalField) {
   if (!row) return null;
@@ -348,6 +350,38 @@ function aggregateByScreen(rows, fields, numericKeys) {
     numericKeys.forEach((k) => { entry[k] += Number(row[fields[k]]) || 0; });
   });
   return [...screenMap.values()].sort((a, b) => a.site.localeCompare(b.site) || a.placement.localeCompare(b.placement));
+}
+
+// Generic "group rows by some key, sum some numeric columns" helper - numericFieldMap is
+// { outputKey: rawColumnName }, already resolved via detectAllFields (e.g. { playouts:
+// fields.playouts, impressions: fields.impressions }). Backs the Creative Split/Day-wise/
+// Publisher/Seller breakdowns in Campaign Detail, all of which are "one row per distinct X,
+// summed" the same way aggregateByScreen already does for Site+Placement.
+function aggregateByKey(rows, getKey, numericFieldMap) {
+  const map = new Map();
+  rows.forEach((row) => {
+    const key = getKey(row);
+    if (!key) return;
+    if (!map.has(key)) {
+      const entry = { key };
+      Object.keys(numericFieldMap).forEach((k) => { entry[k] = 0; });
+      map.set(key, entry);
+    }
+    const entry = map.get(key);
+    Object.entries(numericFieldMap).forEach(([k, col]) => { entry[k] += Number(row[col]) || 0; });
+  });
+  return [...map.values()];
+}
+
+function renderKeyValueTable(title, desc, rows, keyLabel, numericFieldMap) {
+  if (!rows.length) return '';
+  const cols = Object.keys(numericFieldMap);
+  const colLabel = (c) => (c === 'playouts' ? 'Loop Playouts' : c === 'impressions' ? 'Impressions' : c);
+  const body = rows.map((r) => `<tr><td>${esc(r.key)}</td>${cols.map((c) => `<td class="tright">${(r[c] ?? 0).toLocaleString()}</td>`).join('')}</tr>`).join('');
+  return `<div class="card">
+    <div class="card-head"><h3>${esc(title)}</h3>${desc ? `<div class="desc">${esc(desc)}</div>` : ''}</div>
+    <div class="tsheet-wrap"><table><thead><tr><th>${esc(keyLabel)}</th>${cols.map((c) => `<th class="tright">${esc(colLabel(c))}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>
+  </div>`;
 }
 
 // Resolves the currently selected campaign's rows/fields, shared by both download handlers - null
@@ -542,9 +576,10 @@ function renderCampaignList(rows, fields) {
   `;
 }
 
-// Kicks off the two lookups renderCampaignDetail needs beyond the loaded stats rows - real flight
-// dates (loadCampaignMeta) and Direct/Programmatic + loop config (loadCampaignAdsInfo) - once per
-// campaign selection (setReportCampaign resets the Started flags when the selection changes).
+// Kicks off every lookup renderCampaignDetail needs beyond the loaded Ads Stats rows - real flight
+// dates (loadCampaignMeta), Direct/Programmatic + loop config per line item (loadCampaignAdsInfo),
+// and this same campaign's Programmatic (stats-dsps) rows for the Programmatic Report section -
+// once per campaign selection (setReportCampaign resets the Started flags when it changes).
 function ensureCampaignDetailData(campaign, campaignRows, fields) {
   if (!STATE.reportingCampaignMetaStarted) {
     STATE.reportingCampaignMetaStarted = true;
@@ -554,12 +589,50 @@ function ensureCampaignDetailData(campaign, campaignRows, fields) {
     STATE.reportingCampaignAdsInfoStarted = true;
     queueMicrotask(() => loadCampaignAdsInfo(campaignRows, fields));
   }
+  if (!STATE.reportingDsps && !STATE.reportingDspsLoading && !STATE.reportingDspsStarted) {
+    STATE.reportingDspsStarted = true;
+    const defaults = defaultDateRange();
+    const start = STATE.reportingStartDate || defaults.start;
+    const end = STATE.reportingEndDate || defaults.end;
+    queueMicrotask(() => loadDateRangeTab('reportingDsps', '/stats-dsps', start, end));
+  }
+}
+
+// Ads (line items), Publishers (by Site) and Sellers (by DSP / Seat) for this campaign's
+// Programmatic (stats-dsps) rows - a separate report from the Direct-side Screen Breakdown/
+// Creative Split above since programmatic delivery is sold through DSPs/seats rather than booked
+// directly against a screen. "Publisher"/"Seller" aren't terms the API docs define explicitly -
+// Publisher is mapped to Site (the venue/screen owner selling the impression) and Seller to DSP +
+// Seat (dsp_name/dsp_seat, the buying account on the exchange), the closest fit to those terms
+// given what the schema actually has (adv_domain, dsp_id, dsp_name, dsp_seat, s_name, p_name).
+function renderProgrammaticReport(campaignDspsRows, dspsFields) {
+  if (!campaignDspsRows.length) return '';
+  const numericFieldMap = {};
+  if (dspsFields.playouts) numericFieldMap.playouts = dspsFields.playouts;
+  if (dspsFields.impressions) numericFieldMap.impressions = dspsFields.impressions;
+
+  const byAd = dspsFields.ad ? aggregateByKey(campaignDspsRows, (r) => String(r[dspsFields.ad] ?? ''), numericFieldMap) : [];
+  const byPublisher = dspsFields.site ? aggregateByKey(campaignDspsRows, (r) => String(r[dspsFields.site] ?? ''), numericFieldMap) : [];
+  const bySeller = aggregateByKey(campaignDspsRows, (r) => {
+    const dsp = dspsFields.dsp ? String(r[dspsFields.dsp] ?? '') : '';
+    const seat = dspsFields.dspSeat ? String(r[dspsFields.dspSeat] ?? '') : '';
+    return [dsp, seat].filter(Boolean).join(' / ');
+  }, numericFieldMap);
+
+  const sortDesc = (rows) => rows.sort((a, b) => (b.impressions ?? b.playouts ?? 0) - (a.impressions ?? a.playouts ?? 0));
+
+  return `
+    <div class="card-head" style="padding:10px 0 6px;"><h3 style="margin:0;">Programmatic Report</h3><div class="desc">${campaignDspsRows.length} programmatic row(s) for this campaign, from GET /stats-dsps.</div></div>
+    ${renderKeyValueTable('Ads', 'Programmatic line items for this campaign.', sortDesc(byAd), 'Ad', numericFieldMap)}
+    ${renderKeyValueTable('Publishers', 'By Site - the venue/screen owner selling the impression.', sortDesc(byPublisher), 'Publisher (Site)', numericFieldMap)}
+    ${renderKeyValueTable('Sellers', 'By DSP / Seat - the buying account on the exchange.', sortDesc(bySeller), 'Seller (DSP / Seat)', numericFieldMap)}
+  `;
 }
 
 // Campaign detail view: that campaign's own Impression/Playout totals, its real flight dates, its
-// Direct/Programmatic + loop breakdown, its screen-by-screen split, and the Download Report panel
-// - everything scoped to just this campaign so there's no dropdown or "which campaign" ambiguity
-// left for the download step.
+// Direct/Programmatic + loop breakdown, its Direct-side screen/creative/day-wise splits, its
+// Programmatic Report, and the Download Report panel - everything scoped to just this campaign so
+// there's no dropdown or "which campaign" ambiguity left for the download step.
 function renderCampaignDetail(campaign, campaignRows, fields) {
   ensureCampaignDetailData(campaign, campaignRows, fields);
 
@@ -597,7 +670,13 @@ function renderCampaignDetail(campaign, campaignRows, fields) {
     </tr>
   `).join('');
 
-  const numericKeys = ['playouts', 'impressions'].filter((k) => fields[k]);
+  const numericFieldMap = {};
+  if (fields.playouts) numericFieldMap.playouts = fields.playouts;
+  if (fields.impressions) numericFieldMap.impressions = fields.impressions;
+
+  // Screen Breakdown - Direct only (this campaign's own stats-ads rows); the campaign name is
+  // already the page heading above, so it isn't repeated on every row here.
+  const numericKeys = Object.keys(numericFieldMap);
   const screenRows = aggregateByScreen(campaignRows, fields, numericKeys);
   const screenTableRows = screenRows.map((r) => `
     <tr>
@@ -607,6 +686,21 @@ function renderCampaignDetail(campaign, campaignRows, fields) {
       ${fields.impressions ? `<td class="tright">${(r.impressions ?? 0).toLocaleString()}</td>` : ''}
     </tr>
   `).join('');
+
+  const creativeRows = fields.creative
+    ? aggregateByKey(campaignRows, (r) => String(r[fields.creative] ?? ''), numericFieldMap).sort((a, b) => (b.impressions ?? b.playouts ?? 0) - (a.impressions ?? a.playouts ?? 0))
+    : [];
+  const dayRows = fields.date
+    ? aggregateByKey(campaignRows, (r) => String(r[fields.date] ?? '').slice(0, 10), numericFieldMap).sort((a, b) => a.key.localeCompare(b.key))
+    : [];
+
+  // This campaign's own Programmatic (stats-dsps) rows, if any - reportingDsps is kicked off by
+  // ensureCampaignDetailData so it's available here even if the user never opened the Programmatic
+  // Stats/Traffic Data tabs directly.
+  const dspsRaw = STATE.reportingDsps;
+  const dspsRows = dspsRaw ? extractRows(dspsRaw) : [];
+  const dspsFields = dspsRows.length ? detectAllFields(dspsRows) : {};
+  const campaignDspsRows = dspsFields.campaign ? dspsRows.filter((r) => String(r[dspsFields.campaign] ?? '') === campaign) : [];
 
   return `
     <div class="toolbar-actions" style="margin-bottom:10px;">
@@ -626,14 +720,17 @@ function renderCampaignDetail(campaign, campaignRows, fields) {
       </div>
     ` : ''}
     <div class="card">
-      <div class="card-head"><h3>Screen Breakdown</h3><div class="desc">${screenRows.length} screen(s) for this campaign in the current date range.</div></div>
+      <div class="card-head"><h3>Screen Breakdown</h3><div class="desc">${screenRows.length} screen(s), Direct delivery only, for this campaign in the current date range.</div></div>
       <div class="tsheet-wrap">
         <table>
-          <thead><tr><th>Site</th><th>Placement</th>${fields.playouts ? '<th class="tright">Playouts</th>' : ''}${fields.impressions ? '<th class="tright">Impressions</th>' : ''}</tr></thead>
+          <thead><tr><th>Site</th><th>Placement</th>${fields.playouts ? '<th class="tright">Loop Playouts</th>' : ''}${fields.impressions ? '<th class="tright">Impressions</th>' : ''}</tr></thead>
           <tbody>${screenTableRows}</tbody>
         </table>
       </div>
     </div>
+    ${renderKeyValueTable('Creative Split', 'Direct delivery, by Creative.', creativeRows, 'Creative', numericFieldMap)}
+    ${renderKeyValueTable('Day by Day', 'Direct delivery, by Date.', dayRows, 'Date', numericFieldMap)}
+    ${renderProgrammaticReport(campaignDspsRows, dspsFields)}
     ${renderReportDownloadPanel(fields)}
   `;
 }
@@ -711,7 +808,7 @@ function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
 
   return `
     <div class="card">
-      <div class="card-head"><h3>Additional Traffic Sheet</h3><div class="desc">${campaigns.length} campaign(s) (Direct + Programmatic combined), day-by-day. Each day cell shows Playouts on top and Impressions below. "Avg Multiplier" = Impressions &divide; Playouts. From ${esc(start)} to ${esc(end)}.</div></div>
+      <div class="card-head"><h3>Traffic Data</h3><div class="desc">${campaigns.length} campaign(s) (Direct + Programmatic combined), day-by-day. Each day cell shows Playouts on top and Impressions below. "Avg Multiplier" = Impressions &divide; Playouts. From ${esc(start)} to ${esc(end)}.</div></div>
       <div class="tsheet-wrap">
         <table class="tsheet-table">
           <thead><tr><th>Campaign</th><th>Type</th><th class="tright">Playouts</th><th class="tright">Impressions</th><th class="tright">Avg Multiplier</th>${dates.map((d) => `<th class="tsheet-day">${esc(d.slice(8, 10))}</th>`).join('')}</tr></thead>

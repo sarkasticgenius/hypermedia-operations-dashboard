@@ -332,7 +332,7 @@ function renderIotDeviceTable(cfg) {
     if (filterMode === 'active' && excludedSet.has(d.deviceId)) return false;
     if (filterMode === 'excluded' && !excludedSet.has(d.deviceId)) return false;
     if (!search) return true;
-    const hay = `${d.deviceId} ${d.displayName} ${d.storeName} ${d.asset} ${d.entrance} ${d.platform} ${d.state}`.toLowerCase();
+    const hay = `${d.deviceId} ${d.displayName} ${d.macAddress} ${d.venue} ${d.storeName} ${d.asset} ${d.entrance} ${d.platform} ${d.state}`.toLowerCase();
     return hay.includes(search);
   });
   const pageSize = 50;
@@ -344,29 +344,31 @@ function renderIotDeviceTable(cfg) {
     const isExcluded = excludedSet.has(d.deviceId);
     return `<tr${isExcluded ? ' style="opacity:.55;"' : ''}>
       <td class="small">${esc(d.deviceId)}</td>
-      <td>${esc(d.displayName)}</td>
+      <td>${esc(d.displayName || '-')}</td>
+      <td class="small">${esc(d.macAddress || '-')}</td>
+      <td class="small">${esc(d.venue || '-')}</td>
       <td class="small">${esc(d.storeName || '-')}</td>
       <td class="small">${esc(d.platform)}</td>
       <td class="small">${esc(d.state)}</td>
       <td>${admin ? `<button class="btn-sm" onclick="App.toggleIotDeviceExcluded('${esc(d.deviceId)}', ${!isExcluded})">${isExcluded ? 'Include' : 'Exclude'}</button>` : (isExcluded ? '<span class="small muted">Excluded</span>' : '')}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="6"><div class="empty">No devices match.</div></td></tr>`;
+  }).join('') || `<tr><td colspan="8"><div class="empty">No devices match.</div></td></tr>`;
 
   return `<div class="card">
     <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-      <div><h3>Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown${excludedSet.size ? `, ${excludedSet.size} excluded from the charts above` : ''}.${admin ? ' Excluding a device drops it from every future sync too, not just this view.' : ''}</div></div>
+      <div><h3>Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown${excludedSet.size ? `, ${excludedSet.size} excluded from the charts above` : ''}.${admin ? ' Excluding a device drops it from every future sync too, not just this view.' : ''} Devices with no friendly name set on the vendor's side show their MAC address instead of a blank Name.</div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <select onchange="App.setIotDeviceFilter(this.value)" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;">
           <option value="active" ${filterMode === 'active' ? 'selected' : ''}>Active devices</option>
           <option value="all" ${filterMode === 'all' ? 'selected' : ''}>All devices</option>
           <option value="excluded" ${filterMode === 'excluded' ? 'selected' : ''}>Excluded only</option>
         </select>
-        <input id="iot-device-search" placeholder="Search device ID, name, store..." value="${esc(STATE.iotDeviceSearch || '')}" oninput="App.setIotDeviceSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+        <input id="iot-device-search" placeholder="Search device ID, name, MAC, venue, store..." value="${esc(STATE.iotDeviceSearch || '')}" oninput="App.setIotDeviceSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
       </div>
     </div>
     <div style="max-height:480px;overflow-y:auto;">
       <table>
-        <thead><tr><th>Device ID</th><th>Name</th><th>Store</th><th>Platform</th><th>State</th><th></th></tr></thead>
+        <thead><tr><th>Device ID</th><th>Name</th><th>MAC Address</th><th>Venue</th><th>Store</th><th>Platform</th><th>State</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
