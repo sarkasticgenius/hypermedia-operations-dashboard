@@ -8,6 +8,7 @@ import { listContractors } from '../data/contractors.js';
 import { listNetworks } from '../data/networks.js';
 import { listTickets } from '../data/tickets.js';
 import { isMafRow } from '../data/locationStats.js';
+import { renderInfoBanner } from '../lib/onboarding.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate } from '../lib/format.js';
@@ -172,7 +173,7 @@ export function renderAssetsInventory() {
   ];
 
   return `
-    <div class="banner">This is the deployed-screen/player list (one row per physical screen). Player Box ID doubles as the Broadsign client_resource_id used by the Broadsign sync. ${editOk ? '' : 'You can view this table; ask an Admin for edit permission to change it.'}</div>
+    ${renderInfoBanner('assetsInventoryIntro', `This is the deployed-screen/player list (one row per physical screen). Player Box ID doubles as the Broadsign client_resource_id used by the Broadsign sync.${editOk ? '' : ' You can view this table; ask an Admin for edit permission to change it.'}`, isAdmin())}
     <div class="kpi-row">
       ${summaryTiles.map((t) => `<div class="kpi"><div class="label">${esc(t.label)}</div><div class="value">${t.value}</div></div>`).join('')}
     </div>

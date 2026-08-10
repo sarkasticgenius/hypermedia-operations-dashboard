@@ -13,6 +13,8 @@ import { supabase } from '../supabaseClient.js';
 import { svgGroupedBarChart, svgDonutChart } from '../lib/charts.js';
 import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
+import { isAdmin } from '../auth.js';
+import { hasSeenTip } from '../lib/onboarding.js';
 
 let refreshTimer = null;
 const TS_LABELS = Object.fromEntries(TS_TAB_DEFS.map((t) => [t.key, t.label]));
@@ -313,8 +315,15 @@ export function renderOpsOverview() {
     { key: 'compliance', label: 'Compliance Due', value: compliance.length },
   ];
 
+  // The live-status line (pulse dot + timestamp) is functional, not a tip - stays for everyone,
+  // every visit. The "see Home" cross-link is explanatory, so it follows the same admin-
+  // persistent / one-time-tip-for-everyone-else pattern as the other explanatory banners.
+  const showHomeLink = isAdmin() || !hasSeenTip('opsOverviewHomeLink');
+  const homeLink = showHomeLink
+    ? ` For a broader daily snapshot across every workspace, see <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('dashboard')">Home</a>.${!isAdmin() ? ` <button class="btn-sm" onclick="App.dismissOnboardingTip('opsOverviewHomeLink')">Got it</button>` : ''}`
+    : '';
   return `
-    <div class="banner"><span class="live-pulse-dot"></span>Live — updated ${new Date().toLocaleTimeString()}. This page auto-refreshes and only surfaces what needs attention right now. For a broader daily snapshot across every workspace, see <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('dashboard')">Home</a>.</div>
+    <div class="banner"><span class="live-pulse-dot"></span>Live — updated ${new Date().toLocaleTimeString()}. This page auto-refreshes and only surfaces what needs attention right now.${homeLink}</div>
 
     <div class="bento-stats">
       ${kpis.map((k) => `

@@ -17,6 +17,7 @@ import { sortTh, applySort } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 import { exportToExcel } from '../lib/excelExport.js';
+import { renderInfoBanner } from '../lib/onboarding.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 
@@ -86,7 +87,7 @@ export function renderLocations() {
 
   return `
     ${renderCharts(visible, locations, assetInventory)}
-    <div class="banner">Online/offline network health has moved to the dedicated Broadsign and Grassfish Console pages — this heatmap reflects screen density from Asset Inventory.</div>
+    ${renderInfoBanner('locationsHeatmapMoved', 'Online/offline network health has moved to the dedicated Broadsign and Grassfish Console pages — this heatmap reflects screen density from Asset Inventory.', isAdmin())}
     <div class="toolbar">
       ${tabsHtml}
       <div class="toolbar-actions">

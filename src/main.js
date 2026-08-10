@@ -29,6 +29,7 @@ import { renderShell, goToPage, doLogout, goToDashGroup, goToDashLink, goToClien
 import { registerPage, renderPage } from './router.js';
 import { renderModalRoot } from './modals.js';
 import { toggleSort } from './lib/sortableTable.js';
+import { dismissOnboardingTip } from './lib/onboarding.js';
 import { toggleTheme } from './theme.js';
 
 const appEl = document.getElementById('app');
@@ -93,6 +94,7 @@ window.App = {
   stopImpersonating,
   closeModal,
   toggleSort,
+  dismissOnboardingTip,
   saveAccountProfile,
   saveAccountPassword,
   ...opsOverviewPage,
