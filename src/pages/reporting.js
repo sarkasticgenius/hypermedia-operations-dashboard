@@ -23,6 +23,7 @@ import { getSetting } from '../data/settings.js';
 import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
 import { exportReportingCampaignExcel } from '../lib/excelExport.js';
+import { exportCampaignPdfReport } from '../lib/pdfReport.js';
 
 const REPORTING_TABS = [
   { key: 'adsStats', label: 'Ads Stats' },
@@ -227,6 +228,13 @@ const REPORT_FIELD_OPTIONS = [
 ];
 const NUMERIC_REPORT_FIELDS = new Set(['playouts', 'impressions', 'impressionsOntarget', 'revenue']);
 
+// Selected photo Files never go through STATE/render() - a re-render (e.g. a toast firing) tears
+// down and rebuilds the <input type=file> DOM node, and there's no browser mechanism to carry a
+// FileList across that even with a stable id (unlike focus, which document.getElementById can
+// re-target). So files are captured into this module-level Map the instant the input fires
+// onchange, and reportingSitePhotoCounts (in STATE) only mirrors the *count* for on-screen feedback.
+const sitePhotoStore = new Map();
+
 export function setReportCampaign(v) { setState({ reportingSelectedCampaign: v }); }
 export function toggleReportField(key) {
   const current = STATE.reportingSelectedFields || REPORT_FIELD_OPTIONS.map((f) => f.key);
@@ -234,82 +242,129 @@ export function toggleReportField(key) {
   if (set.has(key)) set.delete(key); else set.add(key);
   setState({ reportingSelectedFields: [...set] });
 }
+export function setSitePhotos(site, inputEl) {
+  const files = inputEl?.files ? [...inputEl.files] : [];
+  sitePhotoStore.set(site, files);
+  setState({ reportingSitePhotoCounts: { ...(STATE.reportingSitePhotoCounts || {}), [site]: files.length } });
+}
+
+// Groups rows by screen (Site + Placement), summing whichever numericKeys are given - shared by
+// both the Excel Screen Detail sheet and the PDF's per-site breakdown table so the two downloads
+// never disagree with each other.
+function aggregateByScreen(rows, fields, numericKeys) {
+  const screenMap = new Map();
+  rows.forEach((row) => {
+    const site = fields.site ? String(row[fields.site] ?? '') : '';
+    const placement = fields.placement ? String(row[fields.placement] ?? '') : '';
+    const key = site + '|' + placement;
+    if (!screenMap.has(key)) {
+      const entry = { site, placement, rowCount: 0 };
+      numericKeys.forEach((k) => { entry[k] = 0; });
+      screenMap.set(key, entry);
+    }
+    const entry = screenMap.get(key);
+    entry.rowCount += 1;
+    numericKeys.forEach((k) => { entry[k] += Number(row[fields[k]]) || 0; });
+  });
+  return [...screenMap.values()].sort((a, b) => a.site.localeCompare(b.site) || a.placement.localeCompare(b.placement));
+}
+
+// Resolves the currently selected campaign's rows/fields, shared by both download handlers - null
+// (with a toast already shown) if anything required is missing.
+function resolveSelectedCampaign() {
+  const raw = STATE.reportingAdsStats;
+  if (!raw) { toast('Load Ads Stats data first', 'error'); return null; }
+  const allRows = extractRows(raw);
+  const fields = detectAllFields(allRows);
+  if (!fields.campaign) { toast("Can't build a report without a recognizable Campaign column in the response.", 'error'); return null; }
+  const campaign = STATE.reportingSelectedCampaign;
+  if (!campaign) { toast('Select a campaign first', 'error'); return null; }
+  const campaignRows = allRows.filter((r) => String(r[fields.campaign] ?? '') === campaign);
+  if (!campaignRows.length) { toast('No rows for that campaign in the current date range', 'error'); return null; }
+  const defaults = defaultDateRange();
+  const startDate = STATE.reportingStartDate || defaults.start;
+  const endDate = STATE.reportingEndDate || defaults.end;
+  return { campaign, campaignRows, fields, startDate, endDate };
+}
 
 // Builds and downloads the .xlsx: a Report sheet with the selected fields for every row of the
 // chosen campaign, and a Screen Detail sheet with those rows aggregated per screen (Site +
 // Placement, summing whichever numeric fields were selected - falls back to a plain row count per
 // screen if none of the selected fields are numeric, so the sheet is never just a bare list).
 export async function downloadCampaignReport() {
-  const raw = STATE.reportingAdsStats;
-  if (!raw) { toast('Load Ads Stats data first', 'error'); return; }
-  const allRows = extractRows(raw);
-  const fields = detectAllFields(allRows);
-  if (!fields.campaign) { toast("Can't build a report without a recognizable Campaign column in the response.", 'error'); return; }
-
-  const campaign = STATE.reportingSelectedCampaign;
-  if (!campaign) { toast('Select a campaign first', 'error'); return; }
-
-  const campaignRows = allRows.filter((r) => String(r[fields.campaign] ?? '') === campaign);
-  if (!campaignRows.length) { toast('No rows for that campaign in the current date range', 'error'); return; }
+  const ctx = resolveSelectedCampaign();
+  if (!ctx) return;
+  const { campaign, campaignRows, fields, startDate, endDate } = ctx;
 
   const selected = STATE.reportingSelectedFields || REPORT_FIELD_OPTIONS.map((f) => f.key);
   const activeFields = REPORT_FIELD_OPTIONS.filter((f) => selected.includes(f.key) && fields[f.key]);
   if (!activeFields.length) { toast('Select at least one field to include', 'error'); return; }
 
   const columns = activeFields.map((f) => ({ label: f.label, value: (row) => row[fields[f.key]] ?? '' }));
-
-  const defaults = defaultDateRange();
-  const startDate = STATE.reportingStartDate || defaults.start;
-  const endDate = STATE.reportingEndDate || defaults.end;
   const duration = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
 
-  const screenNumericFields = activeFields.filter((f) => NUMERIC_REPORT_FIELDS.has(f.key));
-  const rowCountFallback = screenNumericFields.length === 0;
-  const screenMap = new Map();
-  campaignRows.forEach((row) => {
-    const site = fields.site ? String(row[fields.site] ?? '') : '';
-    const placement = fields.placement ? String(row[fields.placement] ?? '') : '';
-    const key = `${site} ${placement}`;
-    if (!screenMap.has(key)) {
-      const entry = { site, placement, rowCount: 0 };
-      screenNumericFields.forEach((f) => { entry[f.key] = 0; });
-      screenMap.set(key, entry);
-    }
-    const entry = screenMap.get(key);
-    entry.rowCount += 1;
-    screenNumericFields.forEach((f) => { entry[f.key] += Number(row[fields[f.key]]) || 0; });
-  });
-  const screenRows = [...screenMap.values()].sort((a, b) => a.site.localeCompare(b.site) || a.placement.localeCompare(b.placement));
+  const screenNumericKeys = activeFields.filter((f) => NUMERIC_REPORT_FIELDS.has(f.key)).map((f) => f.key);
+  const rowCountFallback = screenNumericKeys.length === 0;
+  const screenRows = aggregateByScreen(campaignRows, fields, screenNumericKeys);
   const screenColumns = [
     ...(fields.site ? [{ label: 'Site', value: (r) => r.site }] : []),
     ...(fields.placement ? [{ label: 'Placement', value: (r) => r.placement }] : []),
-    ...screenNumericFields.map((f) => ({ label: f.label, value: (r) => r[f.key] })),
+    ...screenNumericKeys.map((k) => ({ label: REPORT_FIELD_OPTIONS.find((f) => f.key === k).label, value: (r) => r[k] })),
     ...(rowCountFallback ? [{ label: 'Rows', value: (r) => r.rowCount }] : []),
   ];
 
   const safeCampaign = campaign.replace(/[\\/?*[\]:]/g, '-').slice(0, 60);
   await exportReportingCampaignExcel(`${safeCampaign}-report-${startDate}_${endDate}.xlsx`, {
     campaignName: campaign, duration, columns, rows: campaignRows, screenColumns, screenRows,
+    template: STATE.pageData.reportTemplate?.data,
   });
 }
 
-function renderReportDownloadPanel(rows, fields) {
-  if (!fields.campaign) return '';
-  const campaigns = [...new Set(rows.map((r) => String(r[fields.campaign] ?? '')))].filter(Boolean).sort();
-  if (!campaigns.length) return '';
-  const selectedCampaign = STATE.reportingSelectedCampaign && campaigns.includes(STATE.reportingSelectedCampaign) ? STATE.reportingSelectedCampaign : '';
+// Builds and downloads the .pdf - modeled on Hypermedia's own reference Campaign Report template:
+// cover, one photo-gallery page per site (using whatever the user attached via setSitePhotos,
+// placeholder boxes otherwise), then a Performance Report page with the real Playouts/Impressions
+// totals and a per-screen breakdown table, then a closing page.
+export async function downloadCampaignPdfReport() {
+  const ctx = resolveSelectedCampaign();
+  if (!ctx) return;
+  const { campaign, campaignRows, fields, startDate, endDate } = ctx;
+
+  const sites = fields.site ? [...new Set(campaignRows.map((r) => String(r[fields.site] ?? '')))].filter(Boolean).sort() : [];
+  const numericKeys = ['playouts', 'impressions'].filter((k) => fields[k]);
+  const screenRows = aggregateByScreen(campaignRows, fields, numericKeys);
+  const totalImpressions = fields.impressions ? campaignRows.reduce((s, r) => s + (Number(r[fields.impressions]) || 0), 0) : 0;
+  const totalPlayouts = fields.playouts ? campaignRows.reduce((s, r) => s + (Number(r[fields.playouts]) || 0), 0) : 0;
+
+  const safeCampaign = campaign.replace(/[\\/?*[\]:]/g, '-').slice(0, 60);
+  try {
+    await exportCampaignPdfReport(`${safeCampaign}-report-${startDate}_${endDate}.pdf`, {
+      campaignName: campaign,
+      locationLabel: sites.join(', ') || '-',
+      startDate,
+      endDate,
+      totalImpressions,
+      totalPlayouts,
+      screenRows,
+      sitePhotos: sites.map((site) => ({ site, files: sitePhotoStore.get(site) || [] })),
+      template: STATE.pageData.reportTemplate?.data,
+    });
+  } catch (e) {
+    toast(e.message || 'Failed to build PDF report', 'error');
+  }
+}
+
+// Download panel is scoped to a single already-selected campaign (no dropdown - see
+// renderCampaignDetail) so it only ever needs to ask "which fields/photos", not "which campaign".
+function renderReportDownloadPanel(campaign, campaignRows, fields) {
   const selectedFields = STATE.reportingSelectedFields || REPORT_FIELD_OPTIONS.map((f) => f.key);
   const availableFields = REPORT_FIELD_OPTIONS.filter((f) => fields[f.key]);
+  const sites = fields.site ? [...new Set(campaignRows.map((r) => String(r[fields.site] ?? '')))].filter(Boolean).sort() : [];
+  const photoCounts = STATE.reportingSitePhotoCounts || {};
+
   return `
     <div class="card">
-      <div class="card-head"><h3>Download Report</h3><div class="desc">Per-campaign .xlsx - a Report sheet with the fields you pick below, and a Screen Detail sheet with the same data split per screen.</div></div>
-      <div class="field"><label>Campaign</label>
-        <select id="report-campaign" onchange="App.setReportCampaign(this.value)">
-          <option value="">Select a campaign...</option>
-          ${campaigns.map((c) => `<option value="${esc(c)}" ${c === selectedCampaign ? 'selected' : ''}>${esc(c)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field"><label>Fields to include</label>
+      <div class="card-head"><h3>Download Report</h3><div class="desc">Branded report, modeled on the Hypermedia campaign-report template - Excel (.xlsx) with a Report + Screen Detail sheet, or a PDF with a cover, per-site photo pages and a Performance Report summary.</div></div>
+      <div class="field"><label>Fields to include (Excel)</label>
         <div style="display:flex;flex-wrap:wrap;gap:14px;">
           ${availableFields.map((f) => `
             <label style="display:flex;align-items:center;gap:6px;font-weight:normal;">
@@ -318,7 +373,23 @@ function renderReportDownloadPanel(rows, fields) {
           `).join('')}
         </div>
       </div>
-      <button class="btn btn-orange" type="button" onclick="App.downloadCampaignReport()">Download Report (.xlsx)</button>
+      ${sites.length ? `
+        <div class="field"><label>Attach screen photos (optional, PDF only - each site gets its own gallery page; left blank shows a placeholder box)</label>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${sites.map((site) => `
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <span style="min-width:160px;">${esc(site)}</span>
+                <input type="file" accept="image/*" multiple onchange="App.setSitePhotos('${esc(site)}', this)">
+                <span class="desc">${photoCounts[site] ? `${photoCounts[site]} photo(s) selected` : 'no photos - will show a placeholder'}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn btn-orange" type="button" onclick="App.downloadCampaignReport()">Download Report (.xlsx)</button>
+        <button class="btn-outline" type="button" onclick="App.downloadCampaignPdfReport()">Download Report (.pdf)</button>
+      </div>
     </div>
   `;
 }
@@ -327,39 +398,130 @@ function statTile(variant, label, value) {
   return `<div class="bento-stat ${variant}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(String(value))}</div></div>`;
 }
 
-function renderOverview(rows, fields) {
-  if (!rows.length) return '<div class="card"><div class="empty">No data for this date range.</div></div>';
+// One row per campaign - name, impression/playout totals, distinct screen count, row count -
+// sorted by impressions so the biggest campaigns surface first. Backs the campaign-picker list
+// (renderCampaignList) instead of dumping every raw row on the main page.
+function campaignSummaries(rows, fields) {
+  const map = new Map();
+  rows.forEach((r) => {
+    const name = String(r[fields.campaign] ?? '');
+    if (!name) return;
+    if (!map.has(name)) map.set(name, { name, rows: 0, impressions: 0, playouts: 0, sites: new Set() });
+    const entry = map.get(name);
+    entry.rows += 1;
+    if (fields.impressions) entry.impressions += Number(r[fields.impressions]) || 0;
+    if (fields.playouts) entry.playouts += Number(r[fields.playouts]) || 0;
+    if (fields.site) entry.sites.add(String(r[fields.site] ?? ''));
+  });
+  return [...map.values()]
+    .map((e) => ({ ...e, siteCount: e.sites.size }))
+    .sort((a, b) => b.impressions - a.impressions || b.playouts - a.playouts);
+}
 
-  const distinctCount = (field) => fields[field] ? new Set(rows.map((r) => r[fields[field]])).size : null;
-  const sumField = (field) => fields[field] ? rows.reduce((s, r) => s + (Number(r[fields[field]]) || 0), 0) : null;
-  const campaignCount = distinctCount('campaign');
-  const siteCount = distinctCount('site');
-  const advertiserCount = distinctCount('advertiser');
-  const totalImpressions = sumField('impressions');
-  const totalPlayouts = sumField('playouts');
-  const totalRevenue = sumField('revenue');
+// Main Ads Stats view: Total Impressions/Total Playouts up front, then a clickable list of
+// campaigns (not a giant raw table) - click one to drill into renderCampaignDetail.
+function renderCampaignList(rows, fields) {
+  const totalImpressions = fields.impressions ? rows.reduce((s, r) => s + (Number(r[fields.impressions]) || 0), 0) : null;
+  const totalPlayouts = fields.playouts ? rows.reduce((s, r) => s + (Number(r[fields.playouts]) || 0), 0) : null;
+  const campaignCount = fields.campaign ? new Set(rows.map((r) => r[fields.campaign])).size : null;
+  const siteCount = fields.site ? new Set(rows.map((r) => r[fields.site])).size : null;
 
-  const columns = Object.keys(rows[0]);
-  const tableRows = rows.slice(0, 200).map((r) => `<tr>${columns.map((c) => `<td>${esc(String(r[c] ?? ''))}</td>`).join('')}</tr>`).join('');
-
-  return `
+  const heroTiles = `
     <div class="bento-stats">
-      ${statTile('info', 'Rows', rows.length)}
-      ${campaignCount != null ? statTile('info', 'Campaigns', campaignCount) : ''}
-      ${siteCount != null ? statTile('info', 'Sites', siteCount) : ''}
-      ${advertiserCount != null ? statTile('info', 'Advertisers', advertiserCount) : ''}
       ${totalImpressions != null ? statTile('ok', 'Total Impressions', totalImpressions.toLocaleString()) : ''}
       ${totalPlayouts != null ? statTile('ok', 'Total Playouts', totalPlayouts.toLocaleString()) : ''}
-      ${totalRevenue != null ? statTile('info', 'Total Revenue', totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 2 })) : ''}
+      ${campaignCount != null ? statTile('info', 'Campaigns', campaignCount) : ''}
+      ${siteCount != null ? statTile('info', 'Sites', siteCount) : ''}
     </div>
-    ${renderReportDownloadPanel(rows, fields)}
+  `;
+
+  if (!fields.campaign) {
+    // No Campaign column in this response at all - fall back to a raw table so the data is still
+    // visible/debuggable rather than just disappearing.
+    const columns = Object.keys(rows[0]);
+    const tableRows = rows.slice(0, 200).map((r) => `<tr>${columns.map((c) => `<td>${esc(String(r[c] ?? ''))}</td>`).join('')}</tr>`).join('');
+    return `${heroTiles}<div class="card"><div class="card-head"><h3>Ads Stats</h3><div class="desc">${rows.length} row(s)${rows.length > 200 ? ' (showing first 200)' : ''} - no Campaign column detected, showing raw rows.</div></div><div class="tsheet-wrap"><table><thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table></div></div>`;
+  }
+
+  const campaigns = campaignSummaries(rows, fields);
+  const bodyRows = campaigns.map((c) => `
+    <tr style="cursor:pointer;" onclick="App.setReportCampaign('${esc(c.name)}')">
+      <td>${esc(c.name)}</td>
+      <td class="tright">${c.impressions.toLocaleString()}</td>
+      <td class="tright">${c.playouts.toLocaleString()}</td>
+      <td class="tright">${c.siteCount}</td>
+    </tr>
+  `).join('');
+
+  return `
+    ${heroTiles}
     <div class="card">
-      <div class="card-head"><h3>Ads Stats</h3><div class="desc">${rows.length} row(s)${rows.length > 200 ? ' (showing first 200)' : ''} from GET /stats-ads. Columns shown exactly as returned by the API.</div></div>
+      <div class="card-head"><h3>Campaigns</h3><div class="desc">${campaigns.length} campaign(s) in this date range. Click one for its detail, screen breakdown, and a downloadable report.</div></div>
       <div class="tsheet-wrap">
-        <table><thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>
+        <table>
+          <thead><tr><th>Campaign</th><th class="tright">Impressions</th><th class="tright">Playouts</th><th class="tright">Sites</th></tr></thead>
+          <tbody>${bodyRows}</tbody>
+        </table>
       </div>
     </div>
   `;
+}
+
+// Campaign detail view: that campaign's own Impression/Playout totals, its screen-by-screen
+// breakdown, and the Download Report panel - everything scoped to just this campaign so there's
+// no dropdown or "which campaign" ambiguity left for the download step.
+function renderCampaignDetail(campaign, campaignRows, fields) {
+  const totalImpressions = fields.impressions ? campaignRows.reduce((s, r) => s + (Number(r[fields.impressions]) || 0), 0) : null;
+  const totalPlayouts = fields.playouts ? campaignRows.reduce((s, r) => s + (Number(r[fields.playouts]) || 0), 0) : null;
+  const totalRevenue = fields.revenue ? campaignRows.reduce((s, r) => s + (Number(r[fields.revenue]) || 0), 0) : null;
+  const siteCount = fields.site ? new Set(campaignRows.map((r) => r[fields.site])).size : null;
+  const dates = fields.date ? [...new Set(campaignRows.map((r) => String(r[fields.date] ?? '').slice(0, 10)))].filter(Boolean).sort() : [];
+  const dateRangeLabel = dates.length ? (dates[0] === dates[dates.length - 1] ? dates[0] : `${dates[0]} to ${dates[dates.length - 1]}`) : '';
+
+  const numericKeys = ['playouts', 'impressions'].filter((k) => fields[k]);
+  const screenRows = aggregateByScreen(campaignRows, fields, numericKeys);
+  const screenTableRows = screenRows.map((r) => `
+    <tr>
+      <td>${esc(r.site)}</td>
+      <td>${esc(r.placement)}</td>
+      ${fields.playouts ? `<td class="tright">${(r.playouts ?? 0).toLocaleString()}</td>` : ''}
+      ${fields.impressions ? `<td class="tright">${(r.impressions ?? 0).toLocaleString()}</td>` : ''}
+    </tr>
+  `).join('');
+
+  return `
+    <div class="toolbar-actions" style="margin-bottom:10px;">
+      <button class="btn-sm" type="button" onclick="App.setReportCampaign('')">&larr; Back to all campaigns</button>
+    </div>
+    <div class="card-head" style="padding:0 0 8px;"><h3 style="margin:0;">${esc(campaign)}</h3><div class="desc">${esc(dateRangeLabel)}${siteCount != null ? ` - ${siteCount} screen(s)` : ''}</div></div>
+    <div class="bento-stats">
+      ${totalImpressions != null ? statTile('ok', 'Total Impressions', totalImpressions.toLocaleString()) : ''}
+      ${totalPlayouts != null ? statTile('ok', 'Total Playouts', totalPlayouts.toLocaleString()) : ''}
+      ${siteCount != null ? statTile('info', 'Screens', siteCount) : ''}
+      ${totalRevenue != null ? statTile('info', 'Total Revenue', totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 2 })) : ''}
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Screen Breakdown</h3><div class="desc">${screenRows.length} screen(s) for this campaign in the current date range.</div></div>
+      <div class="tsheet-wrap">
+        <table>
+          <thead><tr><th>Site</th><th>Placement</th>${fields.playouts ? '<th class="tright">Playouts</th>' : ''}${fields.impressions ? '<th class="tright">Impressions</th>' : ''}</tr></thead>
+          <tbody>${screenTableRows}</tbody>
+        </table>
+      </div>
+    </div>
+    ${renderReportDownloadPanel(campaign, campaignRows, fields)}
+  `;
+}
+
+function renderOverview(rows, fields) {
+  if (!rows.length) return '<div class="card"><div class="empty">No data for this date range.</div></div>';
+
+  const selectedCampaign = STATE.reportingSelectedCampaign;
+  if (selectedCampaign && fields.campaign) {
+    const campaignRows = rows.filter((r) => String(r[fields.campaign] ?? '') === selectedCampaign);
+    if (campaignRows.length) return renderCampaignDetail(selectedCampaign, campaignRows, fields);
+  }
+  return renderCampaignList(rows, fields);
 }
 
 // "Additional Traffic Sheet" - the same stats-ads rows, pivoted into a day-by-day grid per
@@ -495,6 +657,10 @@ export function renderReporting() {
   const cfg = loadData('reportingApi', () => getSetting('reportingApi'));
   if (cfg === null) return loadingCard();
   if (cfg?.__error) return loadingCard(cfg.__error);
+  // Cached for downloadCampaignReport/downloadCampaignPdfReport to read synchronously (via
+  // STATE.pageData.reportTemplate?.data) when the user clicks a download button - loaded here so
+  // it's already warm by the time those buttons are visible.
+  loadData('reportTemplate', () => getSetting('reportTemplate'));
 
   const configured = !!(cfg?.enabled && cfg?.clientId && cfg?.clientSecret);
   if (!configured) {

@@ -200,41 +200,72 @@ export async function exportTrafficSheetExcel(filename, { regularCampaigns, focC
   await downloadWorkbook(wb, filename);
 }
 
-const BRAND_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } };
+const BRAND_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B1C1F' } };
+const BRAND_ORANGE = 'FFF7941D';
+const BRAND_TEAL = 'FF14B8C4';
+const REPORT_HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F5F6' } };
 
-// Writes the "Hypermedia" brand banner + Campaign Name/Duration meta rows + a bordered data table
-// starting at row 5 - shared by both sheets of exportReportingCampaignExcel (Report / Screen
-// Detail) so the report header stays visually identical whichever sheet you're looking at.
-function writeReportSheet(ws, { campaignName, duration, columns, rows }) {
+let cachedLogoBuffer = null;
+async function getLogoBuffer() {
+  if (!cachedLogoBuffer) {
+    const res = await fetch(`${import.meta.env.BASE_URL}logo.png`);
+    cachedLogoBuffer = await res.arrayBuffer();
+  }
+  return cachedLogoBuffer;
+}
+
+// Fallback branding if the caller doesn't pass a template (or a field in it is blank) - matches
+// Settings > Integrations > Campaign Report Template's own defaults (settings.js
+// REPORT_TEMPLATE_DEFAULTS) so an unconfigured template still looks right out of the box.
+const DEFAULT_TEMPLATE = { companyName: 'Hypermedia', tagline: 'Creators of Impact' };
+
+// Writes the brand banner (logo + wordmark + tagline) + Campaign Name/Duration meta rows + a
+// bordered data table starting at row 7 - shared by both sheets of exportReportingCampaignExcel
+// (Report / Screen Detail) so the report header stays visually identical whichever sheet you're
+// looking at.
+function writeReportSheet(ws, { campaignName, duration, columns, rows, logoImageId, template }) {
+  const t = { ...DEFAULT_TEMPLATE, ...template };
   const totalCols = Math.max(columns.length, 2);
+
   ws.mergeCells(1, 1, 1, totalCols);
   const brandCell = ws.getCell(1, 1);
-  brandCell.value = 'Hypermedia';
+  brandCell.value = t.companyName;
   brandCell.font = { bold: true, size: 18, color: { argb: 'FFFFFFFF' } };
   brandCell.fill = BRAND_FILL;
-  brandCell.alignment = { vertical: 'middle' };
-  ws.getRow(1).height = 30;
+  brandCell.alignment = { vertical: 'middle', indent: 5 };
+  ws.getRow(1).height = 34;
+  if (logoImageId != null) {
+    ws.addImage(logoImageId, { tl: { col: 0.15, row: 0.12 }, ext: { width: 28, height: 28 } });
+  }
 
-  ws.getCell(2, 1).value = 'Campaign Name:';
-  ws.getCell(2, 1).font = { bold: true };
-  ws.getCell(2, 2).value = campaignName;
-  ws.getCell(3, 1).value = 'Duration:';
-  ws.getCell(3, 1).font = { bold: true };
-  ws.getCell(3, 2).value = duration;
+  ws.mergeCells(2, 1, 2, totalCols);
+  const taglineCell = ws.getCell(2, 1);
+  taglineCell.value = t.tagline || '';
+  taglineCell.font = { italic: true, size: 10, color: { argb: BRAND_TEAL } };
+  taglineCell.alignment = { vertical: 'middle', indent: 5 };
+  ws.getRow(2).height = 16;
 
-  const headerRow = 5;
+  ws.getCell(4, 1).value = 'Campaign Name:';
+  ws.getCell(4, 1).font = { bold: true };
+  ws.getCell(4, 2).value = campaignName;
+  ws.getCell(5, 1).value = 'Duration:';
+  ws.getCell(5, 1).font = { bold: true };
+  ws.getCell(5, 2).value = duration;
+
+  const headerRow = 7;
   columns.forEach((c, i) => { ws.getCell(headerRow, i + 1).value = c.label; });
   rows.forEach((row, rIdx) => {
     columns.forEach((c, i) => { ws.getCell(headerRow + 1 + rIdx, i + 1).value = c.value(row) ?? ''; });
   });
-  for (let c = 1; c <= columns.length; c++) {
-    const cell = ws.getCell(headerRow, c);
-    cell.fill = HEADER_FILL;
-    cell.font = { bold: true };
-  }
   const lastRow = headerRow + rows.length;
   for (let r = headerRow; r <= lastRow; r++) {
     for (let c = 1; c <= columns.length; c++) ws.getCell(r, c).border = ALL_BORDERS;
+  }
+  for (let c = 1; c <= columns.length; c++) {
+    const cell = ws.getCell(headerRow, c);
+    cell.fill = REPORT_HEADER_FILL;
+    cell.font = { bold: true };
+    cell.border = { ...ALL_BORDERS, bottom: { style: 'medium', color: { argb: BRAND_ORANGE } } };
   }
   columns.forEach((c, i) => {
     const maxLen = rows.reduce((m, row) => Math.max(m, String(c.value(row) ?? '').length), c.label.length);
@@ -247,10 +278,14 @@ function writeReportSheet(ws, { campaignName, duration, columns, rows }) {
 // Campaign Name/Duration on both sheets - a Report sheet with the raw rows (only the fields the
 // user selected) and a Screen Detail sheet with those same rows aggregated per screen (Site +
 // Placement, summed across whichever numeric fields were selected).
-export async function exportReportingCampaignExcel(filename, { campaignName, duration, columns, rows, screenColumns, screenRows }) {
+export async function exportReportingCampaignExcel(filename, { campaignName, duration, columns, rows, screenColumns, screenRows, template }) {
   const wb = new ExcelJS.Workbook();
-  writeReportSheet(wb.addWorksheet('Report'), { campaignName, duration, columns, rows });
-  writeReportSheet(wb.addWorksheet('Screen Detail'), { campaignName, duration, columns: screenColumns, rows: screenRows });
+  let logoImageId = null;
+  try {
+    logoImageId = wb.addImage({ buffer: await getLogoBuffer(), extension: 'png' });
+  } catch (_) { /* logo is cosmetic - report still works without it */ }
+  writeReportSheet(wb.addWorksheet('Report'), { campaignName, duration, columns, rows, logoImageId, template });
+  writeReportSheet(wb.addWorksheet('Screen Detail'), { campaignName, duration, columns: screenColumns, rows: screenRows, logoImageId, template });
   await downloadWorkbook(wb, filename);
 }
 

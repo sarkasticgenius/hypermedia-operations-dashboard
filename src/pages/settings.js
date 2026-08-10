@@ -678,6 +678,54 @@ export async function saveVenueAliasesForm(event) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+// Branding text for the Reporting workspace's per-campaign download (Excel + PDF) - lives here
+// instead of hardcoded in lib/pdfReport.js/excelExport.js so a phone number, address, or tagline
+// change is a Settings edit, not a code change/redeploy. reporting.js falls back to these exact
+// defaults if the row hasn't been saved yet, so an unconfigured template still looks right.
+export const REPORT_TEMPLATE_DEFAULTS = {
+  companyName: 'Hypermedia',
+  tagline: 'Creators of Impact',
+  contactLine: 'Toll-Free +971 4 800 4600  |  info@hypermedia.ae  |  www.hypermedia.ae',
+  addressLine1: 'Dubai HQ: Galadari Bldg, 2nd Floor, Dubai Internet City, P.O. Box 502021, Dubai, UAE',
+  addressLine2: 'Abu Dhabi: Yas Mall, Cloudspaces, Level 1, Near Apple Store',
+};
+
+function renderReportTemplateCard(settings) {
+  const t = { ...REPORT_TEMPLATE_DEFAULTS, ...(settings.reportTemplate || {}) };
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Campaign Report Template</h3><div class="desc">Branding text used on every Reporting workspace campaign download (Excel + PDF) - edit this instead of asking for a code change when a phone number, address or tagline changes.</div></div>
+      <form onsubmit="App.saveReportTemplateForm(event)">
+        <div class="field"><label>Company Name</label><input id="rt-company" value="${esc(t.companyName)}"></div>
+        <div class="field"><label>Tagline</label><input id="rt-tagline" value="${esc(t.tagline)}"></div>
+        <div class="field"><label>Contact Line</label><input id="rt-contact" value="${esc(t.contactLine)}"></div>
+        <div class="field"><label>Address Line 1</label><input id="rt-address1" value="${esc(t.addressLine1)}"></div>
+        <div class="field"><label>Address Line 2</label><input id="rt-address2" value="${esc(t.addressLine2)}"></div>
+        <button class="btn btn-orange" type="submit">Save</button>
+      </form>
+    </div>
+  `;
+}
+
+export async function saveReportTemplateForm(event) {
+  event.preventDefault();
+  const template = {
+    companyName: document.getElementById('rt-company').value.trim() || REPORT_TEMPLATE_DEFAULTS.companyName,
+    tagline: document.getElementById('rt-tagline').value.trim(),
+    contactLine: document.getElementById('rt-contact').value.trim(),
+    addressLine1: document.getElementById('rt-address1').value.trim(),
+    addressLine2: document.getElementById('rt-address2').value.trim(),
+  };
+  try {
+    await saveSetting('reportTemplate', template);
+    await logAudit('Save campaign report template', template.companyName);
+    invalidate('settings');
+    invalidate('reportTemplate');
+    toast('Report template saved');
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
 // Gathers distinct brand-lookup-worthy names across the 5 places logos are shown (venues,
 // contractors, campaign clients, Traffic Sheet venues - Asset Inventory reuses venue names so
 // isn't a separate source) PLUS every name in Domain Overrides, skips ones already cached (found
@@ -839,6 +887,7 @@ function renderIntegrationsTab() {
       { name: 'clientSecret', label: 'Client Secret', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
     ], 'aioo-reporting-proxy')}
+    ${renderReportTemplateCard(settings)}
     ${integrationField(settings, 'slackNotify', 'Slack Notifications', [
       { name: 'webhookUrl', label: 'Incoming Webhook URL', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
