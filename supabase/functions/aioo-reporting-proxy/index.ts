@@ -38,6 +38,47 @@ const corsHeaders = {
 
 const API_BASE = 'https://ads.aiootech.com/api/v1';
 
+// /placements-status-report only offers text/csv (no JSON option per the spec) - parsed here so
+// the frontend can treat every endpoint the same way (array of row objects). Simple RFC4180-style
+// parser: handles quoted fields (with embedded commas/quotes/newlines) since the report is a
+// live export and not guaranteed to be quote-free.
+function parseCsv(text: string): Record<string, string>[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(field); field = '';
+    } else if (ch === '\r') {
+      // skip - \n (handled below) ends the row
+    } else if (ch === '\n') {
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else {
+      field += ch;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  const filtered = rows.filter((r) => !(r.length === 1 && r[0] === ''));
+  if (!filtered.length) return [];
+  const header = filtered[0];
+  return filtered.slice(1).map((r) => {
+    const obj: Record<string, string> = {};
+    header.forEach((h, idx) => { obj[h] = r[idx] ?? ''; });
+    return obj;
+  });
+}
+
 async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string, anonKey: string): Promise<boolean> {
   const cronSecret = req.headers.get('x-cron-secret');
   if (cronSecret) {
@@ -115,12 +156,17 @@ Deno.serve(async (req) => {
     if (body.placement_ids) params.set('placement_ids', String(body.placement_ids));
     if (body.ad_id) params.set('ad_id', String(body.ad_id));
     if (body.site_id) params.set('site_id', String(body.site_id));
+    if (body.since) params.set('since', String(body.since));
+    if (body.retailers != null) params.set('retailers', String(body.retailers));
     // Every stats endpoint defaults to CSV - this proxy always asks for JSON since the frontend
     // needs structured data, regardless of what (if anything) the browser itself passed.
     if (endpoint.startsWith('/stats-')) params.set('format', 'json');
 
+    // /placements-status-report has no JSON option (text/csv only, per the spec) - fetched and
+    // parsed into row objects here so every endpoint looks the same to the frontend.
+    const isCsvEndpoint = endpoint === '/placements-status-report';
     const url = params.toString() ? `${API_BASE}${endpoint}?${params.toString()}` : `${API_BASE}${endpoint}`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: isCsvEndpoint ? 'text/csv' : 'application/json' } });
     const nowIso = new Date().toISOString();
     if (!res.ok) {
       const bodyText = await res.text().catch(() => '');
@@ -128,7 +174,7 @@ Deno.serve(async (req) => {
       await adminClient.from('app_settings').update({ value: { ...cfg, lastError: message } }).eq('key', 'reportingApi');
       throw new Error(message);
     }
-    const data = await res.json();
+    const data = isCsvEndpoint ? parseCsv(await res.text()) : await res.json();
     const rowCount = Array.isArray(data) ? data.length : null;
     const summary = endpoint === '/me'
       ? `Connected as ${data.name || data.email || 'unknown user'} (${data.role || 'no role'}).`
