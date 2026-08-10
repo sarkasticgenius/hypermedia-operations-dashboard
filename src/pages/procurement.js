@@ -71,7 +71,6 @@ export function renderProcurement() {
   `).join('');
 
   return `
-    <div class="banner">Receiving deliveries and uploading delivery notes requires Orders edit permission.${editOk ? '' : ' Ask an Admin for access.'}${addOk ? '' : ' Ask an Admin for permission to place new purchase orders.'}</div>
     <div class="toolbar">
       <div class="tabs"><div class="tab active">All Orders (${orders.length})</div></div>
       <div class="toolbar-actions">
