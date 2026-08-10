@@ -355,7 +355,7 @@ function renderIotDeviceTable(cfg) {
           <option value="all" ${filterMode === 'all' ? 'selected' : ''}>All devices</option>
           <option value="excluded" ${filterMode === 'excluded' ? 'selected' : ''}>Excluded only</option>
         </select>
-        <input placeholder="Search device ID, name, store..." value="${esc(STATE.iotDeviceSearch || '')}" oninput="App.setIotDeviceSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+        <input id="iot-device-search" placeholder="Search device ID, name, store..." value="${esc(STATE.iotDeviceSearch || '')}" oninput="App.setIotDeviceSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
       </div>
     </div>
     <div style="max-height:480px;overflow-y:auto;">

@@ -189,7 +189,7 @@ export function renderRecycleBin() {
   return `
     <div class="toolbar">
       <div class="toolbar-actions">
-        <input placeholder="Search deleted items..." value="${esc(STATE.recycleBinSearch || '')}" oninput="App.setRecycleBinSearch(this.value)" style="min-width:220px;">
+        <input id="recycle-bin-search" placeholder="Search deleted items..." value="${esc(STATE.recycleBinSearch || '')}" oninput="App.setRecycleBinSearch(this.value)" style="min-width:220px;">
         <select onchange="App.setRecycleBinType(this.value)">${typeOptions}</select>
       </div>
       <div class="small muted">${rows.length} of ${data.rows.length} deleted item(s)</div>
