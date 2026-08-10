@@ -19,11 +19,16 @@
 // app_settings too, read fresh each call so a credential change takes effect immediately.
 //
 // Runs two ways, same pattern as traffic-sheet-proxy/brandfetch-lookup:
-//   1. Reporting page - authenticated user JWT, browser supplies endpoint/start/end (or whatever
-//      query params that endpoint takes).
-//   2. Settings > Integrations > "Test" button - authenticated admin JWT, no body (defaults to
-//      GET /me, which just confirms the credentials/token exchange work and echoes back who they
-//      belong to - cheaper and safer to call on every "Test" click than a real stats pull).
+//   1. Reporting page - authenticated user JWT, browser always supplies an explicit
+//      endpoint/start/end, so it gets the raw upstream response shape back untouched.
+//   2. Settings > Integrations > "Test" button - authenticated admin JWT, no body at all. This used
+//      to default to GET /me (cheap, no date range needed), but AiOO's /me handler 500s for
+//      client_credentials tokens (confirmed live - the OAuth token exchange itself succeeds, only
+//      the follow-up /me call fails, with an empty response body, which is consistent with an
+//      unhandled server-side exception rather than an auth problem). /me appears to only work for
+//      user-scoped tokens from the authorization_code flow, not service-account tokens. So the
+//      no-endpoint fallback now hits GET /stats-ads for a single day instead - the endpoint this
+//      integration actually exists for, and one we know works with a client_credentials token.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
@@ -97,12 +102,16 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const token = await getAccessToken(adminClient, cfg);
 
-    // Defaults to /me (see file header) when the browser doesn't ask for a specific endpoint -
-    // the Settings "Test" button calls with an empty body.
-    const endpoint = typeof body.endpoint === 'string' && body.endpoint ? body.endpoint : '/me';
+    // See file header - no explicit endpoint means this is the Settings "Test" button, which
+    // falls back to a cheap single-day /stats-ads pull instead of the broken /me.
+    const isTestCall = !(typeof body.endpoint === 'string' && body.endpoint);
+    const endpoint = isTestCall ? '/stats-ads' : body.endpoint;
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     const params = new URLSearchParams();
     if (body.start) params.set('start', String(body.start));
+    else if (isTestCall) params.set('start', yesterday);
     if (body.end) params.set('end', String(body.end));
+    else if (isTestCall) params.set('end', yesterday);
     if (body.placement_ids) params.set('placement_ids', String(body.placement_ids));
     if (body.ad_id) params.set('ad_id', String(body.ad_id));
     if (body.site_id) params.set('site_id', String(body.site_id));
@@ -120,8 +129,10 @@ Deno.serve(async (req) => {
       throw new Error(message);
     }
     const data = await res.json();
+    const rowCount = Array.isArray(data) ? data.length : null;
     const summary = endpoint === '/me'
       ? `Connected as ${data.name || data.email || 'unknown user'} (${data.role || 'no role'}).`
+      : rowCount != null ? `Connected - ${rowCount} row(s) from ${endpoint} for ${yesterday}.`
       : `Fetched ${endpoint}.`;
 
     await adminClient.from('app_settings').update({
@@ -129,12 +140,16 @@ Deno.serve(async (req) => {
       updated_at: nowIso,
     }).eq('key', 'reportingApi');
 
-    // summary is folded into the response (matching every other integration's convention, so the
-    // Settings "Test" button's generic handler picks it up as data.summary) only when data is a
-    // plain object - never for an array response (stats-ads etc return an array of rows; spreading
-    // an array into an object would silently turn it into {0: ..., 1: ..., summary: ...} and break
-    // the frontend's Array.isArray(data) check).
-    const responseBody = Array.isArray(data) ? data : { ...data, summary };
+    // The Reporting page always passes an explicit endpoint and expects the raw upstream shape
+    // back untouched (extractRows handles array/rows/data wrappers itself) - summary is only
+    // folded into the response for the Settings "Test" button's fallback call, where there's no
+    // real caller depending on an exact shape and testIntegration's generic handler expects
+    // data.summary. Never spread an array response into an object either way (stats-ads etc
+    // return an array of rows; spreading would silently turn it into {0: ..., 1: ..., summary}
+    // and break the frontend's Array.isArray(data) check).
+    const responseBody = !isTestCall ? data
+      : Array.isArray(data) ? { summary, rows: data }
+      : { ...data, summary };
     return new Response(JSON.stringify(responseBody), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,
     });
