@@ -158,6 +158,10 @@ Deno.serve(async (req) => {
     if (body.site_id) params.set('site_id', String(body.site_id));
     if (body.since) params.set('since', String(body.since));
     if (body.retailers != null) params.set('retailers', String(body.retailers));
+    // Only used by GET /campaigns (name filter, substring match) - looked up by the Reporting page
+    // to show a selected campaign's real flight dates (Campaign start/end), since the Reporting
+    // stats endpoints (stats-ads etc) only ever return daily rows, never campaign metadata.
+    if (body.name) params.set('name', String(body.name));
     // Every stats endpoint defaults to CSV - this proxy always asks for JSON since the frontend
     // needs structured data, regardless of what (if anything) the browser itself passed.
     if (endpoint.startsWith('/stats-')) params.set('format', 'json');

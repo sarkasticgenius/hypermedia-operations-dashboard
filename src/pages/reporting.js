@@ -23,7 +23,7 @@ import { getSetting } from '../data/settings.js';
 import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
 import { exportReportingCampaignExcel } from '../lib/excelExport.js';
-import { exportCampaignPdfReport } from '../lib/pdfReport.js';
+import { exportCampaignPptxReport } from '../lib/pptxReport.js';
 
 const REPORTING_TABS = [
   { key: 'adsStats', label: 'Ads Stats' },
@@ -96,6 +96,8 @@ async function loadLastPlayouts() {
 // Started flags prevent re-fetching on every re-render) - lastPlayouts is safe to auto-fetch with
 // no filters (returns latest playout per screen), but avails/statusReport require explicit user
 // input/action first (avails needs placement_ids or ad_id; statusReport can be a large CSV pull).
+// trafficSheet needs BOTH stats-ads (Direct) and stats-dsps (Programmatic) to build its merged
+// grid - DATE_TABS only maps it to the ads-stats fetch, so the dsps one is kicked off separately.
 function ensureTabData(tab) {
   const defaults = defaultDateRange();
   const start = STATE.reportingStartDate || defaults.start;
@@ -104,6 +106,10 @@ function ensureTabData(tab) {
   if (dtab && !STATE[dtab.key] && !STATE[`${dtab.key}Loading`] && !STATE[`${dtab.key}Started`]) {
     STATE[`${dtab.key}Started`] = true;
     queueMicrotask(() => loadDateRangeTab(dtab.key, dtab.endpoint, start, end));
+  }
+  if (tab === 'trafficSheet' && !STATE.reportingDsps && !STATE.reportingDspsLoading && !STATE.reportingDspsStarted) {
+    STATE.reportingDspsStarted = true;
+    queueMicrotask(() => loadDateRangeTab('reportingDsps', '/stats-dsps', start, end));
   }
   if (tab === 'lastPlayouts' && !STATE.reportingLastPlayouts && !STATE.reportingLastPlayoutsLoading && !STATE.reportingLastPlayoutsStarted) {
     STATE.reportingLastPlayoutsStarted = true;
@@ -124,7 +130,14 @@ export async function applyReportingFilter() {
   const dtab = DATE_TABS[tab];
   if (!dtab) return;
   STATE[`${dtab.key}Started`] = true;
-  await loadDateRangeTab(dtab.key, dtab.endpoint, start, end);
+  const reloads = [loadDateRangeTab(dtab.key, dtab.endpoint, start, end)];
+  // trafficSheet's grid also depends on stats-dsps (Programmatic) - see ensureTabData - so its own
+  // Apply Date Filter needs to refresh both, not just the ads-stats half DATE_TABS maps it to.
+  if (tab === 'trafficSheet') {
+    STATE.reportingDspsStarted = true;
+    reloads.push(loadDateRangeTab('reportingDsps', '/stats-dsps', start, end));
+  }
+  await Promise.all(reloads);
 }
 
 export async function applyLastPlayoutsFilter() {
@@ -140,14 +153,44 @@ export async function applyLastPlayoutsFilter() {
   await loadLastPlayouts();
 }
 
+// Distinct (site, placement, placement id) combos from whichever stats data is already loaded
+// (Ads Stats or Placements Stats) - backs the Avails tab's placement picker so the user can select
+// real placements by name instead of having to already know/type a raw numeric Placement ID
+// (almost certainly why "Get Forecast" seemed broken - a blind/malformed ID looks identical to a
+// real bug, since the API correctly 400s "Missing or invalid parameters" either way).
+function availsPlacementOptions() {
+  const source = STATE.reportingAdsStats || STATE.reportingPlacementsStats;
+  if (!source) return [];
+  const rows = extractRows(source);
+  if (!rows.length) return [];
+  const fields = detectAllFields(rows);
+  if (!fields.placementId || !fields.placement) return [];
+  const seen = new Map();
+  rows.forEach((r) => {
+    const pid = r[fields.placementId];
+    if (pid == null || seen.has(pid)) return;
+    seen.set(pid, { id: pid, placement: String(r[fields.placement] ?? ''), site: fields.site ? String(r[fields.site] ?? '') : '' });
+  });
+  return [...seen.values()].sort((a, b) => a.site.localeCompare(b.site) || a.placement.localeCompare(b.placement));
+}
+
+export function toggleAvailsPlacement(id) {
+  const current = new Set((STATE.reportingAvailsPlacementIds || []).map(String));
+  const key = String(id);
+  if (current.has(key)) current.delete(key); else current.add(key);
+  setState({ reportingAvailsPlacementIds: [...current] });
+}
+
 export async function applyAvailsFilter() {
-  const placementIdsEl = document.getElementById('avails-placement-ids');
+  const manualIdsEl = document.getElementById('avails-placement-ids-manual');
   const adIdEl = document.getElementById('avails-ad-id');
   const startEl = document.getElementById('avails-start');
   const endEl = document.getElementById('avails-end');
-  const placementIds = placementIdsEl?.value.trim();
+  const pickedIds = STATE.reportingAvailsPlacementIds || [];
+  const manualIds = (manualIdsEl?.value.trim() || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const placementIds = [...new Set([...pickedIds.map(String), ...manualIds])].join(',');
   const adId = adIdEl?.value.trim();
-  if (!placementIds && !adId) { toast('Enter Placement IDs or an Ad ID', 'error'); return; }
+  if (!placementIds && !adId) { toast('Pick at least one placement above, or enter Placement IDs/an Ad ID manually', 'error'); return; }
   setState({ reportingAvailsLoading: true, reportingAvailsError: null });
   try {
     const params = {};
@@ -188,9 +231,12 @@ const FIELD_CANDIDATES = {
   advertiser: ['adv_name', 'advertiser', 'advertiser_name'],
   campaign: ['c_name', 'campaign', 'campaign_name'],
   ad: ['a_name', 'ad', 'ad_name'],
+  adId: ['a_id'],
   creative: ['cr_name', 'creative', 'creative_name'],
   site: ['s_name', 'site', 'site_name'],
+  siteId: ['s_id'],
   placement: ['p_name', 'placement', 'placement_name'],
+  placementId: ['p_id'],
   playouts: ['playouts'],
   impressions: ['impressions', 'plays', 'count'],
   impressionsOntarget: ['impressions_ontarget'],
@@ -228,29 +274,64 @@ const REPORT_FIELD_OPTIONS = [
 ];
 const NUMERIC_REPORT_FIELDS = new Set(['playouts', 'impressions', 'impressionsOntarget', 'revenue']);
 
-// Selected photo Files never go through STATE/render() - a re-render (e.g. a toast firing) tears
-// down and rebuilds the <input type=file> DOM node, and there's no browser mechanism to carry a
-// FileList across that even with a stable id (unlike focus, which document.getElementById can
-// re-target). So files are captured into this module-level Map the instant the input fires
-// onchange, and reportingSitePhotoCounts (in STATE) only mirrors the *count* for on-screen feedback.
-const sitePhotoStore = new Map();
-
-export function setReportCampaign(v) { setState({ reportingSelectedCampaign: v }); }
+export function setReportCampaign(v) {
+  // Clears out the previous campaign's metadata/demand-type lookups (below) so a stale campaign's
+  // real dates or Direct/Programmatic split never briefly flashes under a newly-selected campaign
+  // before its own fetch resolves.
+  setState({
+    reportingSelectedCampaign: v,
+    reportingCampaignMeta: null, reportingCampaignMetaError: null, reportingCampaignMetaStarted: false,
+    reportingCampaignAdsInfo: null, reportingCampaignAdsInfoError: null, reportingCampaignAdsInfoStarted: false,
+  });
+}
 export function toggleReportField(key) {
   const current = STATE.reportingSelectedFields || REPORT_FIELD_OPTIONS.map((f) => f.key);
   const set = new Set(current);
   if (set.has(key)) set.delete(key); else set.add(key);
   setState({ reportingSelectedFields: [...set] });
 }
-export function setSitePhotos(site, inputEl) {
-  const files = inputEl?.files ? [...inputEl.files] : [];
-  sitePhotoStore.set(site, files);
-  setState({ reportingSitePhotoCounts: { ...(STATE.reportingSitePhotoCounts || {}), [site]: files.length } });
+
+// The Reporting stats endpoints (stats-ads etc) only ever return daily rows, never a campaign's
+// real flight dates - GET /campaigns?name=... (the actual Campaigns API, not the Reporting one) is
+// the only source for that. Substring match, so an exact (case-insensitive) name match is picked
+// out of whatever comes back rather than trusting the first hit.
+async function loadCampaignMeta(campaignName) {
+  setState({ reportingCampaignMetaLoading: true, reportingCampaignMetaError: null });
+  try {
+    const data = await fetchReportingStats('/campaigns', { name: campaignName });
+    const list = Array.isArray(data) ? data : [];
+    const match = list.find((c) => String(c.name || '').toLowerCase() === campaignName.toLowerCase()) || list[0] || null;
+    setState({
+      reportingCampaignMeta: match ? { start: match.start, end: match.end, status: match.status, type: match.type } : null,
+      reportingCampaignMetaLoading: false,
+    });
+  } catch (e) {
+    setState({ reportingCampaignMetaLoading: false, reportingCampaignMetaError: e.message || 'Failed to load campaign details' });
+  }
+}
+
+// Ad (line item) demand_type (direct/programmatic) and loop/cycle config aren't in any Reporting
+// response either - only GET /ads/{id} (the Ads API) returns them, and only one at a time (the
+// list endpoint returns a reduced id/name/campaign_id-only shape). Fetches every distinct a_id
+// seen in the campaign's rows in parallel, capped at 15 to stay well clear of rate limits for
+// campaigns with an unusually large number of line items.
+const MAX_AD_LOOKUPS = 15;
+async function loadCampaignAdsInfo(campaignRows, fields) {
+  if (!fields.adId) { setState({ reportingCampaignAdsInfo: [] }); return; }
+  const adIds = [...new Set(campaignRows.map((r) => r[fields.adId]).filter((v) => v != null))].slice(0, MAX_AD_LOOKUPS);
+  if (!adIds.length) { setState({ reportingCampaignAdsInfo: [] }); return; }
+  setState({ reportingCampaignAdsInfoLoading: true, reportingCampaignAdsInfoError: null });
+  try {
+    const ads = await Promise.all(adIds.map((id) => fetchReportingStats(`/ads/${id}`).catch(() => null)));
+    setState({ reportingCampaignAdsInfo: ads.filter(Boolean), reportingCampaignAdsInfoLoading: false });
+  } catch (e) {
+    setState({ reportingCampaignAdsInfoLoading: false, reportingCampaignAdsInfoError: e.message || 'Failed to load ad details' });
+  }
 }
 
 // Groups rows by screen (Site + Placement), summing whichever numericKeys are given - shared by
-// both the Excel Screen Detail sheet and the PDF's per-site breakdown table so the two downloads
-// never disagree with each other.
+// both the Excel Screen Detail sheet and the PowerPoint's per-site breakdown table so the two
+// downloads never disagree with each other.
 function aggregateByScreen(rows, fields, numericKeys) {
   const screenMap = new Map();
   rows.forEach((row) => {
@@ -320,11 +401,15 @@ export async function downloadCampaignReport() {
   });
 }
 
-// Builds and downloads the .pdf - modeled on Hypermedia's own reference Campaign Report template:
-// cover, one photo-gallery page per site (using whatever the user attached via setSitePhotos,
-// placeholder boxes otherwise), then a Performance Report page with the real Playouts/Impressions
-// totals and a per-screen breakdown table, then a closing page.
-export async function downloadCampaignPdfReport() {
+// Builds and downloads the .pptx - modeled on Hypermedia's own reference Campaign Report deck:
+// cover, one placeholder slide per site (photos are added afterward, directly in PowerPoint - see
+// lib/pptxReport.js), a Performance Report slide with the real Playouts/Impressions totals, the
+// per-screen breakdown table and the Direct/Programmatic split, then a closing slide. Uses
+// reportingCampaignMeta/reportingCampaignAdsInfo if those lookups have already resolved (they're
+// kicked off as soon as a campaign is selected - see ensureCampaignDetailData), but doesn't block
+// the download waiting on them - a report with the loaded-range dates and no delivery-type split
+// is still useful, and both lookups hit endpoints outside the Reporting API's own guarantees.
+export async function downloadCampaignPptxReport() {
   const ctx = resolveSelectedCampaign();
   if (!ctx) return;
   const { campaign, campaignRows, fields, startDate, endDate } = ctx;
@@ -335,35 +420,38 @@ export async function downloadCampaignPdfReport() {
   const totalImpressions = fields.impressions ? campaignRows.reduce((s, r) => s + (Number(r[fields.impressions]) || 0), 0) : 0;
   const totalPlayouts = fields.playouts ? campaignRows.reduce((s, r) => s + (Number(r[fields.playouts]) || 0), 0) : 0;
 
+  const meta = STATE.reportingCampaignMeta;
+  const realStartDate = meta?.start ? new Date(meta.start * 1000).toISOString().slice(0, 10) : null;
+  const realEndDate = meta?.end ? new Date(meta.end * 1000).toISOString().slice(0, 10) : null;
+  const adsInfo = STATE.reportingCampaignAdsInfo;
+  const demandSplit = adsInfo && adsInfo.length
+    ? { direct: adsInfo.filter((a) => a.demand_type === 'direct').length, programmatic: adsInfo.filter((a) => a.demand_type === 'programmatic').length }
+    : null;
+
   const safeCampaign = campaign.replace(/[\\/?*[\]:]/g, '-').slice(0, 60);
   try {
-    await exportCampaignPdfReport(`${safeCampaign}-report-${startDate}_${endDate}.pdf`, {
+    await exportCampaignPptxReport(`${safeCampaign}-report-${startDate}_${endDate}.pptx`, {
       campaignName: campaign,
       locationLabel: sites.join(', ') || '-',
-      startDate,
-      endDate,
-      totalImpressions,
-      totalPlayouts,
-      screenRows,
-      sitePhotos: sites.map((site) => ({ site, files: sitePhotoStore.get(site) || [] })),
+      startDate, endDate, realStartDate, realEndDate,
+      totalImpressions, totalPlayouts, screenRows, demandSplit, sites,
       template: STATE.pageData.reportTemplate?.data,
     });
   } catch (e) {
-    toast(e.message || 'Failed to build PDF report', 'error');
+    toast(e.message || 'Failed to build PowerPoint report', 'error');
   }
 }
 
 // Download panel is scoped to a single already-selected campaign (no dropdown - see
-// renderCampaignDetail) so it only ever needs to ask "which fields/photos", not "which campaign".
-function renderReportDownloadPanel(campaign, campaignRows, fields) {
+// renderCampaignDetail) so it only ever needs to ask "which fields", not "which campaign". Photos
+// are no longer collected here - see exportCampaignPptxReport's header comment.
+function renderReportDownloadPanel(fields) {
   const selectedFields = STATE.reportingSelectedFields || REPORT_FIELD_OPTIONS.map((f) => f.key);
   const availableFields = REPORT_FIELD_OPTIONS.filter((f) => fields[f.key]);
-  const sites = fields.site ? [...new Set(campaignRows.map((r) => String(r[fields.site] ?? '')))].filter(Boolean).sort() : [];
-  const photoCounts = STATE.reportingSitePhotoCounts || {};
 
   return `
     <div class="card">
-      <div class="card-head"><h3>Download Report</h3><div class="desc">Branded report, modeled on the Hypermedia campaign-report template - Excel (.xlsx) with a Report + Screen Detail sheet, or a PDF with a cover, per-site photo pages and a Performance Report summary.</div></div>
+      <div class="card-head"><h3>Download Report</h3><div class="desc">Branded report, modeled on the Hypermedia campaign-report template - Excel (.xlsx) with a Report + Screen Detail sheet, or a PowerPoint (.pptx) with a cover, a placeholder slide per screen (add your own photos in PowerPoint afterward) and a Performance Report summary.</div></div>
       <div class="field"><label>Fields to include (Excel)</label>
         <div style="display:flex;flex-wrap:wrap;gap:14px;">
           ${availableFields.map((f) => `
@@ -373,22 +461,9 @@ function renderReportDownloadPanel(campaign, campaignRows, fields) {
           `).join('')}
         </div>
       </div>
-      ${sites.length ? `
-        <div class="field"><label>Attach screen photos (optional, PDF only - each site gets its own gallery page; left blank shows a placeholder box)</label>
-          <div style="display:flex;flex-direction:column;gap:8px;">
-            ${sites.map((site) => `
-              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                <span style="min-width:160px;">${esc(site)}</span>
-                <input type="file" accept="image/*" multiple onchange="App.setSitePhotos('${esc(site)}', this)">
-                <span class="desc">${photoCounts[site] ? `${photoCounts[site]} photo(s) selected` : 'no photos - will show a placeholder'}</span>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      ` : ''}
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <button class="btn btn-orange" type="button" onclick="App.downloadCampaignReport()">Download Report (.xlsx)</button>
-        <button class="btn-outline" type="button" onclick="App.downloadCampaignPdfReport()">Download Report (.pdf)</button>
+        <button class="btn-outline" type="button" onclick="App.downloadCampaignPptxReport()">Download Report (.pptx)</button>
       </div>
     </div>
   `;
@@ -467,16 +542,60 @@ function renderCampaignList(rows, fields) {
   `;
 }
 
-// Campaign detail view: that campaign's own Impression/Playout totals, its screen-by-screen
-// breakdown, and the Download Report panel - everything scoped to just this campaign so there's
-// no dropdown or "which campaign" ambiguity left for the download step.
+// Kicks off the two lookups renderCampaignDetail needs beyond the loaded stats rows - real flight
+// dates (loadCampaignMeta) and Direct/Programmatic + loop config (loadCampaignAdsInfo) - once per
+// campaign selection (setReportCampaign resets the Started flags when the selection changes).
+function ensureCampaignDetailData(campaign, campaignRows, fields) {
+  if (!STATE.reportingCampaignMetaStarted) {
+    STATE.reportingCampaignMetaStarted = true;
+    queueMicrotask(() => loadCampaignMeta(campaign));
+  }
+  if (!STATE.reportingCampaignAdsInfoStarted) {
+    STATE.reportingCampaignAdsInfoStarted = true;
+    queueMicrotask(() => loadCampaignAdsInfo(campaignRows, fields));
+  }
+}
+
+// Campaign detail view: that campaign's own Impression/Playout totals, its real flight dates, its
+// Direct/Programmatic + loop breakdown, its screen-by-screen split, and the Download Report panel
+// - everything scoped to just this campaign so there's no dropdown or "which campaign" ambiguity
+// left for the download step.
 function renderCampaignDetail(campaign, campaignRows, fields) {
+  ensureCampaignDetailData(campaign, campaignRows, fields);
+
   const totalImpressions = fields.impressions ? campaignRows.reduce((s, r) => s + (Number(r[fields.impressions]) || 0), 0) : null;
   const totalPlayouts = fields.playouts ? campaignRows.reduce((s, r) => s + (Number(r[fields.playouts]) || 0), 0) : null;
   const totalRevenue = fields.revenue ? campaignRows.reduce((s, r) => s + (Number(r[fields.revenue]) || 0), 0) : null;
   const siteCount = fields.site ? new Set(campaignRows.map((r) => r[fields.site])).size : null;
   const dates = fields.date ? [...new Set(campaignRows.map((r) => String(r[fields.date] ?? '').slice(0, 10)))].filter(Boolean).sort() : [];
-  const dateRangeLabel = dates.length ? (dates[0] === dates[dates.length - 1] ? dates[0] : `${dates[0]} to ${dates[dates.length - 1]}`) : '';
+  const loadedRangeLabel = dates.length ? (dates[0] === dates[dates.length - 1] ? dates[0] : `${dates[0]} to ${dates[dates.length - 1]}`) : '';
+
+  // Real campaign flight dates (GET /campaigns) - falls back to the loaded date range, clearly
+  // labeled as such, if that lookup is still in flight or came back empty.
+  const meta = STATE.reportingCampaignMeta;
+  const metaLoading = STATE.reportingCampaignMetaLoading;
+  const realStart = meta?.start ? new Date(meta.start * 1000).toISOString().slice(0, 10) : null;
+  const realEnd = meta?.end ? new Date(meta.end * 1000).toISOString().slice(0, 10) : null;
+  const durationLine = realStart && realEnd
+    ? `${realStart} to ${realEnd}${meta.status ? ` (${esc(meta.status)})` : ''}`
+    : metaLoading ? 'Loading campaign dates...'
+    : loadedRangeLabel ? `${esc(loadedRangeLabel)} (data shown - actual flight dates unavailable)`
+    : '';
+
+  // Direct vs Programmatic (GET /ads/{id} per line item) - null while loading/unavailable, [] once
+  // resolved with nothing usable (e.g. no adId column in this response).
+  const adsInfo = STATE.reportingCampaignAdsInfo;
+  const adsLoading = STATE.reportingCampaignAdsInfoLoading;
+  const directCount = adsInfo ? adsInfo.filter((a) => a.demand_type === 'direct').length : null;
+  const programmaticCount = adsInfo ? adsInfo.filter((a) => a.demand_type === 'programmatic').length : null;
+  const lineItemRows = (adsInfo || []).map((a) => `
+    <tr>
+      <td>${esc(a.name || '')}</td>
+      <td><span class="badge ${a.demand_type === 'programmatic' ? 'b-amber' : 'b-blue'}">${a.demand_type === 'programmatic' ? 'Programmatic' : 'Direct'}</span></td>
+      <td>${esc(a.volume_type || '')}</td>
+      <td class="tright">${a.volume_type === 'cycle' ? (a.cycle_playouts ?? '') : ''}</td>
+    </tr>
+  `).join('');
 
   const numericKeys = ['playouts', 'impressions'].filter((k) => fields[k]);
   const screenRows = aggregateByScreen(campaignRows, fields, numericKeys);
@@ -493,13 +612,19 @@ function renderCampaignDetail(campaign, campaignRows, fields) {
     <div class="toolbar-actions" style="margin-bottom:10px;">
       <button class="btn-sm" type="button" onclick="App.setReportCampaign('')">&larr; Back to all campaigns</button>
     </div>
-    <div class="card-head" style="padding:0 0 8px;"><h3 style="margin:0;">${esc(campaign)}</h3><div class="desc">${esc(dateRangeLabel)}${siteCount != null ? ` - ${siteCount} screen(s)` : ''}</div></div>
+    <div class="card-head" style="padding:0 0 8px;"><h3 style="margin:0;">${esc(campaign)}</h3><div class="desc">${durationLine}${siteCount != null ? ` - ${siteCount} screen(s)` : ''}</div></div>
     <div class="bento-stats">
       ${totalImpressions != null ? statTile('ok', 'Total Impressions', totalImpressions.toLocaleString()) : ''}
       ${totalPlayouts != null ? statTile('ok', 'Total Playouts', totalPlayouts.toLocaleString()) : ''}
       ${siteCount != null ? statTile('info', 'Screens', siteCount) : ''}
       ${totalRevenue != null ? statTile('info', 'Total Revenue', totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 2 })) : ''}
     </div>
+    ${adsLoading || adsInfo?.length ? `
+      <div class="card">
+        <div class="card-head"><h3>Delivery Type &amp; Line Items</h3><div class="desc">${adsLoading ? 'Loading...' : `Direct: ${directCount}, Programmatic: ${programmaticCount}. "Loop Playouts" only applies to loop/cycle-paced line items.`}</div></div>
+        ${adsLoading ? '' : `<div class="tsheet-wrap"><table><thead><tr><th>Ad (Line Item)</th><th>Type</th><th>Volume Type</th><th class="tright">Loop Playouts</th></tr></thead><tbody>${lineItemRows}</tbody></table></div>`}
+      </div>
+    ` : ''}
     <div class="card">
       <div class="card-head"><h3>Screen Breakdown</h3><div class="desc">${screenRows.length} screen(s) for this campaign in the current date range.</div></div>
       <div class="tsheet-wrap">
@@ -509,7 +634,7 @@ function renderCampaignDetail(campaign, campaignRows, fields) {
         </table>
       </div>
     </div>
-    ${renderReportDownloadPanel(campaign, campaignRows, fields)}
+    ${renderReportDownloadPanel(fields)}
   `;
 }
 
@@ -524,14 +649,20 @@ function renderOverview(rows, fields) {
   return renderCampaignList(rows, fields);
 }
 
-// "Additional Traffic Sheet" - the same stats-ads rows, pivoted into a day-by-day grid per
-// campaign (one column per date in range, cell = that day's impression/play count), matching the
-// visual convention of the app's other Traffic Sheet page even though the underlying API/data
-// shape is completely different.
-function renderAdditionalTrafficSheet(rows, fields, start, end) {
-  if (!rows.length) return '<div class="card"><div class="empty">No data for this date range.</div></div>';
-  if (!fields.campaign || !fields.date) {
-    return `<div class="card"><div class="empty">Can't build a day-grid without a recognizable campaign and date column in the response - see the Ads Stats tab for the raw columns actually returned.</div></div>`;
+// "Additional Traffic Sheet" - merges Direct (/stats-ads) and Programmatic (/stats-dsps) rows into
+// one day-by-day grid per campaign, each tagged with a Type badge - previously this only ever
+// pivoted stats-ads, so any programmatic campaign was silently absent from the calendar with no
+// indication it was missing. Each day cell shows Playouts and Impressions (previously just one
+// number, defaulting to a meaningless row count whenever the impressions column wasn't detected).
+// "Avg Multiplier" (Impressions / Playouts) is the closest concept the API exposes to a per-loop
+// multiplier - stats-dsps documents this exact ratio as `avg_mulitiplier`; computed the same way
+// here for Direct campaigns too, for a consistent column across both types.
+function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
+  const directFields = directRows.length ? detectAllFields(directRows) : {};
+  const dspsFields = dspsRows.length ? detectAllFields(dspsRows) : {};
+  if (!directRows.length && !dspsRows.length) return '<div class="card"><div class="empty">No data for this date range.</div></div>';
+  if ((!directFields.campaign || !directFields.date) && (!dspsFields.campaign || !dspsFields.date)) {
+    return `<div class="card"><div class="empty">Can't build a day-grid without a recognizable campaign and date column in the response.</div></div>`;
   }
 
   const dates = [];
@@ -540,35 +671,50 @@ function renderAdditionalTrafficSheet(rows, fields, start, end) {
   }
 
   const byCampaign = new Map();
-  rows.forEach((r) => {
-    const campaign = String(r[fields.campaign] ?? '(Unknown Campaign)');
-    const date = String(r[fields.date] ?? '').slice(0, 10);
-    const value = fields.impressions ? Number(r[fields.impressions]) || 0 : 1;
-    if (!byCampaign.has(campaign)) byCampaign.set(campaign, new Map());
-    const dayMap = byCampaign.get(campaign);
-    dayMap.set(date, (dayMap.get(date) || 0) + value);
-  });
+  function ingest(rows, fields, type) {
+    if (!fields.campaign || !fields.date) return;
+    rows.forEach((r) => {
+      const campaign = String(r[fields.campaign] ?? '(Unknown Campaign)');
+      const date = String(r[fields.date] ?? '').slice(0, 10);
+      const playouts = fields.playouts ? Number(r[fields.playouts]) || 0 : 0;
+      const impressions = fields.impressions ? Number(r[fields.impressions]) || 0 : 0;
+      const key = `${type}::${campaign}`;
+      if (!byCampaign.has(key)) byCampaign.set(key, { campaign, type, dayMap: new Map() });
+      const entry = byCampaign.get(key);
+      const day = entry.dayMap.get(date) || { playouts: 0, impressions: 0 };
+      day.playouts += playouts;
+      day.impressions += impressions;
+      entry.dayMap.set(date, day);
+    });
+  }
+  ingest(directRows, directFields, 'Direct');
+  ingest(dspsRows, dspsFields, 'Programmatic');
 
-  const campaigns = [...byCampaign.keys()].sort();
-  const bodyRows = campaigns.map((campaign) => {
-    const dayMap = byCampaign.get(campaign);
-    const total = [...dayMap.values()].reduce((s, n) => s + n, 0);
+  const campaigns = [...byCampaign.values()].sort((a, b) => a.campaign.localeCompare(b.campaign) || a.type.localeCompare(b.type));
+  const bodyRows = campaigns.map((c) => {
+    let totalPlayouts = 0;
+    let totalImpressions = 0;
+    c.dayMap.forEach((d) => { totalPlayouts += d.playouts; totalImpressions += d.impressions; });
+    const avgMultiplier = totalPlayouts ? totalImpressions / totalPlayouts : null;
     return `<tr>
-      <td>${esc(campaign)}</td>
-      <td class="tright">${total.toLocaleString()}</td>
+      <td>${esc(c.campaign)}</td>
+      <td><span class="badge ${c.type === 'Programmatic' ? 'b-amber' : 'b-blue'}">${c.type}</span></td>
+      <td class="tright">${totalPlayouts.toLocaleString()}</td>
+      <td class="tright">${totalImpressions.toLocaleString()}</td>
+      <td class="tright">${avgMultiplier != null ? `${avgMultiplier.toFixed(1)}x` : ''}</td>
       ${dates.map((d) => {
-        const v = dayMap.get(d);
-        return `<td class="tsheet-cell${v ? ' tsheet-active' : ''}">${v ? v.toLocaleString() : ''}</td>`;
+        const day = c.dayMap.get(d);
+        return `<td class="tsheet-cell${day ? ' tsheet-active' : ''}">${day ? `${day.playouts.toLocaleString()}<br><span class="small muted">${day.impressions.toLocaleString()}</span>` : ''}</td>`;
       }).join('')}
     </tr>`;
   }).join('');
 
   return `
     <div class="card">
-      <div class="card-head"><h3>Additional Traffic Sheet</h3><div class="desc">${campaigns.length} campaign(s), day-by-day${fields.impressions ? ' (value = ' + fields.impressions + ')' : ' (value = row count)'} from ${esc(start)} to ${esc(end)}.</div></div>
+      <div class="card-head"><h3>Additional Traffic Sheet</h3><div class="desc">${campaigns.length} campaign(s) (Direct + Programmatic combined), day-by-day. Each day cell shows Playouts on top and Impressions below. "Avg Multiplier" = Impressions &divide; Playouts. From ${esc(start)} to ${esc(end)}.</div></div>
       <div class="tsheet-wrap">
         <table class="tsheet-table">
-          <thead><tr><th>Campaign</th><th class="tright">Total</th>${dates.map((d) => `<th class="tsheet-day">${esc(d.slice(8, 10))}</th>`).join('')}</tr></thead>
+          <thead><tr><th>Campaign</th><th>Type</th><th class="tright">Playouts</th><th class="tright">Impressions</th><th class="tright">Avg Multiplier</th>${dates.map((d) => `<th class="tsheet-day">${esc(d.slice(8, 10))}</th>`).join('')}</tr></thead>
           <tbody>${bodyRows}</tbody>
         </table>
       </div>
@@ -623,9 +769,15 @@ function renderLastPlayouts(data) {
   `;
 }
 
+// The API gives raw counts (playouts/available_playouts, impressions/available_impressions) but
+// no single "how booked is this" number - Reserved % = 1 - available/total, computed here the same
+// way the API's own per-site/per-day `reserved` ratios are described, just rolled up to an overall
+// figure so the top of the page answers "is this inventory actually available" at a glance.
 function renderAvails(data) {
-  if (!data) return '<div class="card"><div class="empty">Enter Placement IDs or an Ad ID above and click "Get Forecast".</div></div>';
+  if (!data) return '<div class="card"><div class="empty">Pick one or more placements above (or enter an Ad ID) and click "Get Forecast".</div></div>';
   const pct = (n) => n == null ? '' : `${Math.round(n * 100)}%`;
+  const playoutsReserved = data.playouts ? 1 - (data.available_playouts ?? 0) / data.playouts : null;
+  const impressionsReserved = data.impressions ? 1 - (data.available_impressions ?? 0) / data.impressions : null;
   const timelineDates = Object.keys(data.timeline || {}).sort();
   const timelineRows = timelineDates.map((d) => {
     const t = data.timeline[d];
@@ -636,11 +788,13 @@ function renderAvails(data) {
     <div class="bento-stats">
       ${statTile('info', 'Sites', data.nb_sites ?? 0)}
       ${statTile('info', 'Placements', data.nb_placements ?? 0)}
-      ${statTile('info', 'Days', data.days ?? 0)}
-      ${statTile('ok', 'Total Playouts', (data.playouts ?? 0).toLocaleString())}
+      ${statTile('info', 'Forecast Days', data.days ?? 0)}
+      ${playoutsReserved != null ? statTile(playoutsReserved > 0.85 ? 'alert' : 'info', 'Playouts Reserved', pct(playoutsReserved)) : ''}
+      ${impressionsReserved != null ? statTile(impressionsReserved > 0.85 ? 'alert' : 'info', 'Impressions Reserved', pct(impressionsReserved)) : ''}
+      ${statTile('info', 'Total Playouts', (data.playouts ?? 0).toLocaleString())}
       ${statTile('ok', 'Available Playouts', (data.available_playouts ?? 0).toLocaleString())}
       ${statTile('info', 'Total Impressions', (data.impressions ?? 0).toLocaleString())}
-      ${statTile('info', 'Available Impressions', (data.available_impressions ?? 0).toLocaleString())}
+      ${statTile('ok', 'Available Impressions', (data.available_impressions ?? 0).toLocaleString())}
     </div>
     <div class="card">
       <div class="card-head"><h3>Per-Site Availability</h3><div class="desc">Sorted by reserved ratio descending.</div></div>
@@ -657,7 +811,7 @@ export function renderReporting() {
   const cfg = loadData('reportingApi', () => getSetting('reportingApi'));
   if (cfg === null) return loadingCard();
   if (cfg?.__error) return loadingCard(cfg.__error);
-  // Cached for downloadCampaignReport/downloadCampaignPdfReport to read synchronously (via
+  // Cached for downloadCampaignReport/downloadCampaignPptxReport to read synchronously (via
   // STATE.pageData.reportTemplate?.data) when the user clicks a download button - loaded here so
   // it's already warm by the time those buttons are visible.
   loadData('reportTemplate', () => getSetting('reportTemplate'));
@@ -692,13 +846,15 @@ export function renderReporting() {
         <div class="desc" style="margin-top:6px;">Defaults to yesterday only - a single day can already be 15k+ rows, so widen the range with care.</div>
       </div>
       ${errorMsg ? `<div class="login-error" style="margin-bottom:14px;">${esc(errorMsg)}</div>` : ''}
+      ${tab === 'trafficSheet' && STATE.reportingDspsError ? `<div class="login-error" style="margin-bottom:14px;">Programmatic data: ${esc(STATE.reportingDspsError)}</div>` : ''}
     `;
     if (!raw) {
       content += loading ? '<div class="card"><div class="empty">Loading reporting data...</div></div>' : '';
     } else if (tab === 'adsStats') {
       content += renderOverview(rows, detectAllFields(rows));
     } else if (tab === 'trafficSheet') {
-      content += renderAdditionalTrafficSheet(rows, detectAllFields(rows), startDate, endDate);
+      const dspsRows = STATE.reportingDsps ? extractRows(STATE.reportingDsps) : [];
+      content += renderAdditionalTrafficSheet(rows, dspsRows, startDate, endDate);
     } else if (tab === 'programmatic') {
       content += renderGenericTable('Programmatic Stats', `${rows.length} row(s) from GET /stats-dsps, ${startDate} to ${endDate}.`, rows, { sumFields: DSP_SUM_FIELDS });
     } else if (tab === 'placementsStats') {
@@ -723,16 +879,30 @@ export function renderReporting() {
   } else if (tab === 'avails') {
     const loading = STATE.reportingAvailsLoading;
     const errorMsg = STATE.reportingAvailsError;
+    const options = availsPlacementOptions();
+    const pickedIds = new Set((STATE.reportingAvailsPlacementIds || []).map(String));
     content = `
       <div class="toolbar">
-        <div class="toolbar-actions" style="align-items:flex-end;flex-wrap:wrap;">
-          <div class="field" style="margin-bottom:0;"><label>Placement IDs</label><input id="avails-placement-ids" placeholder="e.g. 123,124"></div>
+        ${options.length ? `
+          <div class="field"><label>Pick placement(s) from loaded data (${options.length} available)</label>
+            <div style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);border-radius:8px;padding:8px;">
+              ${options.map((o) => `
+                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                  <input type="checkbox" onchange="App.toggleAvailsPlacement('${esc(String(o.id))}')" ${pickedIds.has(String(o.id)) ? 'checked' : ''}>
+                  ${esc(o.site)}${o.site && o.placement ? ' - ' : ''}${esc(o.placement)}
+                </label>
+              `).join('')}
+            </div>
+          </div>
+        ` : `<div class="desc">No placements loaded to pick from yet - open Ads Stats or Placements Stats first, or enter Placement IDs manually below.</div>`}
+        <div class="toolbar-actions" style="align-items:flex-end;flex-wrap:wrap;margin-top:10px;">
+          <div class="field" style="margin-bottom:0;"><label>Placement IDs (manual, optional)</label><input id="avails-placement-ids-manual" placeholder="e.g. 123,124"></div>
           <div class="field" style="margin-bottom:0;"><label>or Ad ID</label><input id="avails-ad-id" placeholder="e.g. 1791994057"></div>
           <div class="field" style="margin-bottom:0;"><label>Start (optional)</label><input type="date" id="avails-start"></div>
-          <div class="field" style="margin-bottom:0;"><label>End (optional)</label><input type="date" id="avails-end"></div>
+          <div class="field" style="margin-bottom:0;"><label>End (optional, exclusive)</label><input type="date" id="avails-end"></div>
           <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.applyAvailsFilter()">${loading ? 'Loading...' : 'Get Forecast'}</button>
         </div>
-        <div class="desc" style="margin-top:6px;">Provide Placement IDs or an Ad ID. Dates default to today through today + 7 days.</div>
+        <div class="desc" style="margin-top:6px;">Pick placements above, or an Ad ID/manual Placement IDs. End date is exclusive (must be after Start) - leave both blank for today through today + 7 days.</div>
       </div>
       ${errorMsg ? `<div class="login-error" style="margin-bottom:14px;">${esc(errorMsg)}</div>` : ''}
       ${renderAvails(STATE.reportingAvails)}
