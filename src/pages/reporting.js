@@ -788,6 +788,12 @@ function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
   ingest(dspsRows, dspsFields, 'Programmatic');
 
   const campaigns = [...byCampaign.values()].sort((a, b) => a.campaign.localeCompare(b.campaign) || a.type.localeCompare(b.type));
+  // A single-day range (the page's own default) makes a "day-by-day" grid pointless - its one
+  // column is just a bare day-of-month number ("09") with zero context, and its value always
+  // equals the campaign's own total anyway. Showing both was confusing (reported as "what is 09,
+  // this is incorrect data") - so the day columns only render at all once there's more than one
+  // day to actually spread across, and even then each header carries the full date as a tooltip.
+  const showDayGrid = dates.length > 1;
   const bodyRows = campaigns.map((c) => {
     let totalPlayouts = 0;
     let totalImpressions = 0;
@@ -799,19 +805,19 @@ function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
       <td class="tright">${totalPlayouts.toLocaleString()}</td>
       <td class="tright">${totalImpressions.toLocaleString()}</td>
       <td class="tright">${avgMultiplier != null ? `${avgMultiplier.toFixed(1)}x` : ''}</td>
-      ${dates.map((d) => {
+      ${showDayGrid ? dates.map((d) => {
         const day = c.dayMap.get(d);
-        return `<td class="tsheet-cell${day ? ' tsheet-active' : ''}">${day ? `${day.playouts.toLocaleString()}<br><span class="small muted">${day.impressions.toLocaleString()}</span>` : ''}</td>`;
-      }).join('')}
+        return `<td class="tsheet-cell${day ? ' tsheet-active' : ''}" title="${esc(d)}">${day ? `${day.playouts.toLocaleString()}<br><span class="small muted">${day.impressions.toLocaleString()}</span>` : ''}</td>`;
+      }).join('') : ''}
     </tr>`;
   }).join('');
 
   return `
     <div class="card">
-      <div class="card-head"><h3>Traffic Data</h3><div class="desc">${campaigns.length} campaign(s) (Direct + Programmatic combined), day-by-day. Each day cell shows Playouts on top and Impressions below. "Avg Multiplier" = Impressions &divide; Playouts. From ${esc(start)} to ${esc(end)}.</div></div>
+      <div class="card-head"><h3>Traffic Data</h3><div class="desc">${campaigns.length} campaign(s) (Direct + Programmatic combined)${showDayGrid ? ', day-by-day. Each day cell shows Playouts on top and Impressions below (hover a date header for the full date)' : ' - totals for'} from ${esc(start)} to ${esc(end)}. "Avg Multiplier" = Impressions &divide; Playouts.</div></div>
       <div class="tsheet-wrap">
         <table class="tsheet-table">
-          <thead><tr><th>Campaign</th><th>Type</th><th class="tright">Playouts</th><th class="tright">Impressions</th><th class="tright">Avg Multiplier</th>${dates.map((d) => `<th class="tsheet-day">${esc(d.slice(8, 10))}</th>`).join('')}</tr></thead>
+          <thead><tr><th>Campaign</th><th>Type</th><th class="tright">Playouts</th><th class="tright">Impressions</th><th class="tright">Avg Multiplier</th>${showDayGrid ? dates.map((d) => `<th class="tsheet-day" title="${esc(d)}">${esc(d.slice(8, 10))}</th>`).join('') : ''}</tr></thead>
           <tbody>${bodyRows}</tbody>
         </table>
       </div>

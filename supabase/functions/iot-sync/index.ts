@@ -192,13 +192,19 @@ Deno.serve(async (req) => {
     // checkable device table without a separate live pull, and lets a previously-excluded device
     // be found again to re-include it.
     const lastDevices = devices.map((d: any) => {
-      const rawName = d.display_name || String(d.device_id);
-      const isMac = MAC_RE.test(rawName.trim());
+      const deviceIdStr = String(d.device_id);
+      const venue = venueForDevice(d);
+      const rawName = d.display_name ? String(d.display_name) : '';
+      const isMac = !!rawName && MAC_RE.test(rawName.trim());
+      // A missing display_name used to fall back to the device_id itself, making Name and Device ID
+      // show the exact same value in the table - not useful, so this falls back to Venue (a real,
+      // distinct piece of information) instead, same as when display_name turns out to be a MAC.
+      const hasRealName = !!rawName && !isMac && rawName !== deviceIdStr;
       return {
-        deviceId: String(d.device_id),
-        displayName: isMac ? '' : rawName,
+        deviceId: deviceIdStr,
+        displayName: hasRealName ? rawName : venue,
         macAddress: isMac ? rawName : '',
-        venue: venueForDevice(d),
+        venue,
         storeName: d.store_name || d.location?.store || '',
         asset: d.location?.asset || '',
         entrance: d.location?.entrance || '',
