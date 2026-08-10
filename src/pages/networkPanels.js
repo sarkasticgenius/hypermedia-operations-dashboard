@@ -323,8 +323,13 @@ function renderIotDeviceTable(cfg) {
   const admin = isAdmin();
   const excludedSet = new Set(cfg.excludedDeviceIds || []);
   const search = (STATE.iotDeviceSearch || '').trim().toLowerCase();
-  const filterMode = STATE.iotDeviceFilter || 'all';
+  // Defaults to hiding excluded devices - the charts above already exclude them from every count,
+  // so the device list should too unless an admin deliberately asks to review them (via "All
+  // devices" or "Excluded only", both still available below - excluded devices aren't hidden
+  // entirely, just not mixed into the default view).
+  const filterMode = STATE.iotDeviceFilter || 'active';
   const filtered = devices.filter((d) => {
+    if (filterMode === 'active' && excludedSet.has(d.deviceId)) return false;
     if (filterMode === 'excluded' && !excludedSet.has(d.deviceId)) return false;
     if (!search) return true;
     const hay = `${d.deviceId} ${d.displayName} ${d.storeName} ${d.asset} ${d.entrance} ${d.platform} ${d.state}`.toLowerCase();
@@ -352,6 +357,7 @@ function renderIotDeviceTable(cfg) {
       <div><h3>Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown${excludedSet.size ? `, ${excludedSet.size} excluded from the charts above` : ''}.${admin ? ' Excluding a device drops it from every future sync too, not just this view.' : ''}</div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <select onchange="App.setIotDeviceFilter(this.value)" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;">
+          <option value="active" ${filterMode === 'active' ? 'selected' : ''}>Active devices</option>
           <option value="all" ${filterMode === 'all' ? 'selected' : ''}>All devices</option>
           <option value="excluded" ${filterMode === 'excluded' ? 'selected' : ''}>Excluded only</option>
         </select>
