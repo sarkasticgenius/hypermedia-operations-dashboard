@@ -21,6 +21,7 @@ export const PAGE_AREA = {
   staticCampaigns: 'staticCampaigns',
   trafficSheet: 'trafficSheet',
   clientCampaignMonitor: 'clientCampaigns',
+  reporting: 'reporting',
   dashboards: 'dashboards',
   admin: 'admin',
   settings: 'admin',

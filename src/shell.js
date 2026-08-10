@@ -27,6 +27,7 @@ const NAV_ITEMS_TOP = [
 const NAV_ITEMS_BOTTOM = [
   { page: 'staticCampaigns', label: 'Static Campaigns' },
   { page: 'trafficSheet', label: 'Traffic Sheet' },
+  { page: 'reporting', label: 'Reporting' },
 ];
 
 // A small gradient-chip line icon per workspace, keyed by nav label/key so it stays attached even
@@ -47,6 +48,7 @@ const NAV_ICONS = {
   'SIM Cards': { grad: ['#0284c7', '#38bdf8'], svg: '<path d="M4 20h2v-4H4z"/><path d="M9 20h2v-8H9z"/><path d="M14 20h2v-12h-2z"/><path d="M19 20h2v-16h-2z"/>' },
   'Static Campaigns': { grad: ['#db2777', '#f472b6'], svg: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-6-6-4 4-2-2-6 6"/>' },
   'Traffic Sheet': { grad: ['#ea580c', '#dc2626'], svg: '<rect x="9" y="2" width="6" height="16" rx="3"/><circle cx="12" cy="6" r="1.3"/><circle cx="12" cy="10" r="1.3"/><circle cx="12" cy="14" r="1.3"/><path d="M9 20h6"/>' },
+  Reporting: { grad: ['#0ea5e9', '#6366f1'], svg: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M9 16v-3M12 16v-5M15 16v-2"/>' },
   'Digital Campaigns Panel': { grad: ['#9333ea', '#d946ef'], svg: '<path d="M3 10v4h3l6 4V6l-6 4H3z"/><path d="M14 9a4 4 0 010 6"/><path d="M17 6a8 8 0 010 12"/>' },
   'pDOOH Campaign Panel': { grad: ['#2563eb', '#4f46e5'], svg: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M10 9l4 2-4 2z"/>' },
   'Maintenance Panel': { grad: ['#475569', '#64748b'], svg: '<path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2z"/>' },
@@ -242,6 +244,7 @@ const PAGE_TITLES = {
   gantt: 'Campaign Calendar',
   staticCampaigns: 'Static Campaigns',
   trafficSheet: 'Traffic Sheet',
+  reporting: 'Reporting',
   clientCampaignMonitor: 'Client Campaigns Monitor',
   dashboards: 'Maintenance Panel',
   admin: 'Administration',

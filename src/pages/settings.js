@@ -834,6 +834,11 @@ function renderIntegrationsTab() {
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
     ], 'traffic-sheet-proxy')}
     ${renderVenueAliasesCard(settings)}
+    ${integrationField(settings, 'reportingApi', 'Reporting API (AiOO)', [
+      { name: 'clientId', label: 'Client ID' },
+      { name: 'clientSecret', label: 'Client Secret', type: 'password' },
+      { name: 'enabled', label: 'Enabled', type: 'checkbox' },
+    ], 'aioo-reporting-proxy')}
     ${integrationField(settings, 'slackNotify', 'Slack Notifications', [
       { name: 'webhookUrl', label: 'Incoming Webhook URL', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
