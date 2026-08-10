@@ -3,9 +3,15 @@
 // placement), but generically supports every Reporting endpoint (stats-dsps, stats-placements,
 // last-playouts, avails, placements-status-report) since they all share the same OAuth2 auth.
 //
+// IMPORTANT: the base URL is https://ads.aiootech.com/api/v1, NOT the bare domain - confirmed
+// from the OpenAPI spec's `servers` block (the rendered docs UI's own URL bar doesn't show this,
+// easy to miss). Every path below, /auth included, is relative to that - hitting the bare domain
+// 404s on literally every call (including the token exchange itself), which is exactly what
+// produced "Edge Function returned a non-2xx status code" for every request through this proxy.
+//
 // Auth is OAuth2 client_credentials, not a static API key like Traffic Sheet/Brandfetch/etc:
-//   1. POST https://ads.aiootech.com/auth (form-urlencoded: grant_type=client_credentials,
-//      client_id, client_secret) -> { access_token, token_type, expires_in, expires }.
+//   1. POST {API_BASE}/auth (form-urlencoded: grant_type=client_credentials, client_id,
+//      client_secret) -> { access_token, token_type, expires_in, expires }.
 //   2. Every actual API call sends that as `Authorization: Bearer <access_token>`.
 // The token is cached in app_settings.reportingApi.cachedToken/cachedTokenExpiry (server-side
 // only, never reaches the browser) and reused until it's within 60s of expiring, instead of
@@ -25,7 +31,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 };
 
-const API_BASE = 'https://ads.aiootech.com';
+const API_BASE = 'https://ads.aiootech.com/api/v1';
 
 async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string, anonKey: string): Promise<boolean> {
   const cronSecret = req.headers.get('x-cron-secret');

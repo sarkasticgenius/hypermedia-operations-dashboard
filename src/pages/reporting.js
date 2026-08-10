@@ -3,13 +3,12 @@
 // trafficSheet.js). Nothing here is synced into a table, same "live proxy, nothing persisted"
 // shape as Traffic Sheet - see supabase/functions/aioo-reporting-proxy.
 //
-// IMPORTANT caveat: the API's own docs (https://ads.aiootech.com/docs/api#tag/Reporting) show no
-// response sample for GET /stats-ads's JSON format - only that it's "broken down by advertiser,
-// campaign, ad, creative, site and placement". Column detection below is therefore defensive: it
-// inspects whatever keys the real response actually has (trying a few likely names per logical
-// field - date/day, campaign/campaign_name, etc.) rather than assuming an exact shape, and always
-// shows the raw response as a fallback so a mismatch is visible/debuggable rather than silently
-// blank. Expect to adjust FIELD_CANDIDATES once real data has been seen.
+// Field names below (adv_name, c_name, a_name, cr_name, s_name, p_name, playouts, impressions,
+// impressions_ontarget, revenue) come straight from the raw OpenAPI spec's /stats-ads response
+// schema - the rendered docs UI (https://ads.aiootech.com/docs/api#tag/Reporting) shows "No
+// sample" for this endpoint, so FIELD_CANDIDATES still tries a couple of generic fallbacks first
+// in case a sibling endpoint (stats-dsps, stats-placements) uses slightly different keys, but the
+// confirmed exact names are listed first and are what actually matches in practice.
 import { STATE, setState, loadData } from '../state.js';
 import { loadingCard } from '../modals.js';
 import { supabase } from '../supabaseClient.js';
@@ -65,16 +64,19 @@ function extractRows(data) {
 }
 
 // Tries a short list of likely key names per logical field, case-insensitively, against whatever
-// keys a real row actually has - see file header caveat.
+// keys a real row actually has - confirmed /stats-ads names listed first, see file header.
 const FIELD_CANDIDATES = {
   date: ['date', 'day', 'stat_date', 'created'],
-  advertiser: ['advertiser', 'advertiser_name'],
-  campaign: ['campaign', 'campaign_name'],
-  ad: ['ad', 'ad_name'],
-  creative: ['creative', 'creative_name'],
-  site: ['site', 'site_name'],
-  placement: ['placement', 'placement_name'],
-  impressions: ['impressions', 'plays', 'playouts', 'count'],
+  advertiser: ['adv_name', 'advertiser', 'advertiser_name'],
+  campaign: ['c_name', 'campaign', 'campaign_name'],
+  ad: ['a_name', 'ad', 'ad_name'],
+  creative: ['cr_name', 'creative', 'creative_name'],
+  site: ['s_name', 'site', 'site_name'],
+  placement: ['p_name', 'placement', 'placement_name'],
+  playouts: ['playouts'],
+  impressions: ['impressions', 'plays', 'count'],
+  impressionsOntarget: ['impressions_ontarget'],
+  revenue: ['revenue'],
 };
 function detectField(row, logicalField) {
   if (!row) return null;
@@ -100,10 +102,13 @@ function renderOverview(rows, fields) {
   if (!rows.length) return '<div class="card"><div class="empty">No data for this date range.</div></div>';
 
   const distinctCount = (field) => fields[field] ? new Set(rows.map((r) => r[fields[field]])).size : null;
+  const sumField = (field) => fields[field] ? rows.reduce((s, r) => s + (Number(r[fields[field]]) || 0), 0) : null;
   const campaignCount = distinctCount('campaign');
   const siteCount = distinctCount('site');
   const advertiserCount = distinctCount('advertiser');
-  const totalImpressions = fields.impressions ? rows.reduce((s, r) => s + (Number(r[fields.impressions]) || 0), 0) : null;
+  const totalImpressions = sumField('impressions');
+  const totalPlayouts = sumField('playouts');
+  const totalRevenue = sumField('revenue');
 
   const columns = Object.keys(rows[0]);
   const tableRows = rows.slice(0, 200).map((r) => `<tr>${columns.map((c) => `<td>${esc(String(r[c] ?? ''))}</td>`).join('')}</tr>`).join('');
@@ -115,6 +120,8 @@ function renderOverview(rows, fields) {
       ${siteCount != null ? statTile('info', 'Sites', siteCount) : ''}
       ${advertiserCount != null ? statTile('info', 'Advertisers', advertiserCount) : ''}
       ${totalImpressions != null ? statTile('ok', 'Total Impressions', totalImpressions.toLocaleString()) : ''}
+      ${totalPlayouts != null ? statTile('ok', 'Total Playouts', totalPlayouts.toLocaleString()) : ''}
+      ${totalRevenue != null ? statTile('info', 'Total Revenue', totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 2 })) : ''}
     </div>
     <div class="card">
       <div class="card-head"><h3>Ads Stats</h3><div class="desc">${rows.length} row(s)${rows.length > 200 ? ' (showing first 200)' : ''} from GET /stats-ads. Columns shown exactly as returned by the API.</div></div>
