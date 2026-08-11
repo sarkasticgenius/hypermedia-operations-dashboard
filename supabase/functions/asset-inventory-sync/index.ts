@@ -1,13 +1,19 @@
 // Generic, vendor-agnostic Asset Inventory sync: fetches a configured JSON API endpoint
-// server-side (so any auth header stays out of the browser, same rationale as
+// server-side (so any auth stays out of the browser, same rationale as
 // broadsign-sync/grassfish-sync), applies an admin-configured field mapping, and upserts into
 // asset_inventory keyed on source_asset_id (falls back to name+venue when the source has no
 // numeric id). Config lives in app_settings.assetInventoryApi:
-//   { baseUrl, authHeaderName, authHeaderValue, fieldMapping: {ourColumn: "source.field.path"},
-//     enabled, lastSync, lastSyncSummary, lastError }
+//   { baseUrl, dataPath, authHeaderName, authHeaderValue,
+//     clientId, clientSecret, tokenPath,
+//     fieldMapping: {ourColumn: "source.field.path"}, enabled, lastSync, lastSyncSummary, lastError }
 // fieldMapping values support simple dot-paths (e.g. "attributes.venue") into each item of the
 // response array (or response.data / response.items / response.results if the top level is an
 // object rather than a bare array).
+// Auth: if clientId + clientSecret are set, does an OAuth2 client-credentials style handshake -
+// POST {baseUrl}{tokenPath || /identity/oauth2} with {client_id, client_secret} JSON body,
+// reads response.access_token, sends it as "Authorization: Bearer <token>" on the data request.
+// Otherwise falls back to a single static header (authHeaderName/authHeaderValue), or no auth.
+// The data request hits {baseUrl}{dataPath} (dataPath defaults to '', i.e. baseUrl itself).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
@@ -17,6 +23,11 @@ const corsHeaders = {
 
 function getPath(obj: any, path: string) {
   return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+}
+
+function joinUrl(base: string, path?: string) {
+  if (!path) return base;
+  return base.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
 }
 
 const ALLOWED_COLUMNS = new Set([
@@ -54,9 +65,22 @@ Deno.serve(async (req) => {
     }
 
     const headers: Record<string, string> = { Accept: 'application/json' };
-    if (cfg.authHeaderName && cfg.authHeaderValue) headers[cfg.authHeaderName] = cfg.authHeaderValue;
+    if (cfg.clientId && cfg.clientSecret) {
+      const tokenUrl = joinUrl(cfg.baseUrl, cfg.tokenPath || '/identity/oauth2');
+      const tokenRes = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: cfg.clientId, client_secret: cfg.clientSecret }),
+      });
+      if (!tokenRes.ok) throw new Error(`OAuth token request failed: ${tokenRes.status}`);
+      const tokenBody = await tokenRes.json();
+      if (!tokenBody.access_token) throw new Error('OAuth token response had no access_token field.');
+      headers.Authorization = `Bearer ${tokenBody.access_token}`;
+    } else if (cfg.authHeaderName && cfg.authHeaderValue) {
+      headers[cfg.authHeaderName] = cfg.authHeaderValue;
+    }
 
-    const res = await fetch(cfg.baseUrl, { headers });
+    const res = await fetch(joinUrl(cfg.baseUrl, cfg.dataPath), { headers });
     if (!res.ok) throw new Error(`Source API returned ${res.status}`);
     const body = await res.json();
     const items: any[] = Array.isArray(body) ? body : (body.data || body.items || body.results || []);

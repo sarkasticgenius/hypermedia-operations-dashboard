@@ -538,9 +538,18 @@ function renderAssetInventoryApiCard(settings) {
   const testing = STATE.testing_assetInventoryApi;
   return `
     <div class="card">
-      <div class="card-head"><h3>Asset Inventory API Sync</h3><div class="desc">Generic JSON API puller - point it at any system and map its fields to our columns. For a one-off import instead, use the Bulk Import button on the Asset Inventory page.</div></div>
+      <div class="card-head"><h3>Asset Inventory API Sync</h3><div class="desc">Generic JSON API puller - point it at any system and map its fields to our columns. Supports either OAuth2 client-credentials (Client ID/Secret below) or a single static auth header. For a one-off import instead, use the Bulk Import button on the Asset Inventory page.</div></div>
       <form onsubmit="App.saveAssetInventoryApiForm(event)">
-        <div class="field"><label>Base URL</label><input id="int-ai-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://source-system.example.com/api/screens"></div>
+        <div class="field"><label>Base URL</label><input id="int-ai-baseUrl" value="${esc(cfg.baseUrl || '')}" placeholder="https://api.example.com/v1"></div>
+        <div class="grid2">
+          <div class="field"><label>Data Path (optional)</label><input id="int-ai-dataPath" value="${esc(cfg.dataPath || '')}" placeholder="/inventory/assets"></div>
+          <div class="field"><label>OAuth Token Path (optional)</label><input id="int-ai-tokenPath" value="${esc(cfg.tokenPath || '')}" placeholder="/identity/oauth2"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>OAuth2 Client ID (optional)</label><input id="int-ai-clientId" value="${esc(cfg.clientId || '')}" placeholder="client_id"></div>
+          <div class="field"><label>OAuth2 Client Secret (optional)</label><input id="int-ai-clientSecret" type="password" value="${esc(cfg.clientSecret || '')}" placeholder="client_secret"></div>
+        </div>
+        <div class="small muted" style="margin:-6px 0 10px;">Auth Header fields below are only used when Client ID/Secret above are empty.</div>
         <div class="grid2">
           <div class="field"><label>Auth Header Name (optional)</label><input id="int-ai-authHeaderName" value="${esc(cfg.authHeaderName || '')}" placeholder="Authorization"></div>
           <div class="field"><label>Auth Header Value (optional)</label><input id="int-ai-authHeaderValue" type="password" value="${esc(cfg.authHeaderValue || '')}" placeholder="Bearer ..."></div>
@@ -566,6 +575,10 @@ export async function saveAssetInventoryApiForm(event) {
   const settings = STATE.pageData.settings?.data || {};
   const cfg = { ...(settings.assetInventoryApi || {}) };
   cfg.baseUrl = document.getElementById('int-ai-baseUrl').value.trim();
+  cfg.dataPath = document.getElementById('int-ai-dataPath').value.trim();
+  cfg.tokenPath = document.getElementById('int-ai-tokenPath').value.trim();
+  cfg.clientId = document.getElementById('int-ai-clientId').value.trim();
+  cfg.clientSecret = document.getElementById('int-ai-clientSecret').value.trim();
   cfg.authHeaderName = document.getElementById('int-ai-authHeaderName').value.trim();
   cfg.authHeaderValue = document.getElementById('int-ai-authHeaderValue').value.trim();
   cfg.enabled = document.getElementById('int-ai-enabled').checked;
