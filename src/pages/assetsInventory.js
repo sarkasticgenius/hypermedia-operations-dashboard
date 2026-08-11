@@ -179,20 +179,20 @@ export function renderAssetsInventory() {
     </div>
     <div class="toolbar">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <input id="ai-search" placeholder="Search anything - name, venue, location, category, player, IDs, networks..." value="${esc(STATE.aiSearch || '')}" oninput="App.setAssetInvSearch(this.value)" style="min-width:260px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
-        <select onchange="App.setAssetInvFilter('aiCategory', this.value)" style="padding:7px 8px;border:1px solid var(--border);border-radius:8px;">${categories.map((c) => `<option value="${esc(c)}" ${catFilter === c ? 'selected' : ''}>${c === 'All' ? 'All Categories' : esc(c)}</option>`).join('')}</select>
-        <select onchange="App.setAssetInvFilter('aiPlayerType', this.value)" style="padding:7px 8px;border:1px solid var(--border);border-radius:8px;">${playerTypes.map((t) => `<option value="${esc(t)}" ${typeFilter === t ? 'selected' : ''}>${t === 'All' ? 'All Player Types' : esc(t)}</option>`).join('')}</select>
-        <select onchange="App.setAssetInvFilter('aiPdooh', this.value)" style="padding:7px 8px;border:1px solid var(--border);border-radius:8px;">
+        <input id="ai-search" placeholder="Search anything - name, venue, location, category, player, IDs, networks..." value="${esc(STATE.aiSearch || '')}" oninput="App.setAssetInvSearch(this.value)" style="min-width:260px;padding:7px 10px;border:1px solid var(--text-dim);border-radius:8px;">
+        <select onchange="App.setAssetInvFilter('aiCategory', this.value)" style="padding:7px 8px;border:1px solid var(--text-dim);border-radius:8px;">${categories.map((c) => `<option value="${esc(c)}" ${catFilter === c ? 'selected' : ''}>${c === 'All' ? 'All Categories' : esc(c)}</option>`).join('')}</select>
+        <select onchange="App.setAssetInvFilter('aiPlayerType', this.value)" style="padding:7px 8px;border:1px solid var(--text-dim);border-radius:8px;">${playerTypes.map((t) => `<option value="${esc(t)}" ${typeFilter === t ? 'selected' : ''}>${t === 'All' ? 'All Player Types' : esc(t)}</option>`).join('')}</select>
+        <select onchange="App.setAssetInvFilter('aiPdooh', this.value)" style="padding:7px 8px;border:1px solid var(--text-dim);border-radius:8px;">
           <option value="All" ${pdoohFilter === 'All' ? 'selected' : ''}>pDOOH: All</option>
           <option value="Yes" ${pdoohFilter === 'Yes' ? 'selected' : ''}>pDOOH: Yes</option>
           <option value="No" ${pdoohFilter === 'No' ? 'selected' : ''}>pDOOH: No</option>
         </select>
-        <select onchange="App.setAssetInvFilter('aiManagedByHM', this.value)" style="padding:7px 8px;border:1px solid var(--border);border-radius:8px;">
+        <select onchange="App.setAssetInvFilter('aiManagedByHM', this.value)" style="padding:7px 8px;border:1px solid var(--text-dim);border-radius:8px;">
           <option value="All" ${hmFilter === 'All' ? 'selected' : ''}>Managed by HM: All</option>
           <option value="Yes" ${hmFilter === 'Yes' ? 'selected' : ''}>Managed by HM: Yes</option>
           <option value="No" ${hmFilter === 'No' ? 'selected' : ''}>Managed by HM: No</option>
         </select>
-        <select onchange="App.setAssetInvFilter('aiNetwork', this.value)" style="padding:7px 8px;border:1px solid var(--border);border-radius:8px;">${networkOptions.map((n) => `<option value="${esc(n)}" ${netFilter === n ? 'selected' : ''}>${n === 'All' ? 'All Networks' : esc(n)}</option>`).join('')}</select>
+        <select onchange="App.setAssetInvFilter('aiNetwork', this.value)" style="padding:7px 8px;border:1px solid var(--text-dim);border-radius:8px;">${networkOptions.map((n) => `<option value="${esc(n)}" ${netFilter === n ? 'selected' : ''}>${n === 'All' ? 'All Networks' : esc(n)}</option>`).join('')}</select>
         <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);"><input type="checkbox" style="width:auto;" ${STATE.aiMafOnly ? 'checked' : ''} onchange="App.setAssetInvMafOnly(this.checked)"> MAF Malls only</label>
       </div>
       <div class="toolbar-actions">

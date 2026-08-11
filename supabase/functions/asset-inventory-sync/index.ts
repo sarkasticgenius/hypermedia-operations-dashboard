@@ -14,6 +14,11 @@
 // reads response.access_token, sends it as "Authorization: Bearer <token>" on the data request.
 // Otherwise falls back to a single static header (authHeaderName/authHeaderValue), or no auth.
 // The data request hits {baseUrl}{dataPath} (dataPath defaults to '', i.e. baseUrl itself).
+// Venue/location joins: some vendors (e.g. Inventory MS) return assets with venue_id/location_id
+// FKs instead of names. If fieldMapping references "_venue.<field>" or "_location.<field>", this
+// fetches {baseUrl}{venuesPath || /inventory/venues} and {baseUrl}{locationsPath || /inventory/locations},
+// indexes each by "id", and attaches the matched object as item._venue / item._location (matched via
+// item.venue_id / item.location_id) before field mapping runs.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
@@ -30,12 +35,50 @@ function joinUrl(base: string, path?: string) {
   return base.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
 }
 
+// Vendor gateways that silently drop (rather than reject) traffic they don't like would otherwise
+// hang until Supabase's ~150s hard execution limit kills the whole function. Fail fast instead so
+// the caller gets a clear, actionable error.
+const FETCH_TIMEOUT_MS = 15_000;
+
+function fetchOnce(url: string, init?: RequestInit) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer)).catch((err) => {
+    if (err?.name === 'AbortError') {
+      throw new Error(`Request to ${url} timed out after ${FETCH_TIMEOUT_MS / 1000}s (no response - likely a network/firewall block).`);
+    }
+    throw err;
+  });
+}
+
+// This vendor's gateway has shown intermittent behavior - some requests hang or come back with a
+// bare 400 for no discernible reason (confirmed the same request/credentials succeed reliably from
+// outside Supabase's egress network), while a retry moments later goes through fine. One retry
+// after a short pause smooths over that flakiness without masking a genuinely broken config.
+async function fetchWithRetry(url: string, init?: RequestInit) {
+  try {
+    const res = await fetchOnce(url, init);
+    if (res.ok) return res;
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    return await fetchOnce(url, init);
+  } catch (_err) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    return await fetchOnce(url, init);
+  }
+}
+
 const ALLOWED_COLUMNS = new Set([
   'source_asset_id', 'name', 'venue', 'location', 'category', 'pdooh_ready', 'format',
   'width', 'height', 'screens', 'faces', 'special_render', 'anydesk_id', 'teamviewer_id',
   'sensor_id', 'lat', 'lng', 'multiplier', 'position', 'player_box_id', 'ad_duration',
-  'player_type', 'managed_by_hm',
+  'player_type', 'managed_by_hm', 'source_created_at',
 ]);
+
+// Inventory MS's player_type_id enum (confirmed by the customer): 1 = Grassfish, 2 = Broadsign.
+// Our asset_inventory.player_type column stores the readable name (matched against by the
+// grassfish-sync/broadsign-sync functions), so a numeric id mapped to "player_type" is translated
+// here rather than stored as-is.
+const PLAYER_TYPE_MAP: Record<number, string> = { 1: 'Grassfish', 2: 'Broadsign' };
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -67,7 +110,7 @@ Deno.serve(async (req) => {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (cfg.clientId && cfg.clientSecret) {
       const tokenUrl = joinUrl(cfg.baseUrl, cfg.tokenPath || '/identity/oauth2');
-      const tokenRes = await fetch(tokenUrl, {
+      const tokenRes = await fetchWithRetry(tokenUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client_id: cfg.clientId, client_secret: cfg.clientSecret }),
@@ -80,17 +123,41 @@ Deno.serve(async (req) => {
       headers[cfg.authHeaderName] = cfg.authHeaderValue;
     }
 
-    const res = await fetch(joinUrl(cfg.baseUrl, cfg.dataPath), { headers });
+    const res = await fetchWithRetry(joinUrl(cfg.baseUrl, cfg.dataPath), { headers });
     if (!res.ok) throw new Error(`Source API returned ${res.status}`);
     const body = await res.json();
     const items: any[] = Array.isArray(body) ? body : (body.data || body.items || body.results || []);
     if (!Array.isArray(items)) throw new Error('Response was not an array (or data/items/results array).');
 
+    const mappingValues = Object.values(mapping);
+    const needsVenueJoin = mappingValues.some((v) => typeof v === 'string' && v.startsWith('_venue.'));
+    const needsLocationJoin = mappingValues.some((v) => typeof v === 'string' && v.startsWith('_location.'));
+
+    async function fetchById(path: string): Promise<Map<unknown, any>> {
+      const listRes = await fetchWithRetry(joinUrl(cfg.baseUrl, path), { headers });
+      if (!listRes.ok) throw new Error(`Join request to ${path} returned ${listRes.status}`);
+      const listBody = await listRes.json();
+      const list: any[] = Array.isArray(listBody) ? listBody : (listBody.data || listBody.items || listBody.results || []);
+      return new Map(list.map((row) => [row.id, row]));
+    }
+
+    const venuesById = needsVenueJoin ? await fetchById(cfg.venuesPath || '/inventory/venues') : null;
+    const locationsById = needsLocationJoin ? await fetchById(cfg.locationsPath || '/inventory/locations') : null;
+    if (venuesById || locationsById) {
+      for (const item of items) {
+        if (venuesById && item.venue_id != null) item._venue = venuesById.get(item.venue_id);
+        if (locationsById && item.location_id != null) item._location = locationsById.get(item.location_id);
+      }
+    }
+
     const mappedRows = items.map((item) => {
       const row: Record<string, unknown> = { source: 'api-sync' };
       for (const [column, sourcePath] of Object.entries(mapping)) {
         if (!ALLOWED_COLUMNS.has(column)) continue;
-        const value = getPath(item, sourcePath as string);
+        let value = getPath(item, sourcePath as string);
+        if (column === 'player_type' && PLAYER_TYPE_MAP[value as number] !== undefined) {
+          value = PLAYER_TYPE_MAP[value as number];
+        }
         if (value !== undefined) row[column] = value;
       }
       return row;
