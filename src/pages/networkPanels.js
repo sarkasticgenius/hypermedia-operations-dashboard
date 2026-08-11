@@ -380,10 +380,119 @@ function renderIotDeviceTable(cfg) {
   </div>`;
 }
 
+// Per-location heatmap tiles for IoT, same visual language and click-to-see-offline behavior as
+// the Broadsign/Grassfish consoles (see renderNetworkPanel above) - reuses the same sourceStats/
+// heatmapColor/chain-merging logic against source='iot'/healthyField='iot_healthy_count', which
+// iot-sync already populates once "Offline Status Values" is calibrated (Settings > Integrations).
+// Purely additive on the IoT Panel: sits above the existing fleet-wide "Devices by ..." charts,
+// which keep showing the vendor's raw device list regardless of whether this per-site view has
+// data yet.
+function renderIotSiteHeatmap() {
+  const allLocations = loadData('locationsForNetworkPanel', listLocations);
+  if (allLocations === null) return '';
+  if (allLocations?.__error) return '';
+
+  const source = 'iot';
+  const healthyField = 'iot_healthy_count';
+  const hidden = hiddenMemberIds(allLocations);
+  const hasDataDirect = (l) => (l.location_sub_assets || []).some((sa) => sa.source === source) || !!l[healthyField];
+  const hasData = (l) => (l.is_combined ? resolveMembers(l, allLocations).some(hasDataDirect) : hasDataDirect(l));
+  const dataLocs = allLocations.filter((l) => !hidden.has(l.id) && hasData(l));
+  if (!dataLocs.length) return '';
+
+  const chainNames = [...new Set(dataLocs.filter((l) => l.chain && !l.is_combined).map((l) => l.chain))];
+  const chainedIds = new Set();
+  const chainTiles = chainNames.map((chain) => {
+    const members = allLocations.filter((l) => l.chain === chain && !l.is_combined);
+    members.forEach((m) => chainedIds.add(m.id));
+    let offline = 0; let total = 0;
+    for (const m of members) {
+      const stats = sourceStats(m, allLocations, source, healthyField);
+      offline += stats.offline; total += stats.total;
+    }
+    const color = heatmapColor({ offline, total });
+    const html = `<div style="background:${color};border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openOfflineAssetsModal(${jsonAttr({ chain, source, healthyField })})' title="Click to see offline assets">
+      <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(chain)} <span style="font-weight:400;opacity:.85;">(${members.length} locations)</span></div>
+      <div style="font-size:11px;opacity:.95;">${total ? `${offline} offline / ${total} total` : 'No data'}</div>
+    </div>`;
+    return { name: chain, html };
+  });
+
+  const individualTiles = dataLocs.filter((l) => !chainedIds.has(l.id)).map((l) => {
+    const stats = sourceStats(l, allLocations, source, healthyField);
+    const color = heatmapColor(stats);
+    const html = `<div style="background:${color};border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick='App.openOfflineAssetsModal(${jsonAttr({ locId: l.id, source, healthyField })})' title="Click to see offline assets">
+      <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(l.name)}${l.is_combined ? ' <span style="font-weight:400;opacity:.85;">(combined)</span>' : ''}</div>
+      <div style="font-size:11px;opacity:.95;">${stats.total ? `${stats.offline} offline / ${stats.total} total` : 'No data'}</div>
+    </div>`;
+    return { name: l.name, html };
+  });
+
+  const search = (STATE.networkSearch || '').trim().toLowerCase();
+  const allTiles = chainTiles.concat(individualTiles);
+  const visibleTiles = search ? allTiles.filter((t) => t.name.toLowerCase().includes(search)) : allTiles;
+  const tiles = visibleTiles.map((t) => t.html).join('');
+
+  return `${onlineOfflineSummary(dataLocs, allLocations, source, healthyField)}
+  <div class="card">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div><h3>Site Status Heatmap</h3><div class="desc">${dataLocs.length} location(s) with IoT data, colored by offline share - green = all online, red = high offline share. Locations that belong to the same chain are merged into one tile. Click a tile to see what's offline and raise a ticket.</div></div>
+      <input id="net-search" placeholder="Search by venue/location or chain name..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+    </div>
+    ${visibleTiles.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No location or chain matches "${esc(STATE.networkSearch || '')}".</div>`}
+  </div>`;
+}
+
+// Interim per-site tiles straight from the device list's own data (no Asset Inventory/Location
+// matching needed) - shown only when the location-matched heatmap above has nothing yet, which
+// today means every deployment until IoT cameras get tagged Player Type = "IoT" with a matching
+// Player Box ID in Asset Inventory (see renderIotSiteHeatmap). Mirrors Grassfish's own
+// pre-calibration "Screens by Venue" fallback (see renderGrassfishPanel).
+// Groups by d.storeName rather than d.venue: venue only ever gets filled in via the same Asset
+// Inventory match this fallback exists because of, so it's blank for every device right now - the
+// vendor's own site label (e.g. "Malls - Dragon Mart-1") lives in storeName instead.
+// Deliberately flat-colored (no offline-share heatmap) - Offline Status Values (Settings >
+// Integrations) has never been validated against anything real, since no location has ever matched
+// to check it against, and today it's set to literally every possible state (which would render
+// every tile 100% "offline" and be actively misleading) - color-by-status can follow once that
+// calibration has real data to be checked against.
+function renderIotVenueFallback(cfg) {
+  const excludedSet = new Set(cfg.excludedDeviceIds || []);
+  const activeDevices = (cfg.lastDevices || []).filter((d) => !excludedSet.has(d.deviceId));
+  if (!activeDevices.length) return '';
+
+  const bySite = new Map();
+  activeDevices.forEach((d) => {
+    const site = d.storeName || d.venue || 'Unassigned';
+    if (!bySite.has(site)) bySite.set(site, []);
+    bySite.get(site).push(d);
+  });
+  const sites = [...bySite.keys()].sort((a, b) => a.localeCompare(b));
+  const search = (STATE.networkSearch || '').trim().toLowerCase();
+  const visibleSites = search ? sites.filter((v) => v.toLowerCase().includes(search)) : sites;
+
+  const tiles = visibleSites.map((v) => {
+    const list = bySite.get(v);
+    return `<div style="background:#2f6fb3;border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;">
+      <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(v)}</div>
+      <div style="font-size:11px;opacity:.95;">${list.length} device${list.length === 1 ? '' : 's'}</div>
+    </div>`;
+  }).join('');
+
+  return `<div class="card">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div><h3>Devices by Site</h3><div class="desc">${sites.length} site(s) reported by the device list itself. Interim view until Asset Inventory has these cameras tagged Player Type = "IoT" with a matching Player Box ID - once that's done this switches to the same location-matched, offline-colored Site Status Heatmap Broadsign/Grassfish use.</div></div>
+      <input id="net-search" placeholder="Search by site name..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+    </div>
+    ${visibleSites.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No site matches "${esc(STATE.networkSearch || '')}".</div>`}
+  </div>`;
+}
+
 // Standalone dashboard of whatever iot-sync last pulled live from the aioo IoT Admin Console -
-// deliberately NOT matched against Asset Inventory/Locations (that matching lives in iot-sync for
-// a future per-site heatmap, but this page just shows the fleet as the vendor's own API reports
-// it, same as the "Devices by ..." dashboard in aioo's own console).
+// deliberately NOT matched against Asset Inventory/Locations for the fleet-wide charts below (that
+// matching lives in iot-sync, and feeds the per-venue heatmap above instead) - this section just
+// shows the fleet as the vendor's own API reports it, same as the "Devices by ..." dashboard in
+// aioo's own console.
 export function renderIotPanel() {
   const cfg = loadData('iotApi', () => getSetting('iotApi'));
   if (cfg === null) return loadingCard();
@@ -401,11 +510,18 @@ export function renderIotPanel() {
     </span>
   </div>` : '';
 
+  // The location-matched heatmap only has data once Asset Inventory has these cameras tagged
+  // Player Type = "IoT" with a matching Player Box ID (same prerequisite Broadsign/Grassfish
+  // have) - falls back to grouping the raw device list by its own venue field until then, so the
+  // page still shows a useful per-venue breakdown from day one.
+  const siteHeatmap = renderIotSiteHeatmap() || renderIotVenueFallback(c);
+
   if (!b || !b.totalDevices) {
-    return `${statusBar}<div class="card"><div class="empty">No live device data yet.${admin ? ' Configure the API in Settings, then Sync Now.' : ' Ask an Admin to configure this.'}</div></div>`;
+    return `${statusBar}${siteHeatmap}<div class="card"><div class="empty">No live device data yet.${admin ? ' Configure the API in Settings, then Sync Now.' : ' Ask an Admin to configure this.'}</div></div>`;
   }
 
   return `${statusBar}
+  ${siteHeatmap}
   <div class="small muted" style="margin:10px 0 8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${c.lastSync ? new Date(c.lastSync).toLocaleString() : 'last sync'}.</div>
   <div class="bento-grid">
     ${renderIotChartCard('Devices by Platform', donutItems(b.byPlatform), 0)}
