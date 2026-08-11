@@ -24,6 +24,7 @@ import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
 import { exportReportingCampaignExcel, exportToExcel } from '../lib/excelExport.js';
 import { exportCampaignPptxReport } from '../lib/pptxReport.js';
+import { isFocMarketingCampaign } from './trafficSheet.js';
 
 const REPORTING_TABS = [
   { key: 'adsStats', label: 'Ads Stats' },
@@ -985,7 +986,7 @@ function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
   // this is incorrect data") - so the day columns only render at all once there's more than one
   // day to actually spread across, and even then each header carries the full date as a tooltip.
   const showDayGrid = dates.length > 1;
-  const bodyRows = campaigns.map((c) => {
+  function campaignRow(c) {
     let totalPlayouts = 0;
     let totalImpressions = 0;
     c.dayMap.forEach((d) => { totalPlayouts += d.playouts; totalImpressions += d.impressions; });
@@ -1001,19 +1002,39 @@ function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
         return `<td class="tsheet-cell${day ? ' tsheet-active' : ''}" title="${esc(d)}">${day ? `${day.playouts.toLocaleString()}<br><span class="small muted">${day.impressions.toLocaleString()}</span>` : ''}</td>`;
       }).join('') : ''}
     </tr>`;
-  }).join('');
+  }
+  // Same FOC/Marketing keyword classification the Traffic Sheet workspace uses (see
+  // isFocMarketingCampaign in trafficSheet.js) - split into its own labeled sub-table beneath the
+  // regular one so FOC/Marketing bookings are grouped the same way here as they are there, without
+  // hiding them from the normal view.
+  const regularCampaigns = campaigns.filter((c) => !isFocMarketingCampaign({ campaignName: c.campaign }));
+  const focCampaigns = campaigns.filter((c) => isFocMarketingCampaign({ campaignName: c.campaign }));
+  const bodyRows = regularCampaigns.map(campaignRow).join('');
+  const focBodyRows = focCampaigns.map(campaignRow).join('');
+  const tableHead = `<thead><tr><th>Campaign</th><th>Type</th><th class="tright">Playouts</th><th class="tright">Impressions</th><th class="tright">Avg Multiplier</th>${showDayGrid ? dates.map((d) => `<th class="tsheet-day" title="${esc(d)}">${esc(d.slice(8, 10))}</th>`).join('') : ''}</tr></thead>`;
 
   return `
     ${typeFilterUi}
     <div class="card">
-      <div class="card-head"><h3>Traffic Data</h3><div class="desc">${campaigns.length} campaign(s)${showDayGrid ? ', day-by-day. Each day cell shows Playouts on top and Impressions below (hover a date header for the full date)' : ' - totals for'} from ${esc(start)} to ${esc(end)}. "Avg Multiplier" = Impressions &divide; Playouts.</div></div>
+      <div class="card-head"><h3>Traffic Data</h3><div class="desc">${campaigns.length} campaign(s)${showDayGrid ? ', day-by-day. Each day cell shows Playouts on top and Impressions below (hover a date header for the full date)' : ' - totals for'} from ${esc(start)} to ${esc(end)} - ${regularCampaigns.length} regular, ${focCampaigns.length} FOC/Marketing. "Avg Multiplier" = Impressions &divide; Playouts.</div></div>
       <div class="tsheet-wrap">
         <table class="tsheet-table">
-          <thead><tr><th>Campaign</th><th>Type</th><th class="tright">Playouts</th><th class="tright">Impressions</th><th class="tright">Avg Multiplier</th>${showDayGrid ? dates.map((d) => `<th class="tsheet-day" title="${esc(d)}">${esc(d.slice(8, 10))}</th>`).join('') : ''}</tr></thead>
-          <tbody>${bodyRows}</tbody>
+          ${tableHead}
+          <tbody>${bodyRows || `<tr><td colspan="${5 + (showDayGrid ? dates.length : 0)}"><div class="empty">No regular campaigns for this date range.</div></td></tr>`}</tbody>
         </table>
       </div>
     </div>
+    ${focCampaigns.length ? `
+    <div class="card">
+      <div class="card-head"><h3>FOC / Marketing <span class="badge b-amber">${focCampaigns.length}</span></h3><div class="desc">Same FOC/Marketing keyword grouping used on the Traffic Sheet workspace.</div></div>
+      <div class="tsheet-wrap">
+        <table class="tsheet-table">
+          ${tableHead}
+          <tbody>${focBodyRows}</tbody>
+        </table>
+      </div>
+    </div>
+    ` : ''}
     ${renderTrafficByLocation(campaigns)}
     ${renderPlacementAdCoverage(directRows, directFields, dspsRows, dspsFields)}
   `;
