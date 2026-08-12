@@ -34,12 +34,16 @@ export function svgGroupedBarChart(categories, series, opts = {}) {
   const barW = series.length ? Math.max(2, (groupW - barGap * 2) / series.length) : 0;
   const barRadius = Math.min(7, barW / 2);
 
-  const gradientDefs = series.map((s, si) => `
-    <linearGradient id="${id}-bar-${si}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="${s.color}" stop-opacity="1"/>
-      <stop offset="100%" stop-color="${s.color}" stop-opacity="0.72"/>
+  // Optional per-CATEGORY color override (s.colors[ci]) alongside the existing per-SERIES color -
+  // needed for single-series charts where each bar is itself a distinct, semantically-colored state
+  // (e.g. Online=green/Offline=red) rather than every bar sharing one accent color. Falls back to
+  // s.color when a series doesn't set colors, so every existing chart renders unchanged.
+  const gradientDefs = series.map((s, si) => (s.colors || [s.color]).map((c, ci) => `
+    <linearGradient id="${id}-bar-${si}-${ci}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${c}" stop-opacity="1"/>
+      <stop offset="100%" stop-color="${c}" stop-opacity="0.72"/>
     </linearGradient>
-  `).join('');
+  `).join('')).join('');
 
   let gridlines = '';
   [0, 0.5, 1].forEach((frac) => {
@@ -62,8 +66,9 @@ export function svgGroupedBarChart(categories, series, opts = {}) {
       // line at small heights - clipPath + a fully-rounded "pill" rect (ry = half the bar's own
       // width) behind it keeps just the top rounded and the bottom flush, the actual iOS-widget bar
       // shape, without needing a separate top-only-rounding trick per bar height.
+      const fillId = s.colors ? `${id}-bar-${si}-${ci}` : `${id}-bar-${si}-0`;
       bars += `<clipPath id="${id}-clip-${ci}-${si}"><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${(barH + barRadius).toFixed(1)}"/></clipPath>
-        <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${barH.toFixed(1)}" rx="${barRadius.toFixed(1)}" fill="url(#${id}-bar-${si})" clip-path="url(#${id}-clip-${ci}-${si})"/>`;
+        <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${barH.toFixed(1)}" rx="${barRadius.toFixed(1)}" fill="url(#${fillId})" clip-path="url(#${id}-clip-${ci}-${si})"/>`;
       if (val > 0) {
         bars += `<text x="${(x + w / 2).toFixed(1)}" y="${(y - 4).toFixed(1)}" font-size="9.5" font-weight="700" text-anchor="middle" fill="var(--text-dim)">${val}</text>`;
       }

@@ -247,13 +247,27 @@ function donutItems(counts) {
 // its own accent color (cycled from CHART_PALETTE by card index) rather than a bespoke per-wedge
 // palette, and renders inside a .bento-tile to match Live Ops' tile styling instead of a plain
 // .card.
-function renderIotChartCard(title, items, colorIndex) {
+// colorForLabel (optional) overrides the color per bar instead of the whole series sharing one
+// accent color - needed for Devices by Connectivity, where each bar IS a semantic state (Online/
+// Offline) that should read as green/red at a glance rather than two identically-colored bars.
+function renderIotChartCard(title, items, colorIndex, colorForLabel) {
   const total = items.reduce((s, it) => s + it.value, 0);
   const color = CHART_PALETTE[colorIndex % CHART_PALETTE.length];
+  const series = { name: title, color, values: items.map((it) => it.value) };
+  if (colorForLabel) series.colors = items.map((it) => colorForLabel(it.label) || color);
   return `<div class="bento-tile bento-span-2">
     <div class="card-head"><h3>${esc(title)}</h3></div>
-    ${total ? svgGroupedBarChart(items.map((it) => it.label), [{ name: title, color, values: items.map((it) => it.value) }], { width: 460, height: 190 }) : '<div class="empty">No data</div>'}
+    ${total ? svgGroupedBarChart(items.map((it) => it.label), [series], { width: 460, height: 190 }) : '<div class="empty">No data</div>'}
   </div>`;
+}
+
+// Green/red so Online/Offline read at a glance without checking numbers - matches heatmapColor's
+// own "all online"/"worst" endpoints (src/data/locationStats.js) for visual consistency with the
+// category heatmap tiles above.
+function connectivityColor(label) {
+  if (label === 'Online') return '#1f9d55';
+  if (label === 'Offline') return '#c0392b';
+  return null;
 }
 
 // Fixed display order matching the states the aioo console itself uses (confirmed from the
@@ -288,6 +302,7 @@ function recomputeIotBreakdown(devices) {
     byState: countBy((d) => d.state),
     byCameraType: countBy((d) => d.cameraType),
     byVersion: countBy((d) => d.version),
+    byConnectivity: countBy((d) => (d.online ? 'Online' : 'Offline')),
   };
 }
 
@@ -486,23 +501,34 @@ function renderIotCategoryHeatmap(cfg) {
   const populatedCategories = SITE_CATEGORIES.filter((c) => byCategory.get(c).length);
   const visibleCategories = search ? populatedCategories.filter((c) => c.toLowerCase().includes(search)) : populatedCategories;
 
+  // A single blended hue (the old heatmapColor approach) made "60% offline" and "20% offline"
+  // hard to tell apart at a glance - each tile now shows a two-segment online(green)/offline(red)
+  // proportion bar instead, so the actual split reads directly rather than through an interpolated
+  // color guess.
   const tiles = visibleCategories.map((category) => {
     const devices = byCategory.get(category);
     const offline = devices.filter((d) => !d.online).length;
     const total = devices.length;
-    const color = heatmapColor({ offline, total });
+    const online = total - offline;
+    const onlinePct = total ? (online / total) * 100 : 0;
     const siteCount = new Set(devices.map((d) => d.storeName || d.venue || 'Unassigned')).size;
     const label = category === 'Other' ? 'Other / Unclassified' : category;
-    const flag = category === 'Other' ? ` <span style="background:rgba(255,255,255,.25);border-radius:4px;padding:1px 5px;font-size:10px;font-weight:600;">check</span>` : '';
-    return `<div style="background:${color};border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick="App.openIotCategoryModal('${esc(category)}')" title="Click to see sites and devices">
-      <div style="font-size:13px;font-weight:700;line-height:1.3;">${esc(label)}${flag} <span style="font-weight:400;opacity:.85;">(${siteCount} site${siteCount === 1 ? '' : 's'})</span></div>
-      <div style="font-size:11px;opacity:.95;">${total} device${total === 1 ? '' : 's'} - ${offline} offline</div>
+    const flag = category === 'Other' ? ` <span style="background:rgba(255,255,255,.18);border-radius:4px;padding:1px 5px;font-size:10px;font-weight:600;">check</span>` : '';
+    return `<div style="background:#2a3441;border-radius:10px;padding:12px;color:#fff;min-height:96px;display:flex;flex-direction:column;justify-content:space-between;gap:9px;cursor:pointer;" onclick="App.openIotCategoryModal('${esc(category)}')" title="Click to see sites and devices">
+      <div>
+        <div style="font-size:13px;font-weight:700;line-height:1.3;">${esc(label)}${flag} <span style="font-weight:400;opacity:.8;">(${siteCount} site${siteCount === 1 ? '' : 's'})</span></div>
+        <div style="font-size:11px;opacity:.85;margin-top:2px;"><span style="color:#5fd88f;">${online} online</span>, <span style="color:#f2857a;">${offline} offline</span> of ${total}</div>
+      </div>
+      <div style="height:8px;border-radius:4px;overflow:hidden;display:flex;background:rgba(255,255,255,.12);">
+        ${online ? `<div style="width:${onlinePct.toFixed(1)}%;background:#1f9d55;"></div>` : ''}
+        ${offline ? `<div style="width:${(100 - onlinePct).toFixed(1)}%;background:#c0392b;"></div>` : ''}
+      </div>
     </div>`;
   }).join('');
 
   return `<div class="card">
     <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-      <div><h3>Devices by Category</h3><div class="desc">${activeDevices.length} device(s) across ${populatedCategories.length} categor${populatedCategories.length === 1 ? 'y' : 'ies'}, colored by offline share - green = all online, red = high offline share. "Other / Unclassified" is devices whose site name doesn't match a known venue category (Metro/Malls/In-Store/Outdoor) - review it for orphaned, demo, or stray devices. Click a tile to see its sites and drill into devices.</div></div>
+      <div><h3>Devices by Category</h3><div class="desc">${activeDevices.length} device(s) across ${populatedCategories.length} categor${populatedCategories.length === 1 ? 'y' : 'ies'} - each tile's bar shows online (green) vs offline (red) share. "Other / Unclassified" is devices whose site name doesn't match a known venue category (Metro/Malls/In-Store/Outdoor) - review it for orphaned, demo, or stray devices. Click a tile to see its sites and drill into devices.</div></div>
       <input id="net-search" placeholder="Search by category..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
     </div>
     ${visibleCategories.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No category matches "${esc(STATE.networkSearch || '')}".</div>`}
@@ -545,7 +571,7 @@ export function renderIotPanel() {
   ${siteHeatmap}
   <div class="small muted" style="margin:10px 0 8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${c.lastSync ? new Date(c.lastSync).toLocaleString() : 'last sync'}.</div>
   <div class="bento-grid">
-    ${renderIotChartCard('Devices by Connectivity', donutItems(b.byConnectivity), 5)}
+    ${renderIotChartCard('Devices by Connectivity', donutItems(b.byConnectivity), 5, connectivityColor)}
     ${renderIotChartCard('Devices by Platform', donutItems(b.byPlatform), 0)}
     ${renderIotChartCard('Devices by State', canonicalStateItems(b.byState), 1)}
     ${renderIotChartCard('Devices by Camera Type', donutItems(b.byCameraType), 2)}
