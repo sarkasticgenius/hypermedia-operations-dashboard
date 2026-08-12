@@ -28,7 +28,10 @@
 //   - "_networks" - item carries a network_ids array (multiple networks per asset); each id is
 //     resolved against the same networks list.
 //   - anything else (a plain dot-path, no "_network" prefix) - the vendor already puts the
-//     network name(s) directly on the item (string, or an array of strings) - no join needed.
+//     network(s) directly on the item, no join needed: a plain name string, an array of name
+//     strings, or (confirmed real shape, Inventory MS) an array of embedded {id, name} objects
+//     (e.g. fieldMapping.networks = "networks" for an item shaped like
+//     { networks: [{id: 17, name: "Retail NW (A) FMCG"}, ...] }) - .name is extracted from each.
 // Whichever name(s) resolve are matched case-insensitively against our own `networks` table
 // (creating any that don't exist yet, same as the app's own "add network" flow) and linked via
 // asset_inventory_networks - idempotent (ON CONFLICT DO NOTHING on the (asset_inventory_id,
@@ -202,7 +205,13 @@ Deno.serve(async (req) => {
         return v ? [String(v)] : [];
       }
       const v = getPath(item, networksMapping);
-      if (Array.isArray(v)) return v.filter(Boolean).map(String);
+      // Confirmed real shape (Inventory MS): the item already embeds a "networks" array of
+      // {id, name} objects directly - no join needed at all, just extract .name from each. Also
+      // handles a plain array of name strings, or a single embedded object, for other vendors.
+      if (Array.isArray(v)) {
+        return v.map((entry) => (entry && typeof entry === 'object' ? entry.name : entry)).filter(Boolean).map(String);
+      }
+      if (v && typeof v === 'object') return v.name != null && v.name !== '' ? [String(v.name)] : [];
       return v != null && v !== '' ? [String(v)] : [];
     }
 
