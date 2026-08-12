@@ -555,12 +555,18 @@ export function openIotCategoryModal(category) {
   openModal('iotCategoryModal', { category });
 }
 
-// Jumps to the existing Devices table (below the heatmap on the IoT Panel) pre-filtered to one
-// site, rather than building a second nested device-list modal - "All" so a site with only
-// excluded/offline devices isn't hidden by the default "Active devices" filter.
+// Jumps to the existing Devices table (below the heatmap and 4 chart cards on the IoT Panel)
+// pre-filtered to one site, rather than building a second nested device-list modal - "All" so a
+// site with only excluded/offline devices isn't hidden by the default "Active devices" filter.
+// The filter itself applies instantly, but render() deliberately preserves .content's scrollTop
+// across every re-render (see state.js) - closing the modal and filtering the table both leave
+// the page exactly where it already was, which on a long IoT Panel is nowhere near the table, so
+// the search looked like it did nothing. setState() runs render() synchronously, so the table (and
+// its search box) already exists in the DOM by the time scrollIntoView runs here.
 export function viewIotSiteDevices(site) {
   closeModal();
   setState({ iotDeviceSearch: site, iotDevicePage: 0, iotDeviceFilter: 'all' });
+  document.getElementById('iot-device-search')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 export async function runNetworkSync(settingKey, functionName) {
