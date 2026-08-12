@@ -468,7 +468,7 @@ function collectDates(campaigns) {
   return [...set].sort();
 }
 
-function groupDatesByMonth(dates) {
+export function groupDatesByMonth(dates) {
   const groups = [];
   dates.forEach((d) => {
     const month = d.slice(0, 7);
@@ -479,7 +479,7 @@ function groupDatesByMonth(dates) {
   return groups;
 }
 
-function formatMonthLabel(monthStr) {
+export function formatMonthLabel(monthStr) {
   const [y, m] = monthStr.split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 }
@@ -615,6 +615,7 @@ function describeMatchedVenues(campaign, rosterByNetwork) {
 function todayListTable(campaigns, emptyText, rosterByNetwork) {
   const rows = campaigns.map((c) => `
     <tr>
+      <td class="tsheet-nowrap">${esc(c.contract || '')}</td>
       <td>${esc(c.campaignName || '')}</td>
       <td>${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]), 18, brandFallbackForVenue((c.__matchedVenues || [])[0])) : ''} ${esc(describeMatchedVenues(c, rosterByNetwork))}</td>
       <td class="tsheet-nowrap">${statusBadge(c.status)}</td>
@@ -623,8 +624,8 @@ function todayListTable(campaigns, emptyText, rosterByNetwork) {
     </tr>
   `).join('');
   return `
-    <table><thead><tr><th>Campaign Name</th><th>Venue(s)</th><th class="tsheet-nowrap">Status</th><th class="tsheet-nowrap">Start</th><th class="tsheet-nowrap">End</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="5"><div class="empty">${esc(emptyText)}</div></td></tr>`}</tbody></table>
+    <table><thead><tr><th>Campaign ID</th><th>Campaign Name</th><th>Venue(s)</th><th class="tsheet-nowrap">Status</th><th class="tsheet-nowrap">Start</th><th class="tsheet-nowrap">End</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6"><div class="empty">${esc(emptyText)}</div></td></tr>`}</tbody></table>
   `;
 }
 
@@ -634,6 +635,11 @@ function todayListTable(campaigns, emptyText, rosterByNetwork) {
 // FOC / Marketing tab itself every row is already FOC/Marketing (campaigns was pre-filtered to
 // just those), so the split would be 100% redundant - skip it and show one plain table instead.
 function renderTodayList(campaigns, tab, rosterByNetwork) {
+  // SHZ Bridges' "network" values are seasonal/per-campaign branding names (see
+  // bridgeNetworksAvailable above), not a fixed physical roster like Retail NW/DUBAI HOLDING/3D
+  // NETWORK - collapsing to the network name here would show a meaningless label (e.g. "Da Vinci")
+  // in place of the actual bridge/station name, so this tab always lists venues individually.
+  if (tab === 'shzBridges') rosterByNetwork = new Map();
   if (tab === 'focMarketing') {
     return `
       <div class="card" style="margin-bottom:16px;">
@@ -670,9 +676,9 @@ export function renderDayGrid(campaigns, startDate, endDate) {
   }
   const dateGroups = groupDatesByMonth(dates);
 
-  const monthHeadRow = `<tr><th colspan="6"></th>${dateGroups.map((g) => `<th colspan="${g.dates.length}" class="tsheet-month-head">${esc(formatMonthLabel(g.month))}</th>`).join('')}</tr>`;
+  const monthHeadRow = `<tr><th colspan="7"></th>${dateGroups.map((g) => `<th colspan="${g.dates.length}" class="tsheet-month-head">${esc(formatMonthLabel(g.month))}</th>`).join('')}</tr>`;
   const dayHeadRow = `<tr>
-    <th>Campaign Name</th><th>Start</th><th>End</th><th class="tcenter">Days</th><th class="tcenter">Loop Count</th><th>Status</th>
+    <th>Campaign ID</th><th>Campaign Name</th><th>Start</th><th>End</th><th class="tcenter">Days</th><th class="tcenter">Loop Count</th><th>Status</th>
     ${dates.map((d) => `<th class="tsheet-day">${esc(d.slice(8, 10))}</th>`).join('')}
   </tr>`;
 
@@ -680,6 +686,7 @@ export function renderDayGrid(campaigns, startDate, endDate) {
     const dayMap = {};
     (c.days || []).forEach((d) => { dayMap[d.date] = d.spots; });
     return `<tr>
+      <td class="tsheet-nowrap">${esc(c.contract || '')}</td>
       <td>${esc(c.campaignName || '')}</td>
       <td>${esc(c.startDate || '')}</td>
       <td>${esc(c.endDate || '')}</td>

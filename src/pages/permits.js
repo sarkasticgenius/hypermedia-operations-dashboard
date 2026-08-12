@@ -9,6 +9,17 @@ import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const STATUS_BADGE = { Active: 'b-green', 'Expiring Soon': 'b-amber', Expired: 'b-red' };
 
+// Fixed Location options for the Add/Edit Permit form, per ops' own predefined list rather than
+// derived from Asset Inventory - Dubai Metro and Pavilions are each one entry covering many
+// individual stations/pavilions (Al Furjan South/West, Discovery Gardens, International City,
+// Jumeirah Park East/West, etc.) since a permit is never issued per-station/per-pavilion.
+const PERMIT_LOCATIONS = [
+  'Abu Dhabi Mall', 'Al Hamra Mall', 'Bawabat Al Sharq Mall', 'Burjuman Mall', 'Circle Mall',
+  'Dalma Mall', 'Deerfield Mall', 'Dubai Metro', 'Dragon Mart-1', 'Dragon Mart-2',
+  'Dubai Festival City', 'Dubai Festival Plaza', 'IBN BATTUTA Mall', 'Pavilions',
+  'MARINA MALL-ABU DHABI', 'Mushrif Mall', 'NAKHEEL MALL', 'REEM MALL', 'WAFi Mall', 'EXPO CITY',
+];
+
 export function renderPermits() {
   const permits = loadData('permits', listPermits);
   if (permits === null) return loadingCard();
@@ -110,14 +121,23 @@ export async function savePermitForm(event) {
   }
 }
 
-registerModal('permit', (data) => `
+registerModal('permit', (data) => {
+  const locationOptions = PERMIT_LOCATIONS;
+  const currentLocation = data.location || '';
+  return `
   <h3>${data.id ? 'Edit' : 'Add'} Permit</h3>
   <form onsubmit="App.savePermitForm(event)">
     <input type="hidden" id="pm-id" value="${esc(data.id || '')}">
     <div class="field"><label>Title</label><input id="pm-title" value="${esc(data.title || '')}" required></div>
     <div class="grid2">
       <div class="field"><label>Type</label><input id="pm-type" value="${esc(data.type || '')}" placeholder="Municipality / Civil Defense / Trade License"></div>
-      <div class="field"><label>Location</label><input id="pm-location" value="${esc(data.location || '')}"></div>
+      <div class="field"><label>Location</label>
+        <select id="pm-location">
+          <option value="">-</option>
+          ${locationOptions.map((v) => `<option value="${esc(v)}" ${currentLocation === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+          ${currentLocation && !locationOptions.includes(currentLocation) ? `<option value="${esc(currentLocation)}" selected>${esc(currentLocation)}</option>` : ''}
+        </select>
+      </div>
     </div>
     <div class="grid2">
       <div class="field"><label>Issued By</label><input id="pm-issued-by" value="${esc(data.issued_by || '')}"></div>
@@ -133,4 +153,5 @@ registerModal('permit', (data) => `
       <button type="submit" class="btn btn-orange">Save</button>
     </div>
   </form>
-`);
+`;
+});

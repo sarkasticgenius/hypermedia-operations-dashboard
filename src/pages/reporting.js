@@ -24,8 +24,9 @@ import { renderTabs } from '../lib/tabs.js';
 import { esc } from '../lib/format.js';
 import { exportReportingCampaignExcel, exportToExcel } from '../lib/excelExport.js';
 import { exportCampaignPptxReport } from '../lib/pptxReport.js';
-import { isFocMarketingCampaign } from './trafficSheet.js';
+import { isFocMarketingCampaign, statusBadge, groupDatesByMonth, formatMonthLabel } from './trafficSheet.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 const REPORTING_TABS = [
   { key: 'adsStats', label: 'Ads Stats' },
@@ -293,7 +294,7 @@ export async function downloadTabExcel() {
   } else if (tab === 'programmatic') {
     const raw = STATE.reportingDsps;
     if (!raw) { toast('Load Programmatic Stats first', 'error'); return; }
-    await downloadRowsAsExcel(`programmatic-stats-${tag}.xlsx`, extractRows(raw), ['adv_id', 'adv_domain', 'c_id', 'c_name', 'a_id', 'a_name', 'd_id', 'd_name']);
+    await downloadRowsAsExcel(`programmatic-stats-${tag}.xlsx`, extractRows(raw), ['adv_id', 'adv_domain', 'c_id', 'c_name', 'a_id', 'a_name', 'd_id', 'd_name', 'avg_mulitiplier']);
   } else if (tab === 'placementsStats') {
     const raw = STATE.reportingPlacementsStats;
     if (!raw) { toast('Load Placements Stats first', 'error'); return; }
@@ -334,6 +335,7 @@ const FIELD_CANDIDATES = {
   date: ['date', 'day', 'stat_date', 'created'],
   advertiser: ['adv_name', 'advertiser', 'advertiser_name'],
   campaign: ['c_name', 'campaign', 'campaign_name'],
+  campaignId: ['c_id'],
   ad: ['a_name', 'ad', 'ad_name'],
   adId: ['a_id'],
   creative: ['cr_name', 'creative', 'creative_name'],
@@ -433,6 +435,37 @@ async function loadCampaignAdsInfo(campaignRows, fields) {
   } catch (e) {
     setState({ reportingCampaignAdsInfoLoading: false, reportingCampaignAdsInfoError: e.message || 'Failed to load ad details' });
   }
+}
+
+// Same GET /campaigns endpoint as loadCampaignMeta, but with no `name` filter - the proxy only
+// sets that param when given one (see aioo-reporting-proxy/index.ts), so omitting it returns
+// every campaign in one call. Used by the Traffic Data grid to get real flight dates + Status for
+// every campaign shown at once, instead of one /campaigns request per campaign row.
+async function loadAllCampaignsMeta() {
+  const data = await fetchReportingStats('/campaigns', {});
+  const list = Array.isArray(data) ? data : [];
+  const map = new Map();
+  list.forEach((c) => {
+    const name = String(c.name || '').trim().toLowerCase();
+    if (name) map.set(name, { start: c.start, end: c.end, status: c.status, type: c.type });
+  });
+  return map;
+}
+
+// Loop Count on the Traffic Data grid is the closest AiOO equivalent to Traffic Sheet's per-
+// campaign Loop Count: GET /ads/{id}'s `cycle_playouts` (only set when volume_type === 'cycle'),
+// looked up per distinct a_id across every campaign currently shown in the grid. Capped the same
+// way loadCampaignAdsInfo caps a single campaign's line items (MAX_AD_LOOKUPS), just applied to
+// the whole grid's ad-id set instead of one campaign's - the grid can easily have far more
+// distinct line items than a single campaign, and this is a live 3rd-party API with real rate
+// limits (see MAX_AD_LOOKUPS's own comment).
+const MAX_GRID_AD_LOOKUPS = 80;
+async function loadGridAdsLoopInfo(adIds) {
+  const capped = adIds.slice(0, MAX_GRID_AD_LOOKUPS);
+  const ads = await Promise.all(capped.map((id) => fetchReportingStats(`/ads/${id}`).catch(() => null)));
+  const map = new Map();
+  ads.forEach((a, i) => { if (a) map.set(String(capped[i]), a); });
+  return map;
 }
 
 // Groups rows by screen (Site + Placement), summing whichever numericKeys are given - shared by
@@ -986,17 +1019,52 @@ function renderPlacementAdCoverage(directRows, directFields, dspsRows, dspsField
   </div>`;
 }
 
-// "Traffic Data" - merges Direct (/stats-ads) and Programmatic (/stats-dsps) rows into one day-by-
-// day grid per campaign, each tagged with a Type badge, filterable to just one type - previously
-// this only ever pivoted stats-ads, so any programmatic campaign was silently absent from the
-// calendar with no indication it was missing. Each day cell shows Playouts and Impressions
-// (previously just one number, defaulting to a meaningless row count whenever the impressions
-// column wasn't detected). "Avg Multiplier" (Impressions / Playouts) is the closest concept the
-// API exposes to a per-loop multiplier - stats-dsps documents this exact ratio as
-// `avg_mulitiplier`; computed the same way here for Direct campaigns too, for a consistent column
-// across both types. Also includes a By Location rollup and a Placements ad-coverage check
+// Fetches the ad-id set behind the grid's Loop Count column exactly once per distinct set (a
+// plain STATE flag, not loadData, since the "key" here is a computed id list rather than a fixed
+// cache name) - re-fetches only when the date range/filters actually change which ads are in
+// play, not on every render.
+function ensureGridAdsLoopInfo(adIds) {
+  const key = [...new Set(adIds)].sort().slice(0, MAX_GRID_AD_LOOKUPS).join(',');
+  if (STATE.reportingGridAdsLoopKey === key) return;
+  STATE.reportingGridAdsLoopKey = key;
+  if (!adIds.length) { STATE.reportingGridAdsLoopInfo = new Map(); return; }
+  // Deferred to a microtask (not called synchronously here) so the setState calls inside don't
+  // re-enter render() from within the current render pass - same pattern ensureCampaignDetailData
+  // uses for loadCampaignMeta/loadCampaignAdsInfo.
+  queueMicrotask(async () => {
+    setState({ reportingGridAdsLoopLoading: true });
+    try {
+      const map = await loadGridAdsLoopInfo(adIds);
+      setState({ reportingGridAdsLoopInfo: map, reportingGridAdsLoopLoading: false });
+    } catch (e) {
+      setState({ reportingGridAdsLoopLoading: false });
+    }
+  });
+}
+
+// "Traffic Data" - a replica of the separate Traffic Sheet workspace's own day-by-day grid
+// (renderDayGrid in trafficSheet.js: Campaign ID, Campaign Name, Start, End, Days, Loop Count,
+// Status, then a month-grouped calendar of day cells), built from AiOO's Direct (/stats-ads) and
+// Programmatic (/stats-dsps) rows instead of AdLive Center's feed. Two things AiOO's stats rows
+// don't carry are filled in with extra lookups so the columns genuinely match:
+//   - Start/End/Days/Status: GET /campaigns (no `name` filter fetches every campaign in one call,
+//     see loadAllCampaignsMeta) matched locally by campaign name - same data loadCampaignMeta
+//     already uses for the single-campaign Campaign Detail view, just fetched once for the whole
+//     grid instead of per campaign.
+//   - Loop Count: GET /ads/{id}'s `cycle_playouts` (only set when volume_type is 'cycle') is the
+//     closest AiOO concept to a per-loop spot count - looked up per distinct line item across
+//     every campaign shown, capped the same defensive way loadCampaignAdsInfo caps a single
+//     campaign's line items (see ensureGridAdsLoopInfo/MAX_GRID_AD_LOOKUPS).
+// Campaign ID itself needs no extra lookup - c_id is already a column on every stats-ads/stats-dsps
+// row (see FIELD_CANDIDATES.campaignId).
+// Each day cell still shows Playouts on top / Impressions below (AiOO's actual metrics - Traffic
+// Sheet's own day cells show a spot count, a concept that doesn't exist in this data source).
+// Type (Direct/Programmatic) and total Playouts/Impressions columns are appended after the
+// Traffic-Sheet-matching columns since AiOO mixes both delivery types in one feed and Traffic
+// Sheet has no equivalent. Also includes a By Location rollup and a Placements ad-coverage check
 // (mirrors the "which malls are running how many campaigns" view from the separate Traffic Sheet
 // workspace, and flags dead/unused placements) - see the two render functions above.
+const TRAFFIC_GRID_META_COLS = 10; // Campaign ID, Campaign Name, Type, Start, End, Days, Loop Count, Status, Playouts, Impressions
 function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
   const typeFilter = STATE.reportingTrafficType || 'all';
   const categoryFilter = STATE.reportingTrafficCategory || 'all';
@@ -1063,10 +1131,14 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
       const site = fields.site ? String(r[fields.site] ?? '') : '';
       const playouts = fields.playouts ? Number(r[fields.playouts]) || 0 : 0;
       const impressions = fields.impressions ? Number(r[fields.impressions]) || 0 : 0;
+      const campaignId = fields.campaignId ? String(r[fields.campaignId] ?? '') : '';
+      const adId = fields.adId ? r[fields.adId] : null;
       const key = `${type}::${campaign}`;
-      if (!byCampaign.has(key)) byCampaign.set(key, { campaign, type, dayMap: new Map(), sites: new Set() });
+      if (!byCampaign.has(key)) byCampaign.set(key, { campaign, type, campaignId: '', dayMap: new Map(), sites: new Set(), adIds: new Set() });
       const entry = byCampaign.get(key);
       if (site) entry.sites.add(site);
+      if (!entry.campaignId && campaignId) entry.campaignId = campaignId;
+      if (adId != null) entry.adIds.add(adId);
       const day = entry.dayMap.get(date) || { playouts: 0, impressions: 0 };
       day.playouts += playouts;
       day.impressions += impressions;
@@ -1077,23 +1149,53 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
   ingest(dspsRows, dspsFields, 'Programmatic');
 
   const campaigns = [...byCampaign.values()].sort((a, b) => a.campaign.localeCompare(b.campaign) || a.type.localeCompare(b.type));
+
+  // Start/End/Days/Status, fetched once for every campaign name in play (see loadAllCampaignsMeta) -
+  // non-blocking, same pattern as the Asset Inventory category lookup above: render with what's
+  // available now, pick up the rest on the next render once the fetch resolves.
+  const campaignsMetaEntry = loadData('reportingAllCampaignsMeta', loadAllCampaignsMeta);
+  const campaignsMeta = (campaignsMetaEntry && !campaignsMetaEntry.__error) ? campaignsMetaEntry : null;
+  const campaignsMetaLoading = campaignsMetaEntry === null;
+
+  // Loop Count, fetched for every distinct line item across every campaign currently shown (see
+  // ensureGridAdsLoopInfo) - kicked off here so it starts as soon as this tab renders.
+  const allAdIds = [...new Set(campaigns.flatMap((c) => [...c.adIds]))];
+  ensureGridAdsLoopInfo(allAdIds);
+  const adsLoopInfo = STATE.reportingGridAdsLoopInfo || new Map();
+  const adsLoopLoading = STATE.reportingGridAdsLoopLoading;
+
   // A single-day range (the page's own default) makes a "day-by-day" grid pointless - its one
   // column is just a bare day-of-month number ("09") with zero context, and its value always
   // equals the campaign's own total anyway. Showing both was confusing (reported as "what is 09,
   // this is incorrect data") - so the day columns only render at all once there's more than one
   // day to actually spread across, and even then each header carries the full date as a tooltip.
   const showDayGrid = dates.length > 1;
+  const dateGroups = showDayGrid ? groupDatesByMonth(dates) : [];
   function campaignRow(c) {
     let totalPlayouts = 0;
     let totalImpressions = 0;
     c.dayMap.forEach((d) => { totalPlayouts += d.playouts; totalImpressions += d.impressions; });
-    const avgMultiplier = totalPlayouts ? totalImpressions / totalPlayouts : null;
+    const meta = campaignsMeta?.get(c.campaign.trim().toLowerCase());
+    const realStart = meta?.start ? new Date(meta.start * 1000).toISOString().slice(0, 10) : '';
+    const realEnd = meta?.end ? new Date(meta.end * 1000).toISOString().slice(0, 10) : '';
+    const campaignDays = (meta?.start && meta?.end) ? Math.round((meta.end - meta.start) / 86400) + 1 : '';
+    const loopValues = [...c.adIds]
+      .map((id) => adsLoopInfo.get(String(id)))
+      .filter((a) => a && a.volume_type === 'cycle' && a.cycle_playouts != null)
+      .map((a) => a.cycle_playouts);
+    const loopCount = [...new Set(loopValues)].join(', ');
+    const statusCell = meta ? statusBadge(meta.status) : (campaignsMetaLoading ? '<span class="small muted">Loading...</span>' : '');
     return `<tr>
+      <td class="tsheet-nowrap">${esc(c.campaignId)}</td>
       <td>${esc(c.campaign)}</td>
       <td><span class="badge ${c.type === 'Programmatic' ? 'b-amber' : 'b-blue'}">${c.type}</span></td>
+      <td class="tsheet-nowrap">${esc(realStart)}</td>
+      <td class="tsheet-nowrap">${esc(realEnd)}</td>
+      <td class="tcenter">${campaignDays}</td>
+      <td class="tcenter">${esc(loopCount)}${!loopCount && adsLoopLoading ? '<span class="small muted">...</span>' : ''}</td>
+      <td>${statusCell}</td>
       <td class="tright">${totalPlayouts.toLocaleString()}</td>
       <td class="tright">${totalImpressions.toLocaleString()}</td>
-      <td class="tright">${avgMultiplier != null ? `${avgMultiplier.toFixed(1)}x` : ''}</td>
       ${showDayGrid ? dates.map((d) => {
         const day = c.dayMap.get(d);
         return `<td class="tsheet-cell${day ? ' tsheet-active' : ''}" title="${esc(d)}">${day ? `${day.playouts.toLocaleString()}<br><span class="small muted">${day.impressions.toLocaleString()}</span>` : ''}</td>`;
@@ -1108,17 +1210,22 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
   const focCampaigns = campaigns.filter((c) => isFocMarketingCampaign({ campaignName: c.campaign }));
   const bodyRows = regularCampaigns.map(campaignRow).join('');
   const focBodyRows = focCampaigns.map(campaignRow).join('');
-  const tableHead = `<thead><tr><th>Campaign</th><th>Type</th><th class="tright">Playouts</th><th class="tright">Impressions</th><th class="tright">Avg Multiplier</th>${showDayGrid ? dates.map((d) => `<th class="tsheet-day" title="${esc(d)}">${esc(d.slice(8, 10))}</th>`).join('') : ''}</tr></thead>`;
+  // Same two-row month-then-day header as Traffic Sheet's own renderDayGrid (trafficSheet.js) - a
+  // merged "Mon YYYY" row above the per-day columns, so a multi-month range reads the same way here
+  // as it does there.
+  const monthHeadRow = showDayGrid ? `<tr><th colspan="${TRAFFIC_GRID_META_COLS}"></th>${dateGroups.map((g) => `<th colspan="${g.dates.length}" class="tsheet-month-head">${esc(formatMonthLabel(g.month))}</th>`).join('')}</tr>` : '';
+  const dayHeadCells = showDayGrid ? dates.map((d) => `<th class="tsheet-day" title="${esc(d)}">${esc(d.slice(8, 10))}</th>`).join('') : '';
+  const tableHead = `<thead>${monthHeadRow}<tr><th>Campaign ID</th><th>Campaign Name</th><th>Type</th><th>Start</th><th>End</th><th class="tcenter">Days</th><th class="tcenter">Loop Count</th><th>Status</th><th class="tright">Playouts</th><th class="tright">Impressions</th>${dayHeadCells}</tr></thead>`;
 
   return `
     ${categoryTabsUi}
     ${typeFilterUi}
     <div class="card">
-      <div class="card-head"><h3>Traffic Data</h3><div class="desc">${campaigns.length} campaign(s)${showDayGrid ? ', day-by-day. Each day cell shows Playouts on top and Impressions below (hover a date header for the full date)' : ' - totals for'} from ${esc(start)} to ${esc(end)} - ${regularCampaigns.length} regular, ${focCampaigns.length} FOC/Marketing. "Avg Multiplier" = Impressions &divide; Playouts.</div></div>
+      <div class="card-head"><h3>Traffic Data</h3><div class="desc">${campaigns.length} campaign(s)${showDayGrid ? ', day-by-day. Each day cell shows Playouts on top and Impressions below (hover a date header for the full date)' : ' - totals for'} from ${esc(start)} to ${esc(end)} - ${regularCampaigns.length} regular, ${focCampaigns.length} FOC/Marketing. Start/End/Days/Status come from AiOO's Campaigns API (GET /campaigns) and Loop Count from its Ads API (GET /ads/{id}), both matched to these rows by name/line item.</div></div>
       <div class="tsheet-wrap">
         <table class="tsheet-table">
           ${tableHead}
-          <tbody>${bodyRows || `<tr><td colspan="${5 + (showDayGrid ? dates.length : 0)}"><div class="empty">No regular campaigns for this date range.</div></td></tr>`}</tbody>
+          <tbody>${bodyRows || `<tr><td colspan="${TRAFFIC_GRID_META_COLS + (showDayGrid ? dates.length : 0)}"><div class="empty">No regular campaigns for this date range.</div></td></tr>`}</tbody>
         </table>
       </div>
     </div>
@@ -1149,7 +1256,16 @@ function renderGenericTable(title, desc, rows, opts = {}) {
   if (!rows || !rows.length) return '<div class="card"><div class="empty">No data.</div></div>';
   const exclude = new Set(opts.excludeColumns || []);
   const columns = Object.keys(rows[0]).filter((c) => !exclude.has(c));
-  const tableRows = rows.slice(0, 200).map((r) => {
+  // Sortable on every column, keyed by the raw column name itself (accessor is just `row[c]`) -
+  // generic enough to work regardless of which dynamic columns a given endpoint happens to return.
+  // Without this, a large unsorted response (stats-dsps alone can be thousands of rows) shows
+  // whatever order the API returned, which is easy to mistake for "every column is 0/blank" when
+  // the rows with real activity are just further down - sorting by e.g. Requests/Impressions
+  // descending surfaces them immediately instead.
+  const accessors = {};
+  columns.forEach((c) => { accessors[c] = (r) => r[c]; });
+  const sortedRows = applySort(rows, title, accessors);
+  const tableRows = sortedRows.slice(0, 200).map((r) => {
     const flagged = opts.highlightRow ? opts.highlightRow(r) : false;
     return `<tr${flagged ? ' style="background:var(--red-bg);"' : ''}>${columns.map((c) => `<td>${esc(String(r[c] ?? ''))}</td>`).join('')}${flagged ? '<td><span class="badge b-red">No ad calls</span></td>' : (opts.highlightRow ? '<td></td>' : '')}</tr>`;
   }).join('');
@@ -1161,9 +1277,9 @@ function renderGenericTable(title, desc, rows, opts = {}) {
   return `
     <div class="bento-stats">${statTile('info', 'Rows', rows.length)}${flaggedCount ? statTile('alert', 'No Ad Calls', flaggedCount) : ''}${tiles}</div>
     <div class="card">
-      <div class="card-head"><h3>${esc(title)}</h3><div class="desc">${esc(desc)}${rows.length > 200 ? ' (showing first 200)' : ''}</div></div>
+      <div class="card-head"><h3>${esc(title)}</h3><div class="desc">${esc(desc)}${rows.length > 200 ? ' (showing first 200 of the current sort order)' : ''}</div></div>
       <div class="tsheet-wrap">
-        <table><thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}${opts.highlightRow ? '<th></th>' : ''}</tr></thead><tbody>${tableRows}</tbody></table>
+        <table><thead><tr>${columns.map((c) => sortTh(title, c, c)).join('')}${opts.highlightRow ? '<th></th>' : ''}</tr></thead><tbody>${tableRows}</tbody></table>
       </div>
     </div>
   `;
@@ -1306,7 +1422,9 @@ export function renderReporting() {
     } else if (tab === 'programmatic') {
       content += renderGenericTable('Programmatic Stats', `${rows.length} row(s) from GET /stats-dsps, ${startDate} to ${endDate}.`, rows, {
         sumFields: DSP_SUM_FIELDS,
-        excludeColumns: ['adv_id', 'adv_domain', 'c_id', 'c_name', 'a_id', 'a_name', 'd_id', 'd_name'],
+        // avg_mulitiplier (the vendor API's own field name/typo) dropped from the on-screen table -
+        // not wanted here, same call as the computed Avg Multiplier already removed from Traffic Data.
+        excludeColumns: ['adv_id', 'adv_domain', 'c_id', 'c_name', 'a_id', 'a_name', 'd_id', 'd_name', 'avg_mulitiplier'],
       });
     } else if (tab === 'placementsStats') {
       content += renderGenericTable('Placements Stats', `${rows.length} row(s) from GET /stats-placements, ${startDate} to ${endDate}. Placements with zero ad calls are flagged.`, rows, {

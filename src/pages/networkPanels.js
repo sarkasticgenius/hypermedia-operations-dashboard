@@ -11,6 +11,7 @@ import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtRelativeTime } from '../lib/format.js';
 import { aiooSiteCategory, aiooSiteDisplayName, SITE_CATEGORIES } from '../lib/aiooSiteCategory.js';
+import { sortTh, applySort } from '../lib/sortableTable.js';
 
 // Top-of-page "last pulled" stat strip, shared by every network console page - shows when the
 // last sync ran and what it found, with a View Sync Log button for reviewing mismatches over
@@ -62,7 +63,14 @@ registerModal('syncLog', (data) => {
   if (logs === null) return loadingCard();
   if (logs?.__error) return loadingCard(logs.__error);
 
-  const rows = logs.map((l) => {
+  const sortedLogs = applySort(logs, `syncLog_${integration}`, {
+    syncedAt: (l) => l.synced_at || '',
+    pulled: (l) => l.pulled_count ?? -1,
+    matched: (l) => l.matched_count ?? -1,
+    failed: (l) => l.failed_count ?? -1,
+    locationsUpdated: (l) => l.locations_updated ?? -1,
+  });
+  const rows = sortedLogs.map((l) => {
     const missing = l.missing_ids || [];
     return `
       <tr>
@@ -81,7 +89,7 @@ registerModal('syncLog', (data) => {
     <p class="small muted">Most recent ${logs.length} run(s). Each row's mismatch list shows Player Box IDs that were pulled from Asset Inventory but didn't get a response from the API (retired box, typo, or a domain/tenant mismatch) - use it to correct Asset Inventory data.</p>
     <div style="max-height:420px;overflow-y:auto;">
       <table>
-        <thead><tr><th>Synced At</th><th class="tright">Pulled</th><th class="tright">Matched</th><th class="tright">Failed</th><th class="tright">Locations Updated</th><th>Mismatches / Error</th></tr></thead>
+        <thead><tr>${sortTh(`syncLog_${integration}`, 'syncedAt', 'Synced At')}${sortTh(`syncLog_${integration}`, 'pulled', 'Pulled')}${sortTh(`syncLog_${integration}`, 'matched', 'Matched')}${sortTh(`syncLog_${integration}`, 'failed', 'Failed')}${sortTh(`syncLog_${integration}`, 'locationsUpdated', 'Locations Updated')}<th>Mismatches / Error</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -351,10 +359,36 @@ function renderIotDeviceTable(cfg) {
     const hay = `${d.deviceId} ${d.displayName} ${d.macAddress} ${d.venue} ${d.storeName} ${d.asset} ${d.entrance} ${d.platform} ${d.state}`.toLowerCase();
     return hay.includes(search);
   });
+  // Sorted on the already-filtered set (search + Active/All/Excluded) so sort order and filters
+  // compose the way a user expects, then paginated on top of that - matches the Asset Inventory
+  // list's own filter-then-sort-then-paginate order (assets.js).
+  const sorted = applySort(filtered, 'iotDevices', {
+    deviceId: (d) => d.deviceId || '',
+    name: (d) => d.displayName || d.macAddress || '',
+    mac: (d) => d.macAddress || '',
+    venue: (d) => d.venue || '',
+    platform: (d) => d.platform || '',
+    state: (d) => d.state || '',
+    connectivity: (d) => (d.online ? 1 : 0),
+    lastSeen: (d) => d.lastSeenUtc || '',
+  });
   const pageSize = 50;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const page = Math.min(STATE.iotDevicePage || 0, totalPages - 1);
-  const pageRows = filtered.slice(page * pageSize, page * pageSize + pageSize);
+  const pageRows = sorted.slice(page * pageSize, page * pageSize + pageSize);
+
+  // Venue cell shows the full location chain the vendor API gives per device - venue (mall/site),
+  // then store/aisle and the specific asset/entrance name within it, each on their own line -
+  // matching the vendor's own IoT Admin Console venue display instead of splitting store into a
+  // separate column, since "which physical screen/camera is this" is what actually distinguishes
+  // otherwise-identical rows at the same venue (e.g. IOT_5 vs IOT_6).
+  function venueCellHtml(d) {
+    const lines = [esc(d.venue || '-')];
+    if (d.storeName) lines.push(`<span class="small muted">${esc(d.storeName)}</span>`);
+    if (d.asset) lines.push(`<span class="small muted">${esc(d.asset)}</span>`);
+    if (d.entrance) lines.push(`<span class="small muted">${esc(d.entrance)}</span>`);
+    return lines.join('<br>');
+  }
 
   const rows = pageRows.map((d) => {
     const isExcluded = excludedSet.has(d.deviceId);
@@ -370,15 +404,14 @@ function renderIotDeviceTable(cfg) {
       <td class="small">${esc(d.deviceId)}</td>
       <td>${esc(d.displayName || '-')}</td>
       <td class="small">${esc(d.macAddress || '-')}</td>
-      <td class="small">${esc(d.venue || '-')}</td>
-      <td class="small">${esc(d.storeName || '-')}</td>
+      <td class="small">${venueCellHtml(d)}</td>
       <td class="small">${esc(d.platform)}</td>
       <td class="small">${esc(d.state)}</td>
       <td>${connBadge}</td>
       <td class="small">${d.lastSeenUtc ? esc(fmtRelativeTime(d.lastSeenUtc)) : 'never'}</td>
       <td>${admin ? `<button class="btn-sm" onclick="App.toggleIotDeviceExcluded('${esc(d.deviceId)}', ${!isExcluded})">${isExcluded ? 'Include' : 'Exclude'}</button>` : (isExcluded ? '<span class="small muted">Excluded</span>' : '')}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="10"><div class="empty">No devices match.</div></td></tr>`;
+  }).join('') || `<tr><td colspan="9"><div class="empty">No devices match.</div></td></tr>`;
 
   return `<div class="card">
     <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
@@ -394,7 +427,7 @@ function renderIotDeviceTable(cfg) {
     </div>
     <div style="max-height:480px;overflow-y:auto;">
       <table>
-        <thead><tr><th>Device ID</th><th>Name</th><th>MAC Address</th><th>Venue</th><th>Store</th><th>Platform</th><th>State</th><th>Connectivity</th><th>Last Seen</th><th></th></tr></thead>
+        <thead><tr>${sortTh('iotDevices', 'deviceId', 'Device ID')}${sortTh('iotDevices', 'name', 'Name')}${sortTh('iotDevices', 'mac', 'MAC Address')}${sortTh('iotDevices', 'venue', 'Venue')}${sortTh('iotDevices', 'platform', 'Platform')}${sortTh('iotDevices', 'state', 'State')}${sortTh('iotDevices', 'connectivity', 'Connectivity')}${sortTh('iotDevices', 'lastSeen', 'Last Seen')}<th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -690,25 +723,29 @@ registerModal('iotCategoryModal', (data) => {
     if (!bySite.has(site)) bySite.set(site, []);
     bySite.get(site).push(d);
   });
-  const sites = [...bySite.keys()].sort((a, b) => a.localeCompare(b));
-
-  const rows = sites.map((site) => {
+  const siteRows = [...bySite.keys()].map((site) => {
     const list = bySite.get(site);
-    const offline = list.filter((d) => !d.online).length;
-    return `<tr>
+    return { site, count: list.length, offline: list.filter((d) => !d.online).length };
+  });
+  const sortedSites = applySort(siteRows, 'iotCategorySites', {
+    site: (s) => aiooSiteDisplayName(s.site) || '',
+    devices: (s) => s.count,
+    offline: (s) => s.offline,
+  });
+
+  const rows = sortedSites.map(({ site, count, offline }) => `<tr>
       <td>${esc(aiooSiteDisplayName(site))}</td>
-      <td class="tright">${list.length}</td>
+      <td class="tright">${count}</td>
       <td class="tright">${offline}</td>
       <td><button class="btn-sm" onclick='App.viewIotSiteDevices(${jsonAttr(site)})'>View devices</button></td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="4"><div class="empty">No sites in this category.</div></td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="4"><div class="empty">No sites in this category.</div></td></tr>`;
 
   const label = category === 'Other' ? 'Other / Unclassified' : category;
   return `
     <h3>${esc(label)} - ${devices.length} device(s)</h3>
     ${category === 'Other' ? `<p class="small muted">These sites didn't match a known venue category (Metro/Malls/In-Store/Outdoor) or a known retail-chain name - likely orphaned, demo, or test devices rather than real venues. Review them below and exclude any that shouldn't count toward the fleet (Devices table on the main IoT Panel).</p>` : ''}
     <table>
-      <thead><tr><th>Site</th><th class="tright">Devices</th><th class="tright">Offline</th><th></th></tr></thead>
+      <thead><tr>${sortTh('iotCategorySites', 'site', 'Site')}${sortTh('iotCategorySites', 'devices', 'Devices')}${sortTh('iotCategorySites', 'offline', 'Offline')}<th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>

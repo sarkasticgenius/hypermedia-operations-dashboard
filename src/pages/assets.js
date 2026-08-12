@@ -224,7 +224,14 @@ function renderHistoryView(data) {
   const { assignments } = data;
   const months = [...new Set(assignments.map((a) => (a.date || '').slice(0, 7)).filter(Boolean))].sort().reverse();
   const monthFilter = STATE.assetHistoryMonth || '';
-  const visible = monthFilter ? assignments.filter((a) => (a.date || '').startsWith(monthFilter)) : assignments;
+  const visible = applySort(
+    monthFilter ? assignments.filter((a) => (a.date || '').startsWith(monthFilter)) : assignments,
+    'assetHistory',
+    {
+      date: (a) => a.date || '', asset: (a) => a.asset_name || '', location: (a) => a.location_name || '',
+      qty: (a) => a.qty ?? 0, deployedBy: (a) => a.deployed_by || '',
+    },
+  );
 
   const rows = visible.map((a) => `
     <tr>
@@ -251,7 +258,7 @@ function renderHistoryView(data) {
     <div class="card">
       ${visible.length === 0 ? '<div class="empty">No deployment history yet.</div>' : `
         <table>
-          <thead><tr><th>Date</th><th>Asset</th><th>Location</th><th class="tright">Qty</th><th>Deployed By</th></tr></thead>
+          <thead><tr>${sortTh('assetHistory', 'date', 'Date')}${sortTh('assetHistory', 'asset', 'Asset')}${sortTh('assetHistory', 'location', 'Location')}${sortTh('assetHistory', 'qty', 'Qty')}${sortTh('assetHistory', 'deployedBy', 'Deployed By')}</tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
