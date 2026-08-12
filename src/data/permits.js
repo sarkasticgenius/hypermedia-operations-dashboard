@@ -8,11 +8,19 @@ export async function listPermits() {
   return data;
 }
 
-export function permitStatus(p) {
-  if (!p.expiry_date) return 'Active';
+// Whole days between today and expiry_date (negative once expired), or null with no expiry_date
+// set at all - shared by permitStatus below and the Permits list's own "Days to Expire" column so
+// the two never disagree about what counts as expired/expiring-soon.
+export function permitDaysToExpire(p) {
+  if (!p.expiry_date) return null;
   const today = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00');
   const expiry = new Date(p.expiry_date + 'T00:00:00');
-  const diffDays = Math.round((expiry - today) / 86400000);
+  return Math.round((expiry - today) / 86400000);
+}
+
+export function permitStatus(p) {
+  const diffDays = permitDaysToExpire(p);
+  if (diffDays == null) return 'Active';
   if (diffDays < 0) return 'Expired';
   if (diffDays <= 30) return 'Expiring Soon';
   return 'Active';

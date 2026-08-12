@@ -71,6 +71,7 @@ export const TAB_DEFS = [
   { key: 'royals', label: 'Royals' },
   { key: 'gems', label: 'Gems' },
   { key: 'enoc', label: 'ENOC' },
+  { key: 'outdoor', label: 'Outdoor' },
   { key: 'focMarketing', label: 'FOC / Marketing' },
 ];
 
@@ -321,6 +322,20 @@ export function venueMatchesTab(venue, tabKey) {
     // venueType values, ~103 combined regular-station venues vs 17 bridge ones in a real pull).
     case 'metro':
       return venueType === 'METRO';
+    // Standalone outdoor screens that aren't SHZ Bridges (venueType "Outdoor", not "Metro
+    // Outdoor" - confirmed as a real, distinct venueType in the data: Expo City, Garden Plaza,
+    // Modon Hudayriyat, WTC Mall-AUH, Dubai Chamber Outdoor, Dubai Festival City's outdoor
+    // surface, etc.). Previously these matched NO tab at all - only visible on Today's
+    // Campaigns/FOC, never under a dedicated category. Excludes anything a more specific tab
+    // already claims by name/network (ENOC, Gems, Royals, Stores, MAF) so a venue doesn't show
+    // up twice; genuine bridges are normalized to "Metro Outdoor" before this ever runs (see
+    // normalizeBridgeVenueTypes) so they aren't double-counted here either.
+    case 'outdoor':
+      return venueType === 'OUTDOOR' && !name.includes('BRIDGE') && !isMafVenue(venue)
+        && !(name.includes('ENOC') || network.includes('ENOC'))
+        && !GEMS_VENUE_KEYWORDS.some((k) => name.includes(k))
+        && !network.includes('ROYALS')
+        && !STORE_KEYWORDS.some((k) => name.includes(k) || network.includes(k));
     default:
       return false;
   }
@@ -867,6 +882,32 @@ export function setTrafficSheetBridgeNetwork(key) {
   setState({ trafficSheetBridgeNetwork: key === '__all__' ? undefined : (key === '__blank__' ? '' : key) });
 }
 
+// Some campaign records tag a genuine SHZ Bridge venue's venueType as plain "Outdoor" instead of
+// "Metro Outdoor" (confirmed against real data: the exact same venue name - e.g. "Jabel Ali DXB",
+// "World Trade Centre AUH", "Dubai Internet City DXB", "Mall of Emirates AUH" - shows up with BOTH
+// venueType values across different campaigns, while its network is always one of the bridge-only
+// network names). venueMatchesTab's 'shzBridges' case only recognizes venueType === 'METRO
+// OUTDOOR', so a campaign tagged the "Outdoor" way for one of these venues silently matched no tab
+// at all instead. Fixed here, once, right after the raw fetch (shared by Traffic Sheet's own fetch
+// below and the Client Campaigns Monitor, which also calls fetchTrafficSheetCampaigns) - uses each
+// venue's NETWORK as the signal rather than a hardcoded network name list, since bridge network
+// values are themselves seasonal/per-campaign branding (see bridgeNetworksAvailable above), so
+// "which networks are bridge-only" has to be derived from this same pull, not hardcoded. Mutates
+// the venue objects in place - safe since this is freshly-fetched data with no other holders yet.
+function normalizeBridgeVenueTypes(data) {
+  const campaigns = data?.campaigns || [];
+  const bridgeNetworks = new Set();
+  campaigns.forEach((c) => (c.venues || []).forEach((v) => {
+    if ((v.venueType || '').toUpperCase() === 'METRO OUTDOOR' && v.network) bridgeNetworks.add(v.network);
+  }));
+  if (bridgeNetworks.size) {
+    campaigns.forEach((c) => (c.venues || []).forEach((v) => {
+      if ((v.venueType || '').toUpperCase() === 'OUTDOOR' && bridgeNetworks.has(v.network)) v.venueType = 'METRO OUTDOOR';
+    }));
+  }
+  return data;
+}
+
 // Re-fetches whenever the API-backed month range needs to change (a different date range was
 // picked, or the location dropdown changed doesn't need this - only the API call does).
 // Raw fetch against the live API, no STATE side effects - shared by Traffic Sheet's own
@@ -876,7 +917,7 @@ export async function fetchTrafficSheetCampaigns(startMonth, endMonth) {
   const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { startMonth, endMonth } });
   if (error) throw error;
   if (data?.error) throw new Error(data.error);
-  return data;
+  return normalizeBridgeVenueTypes(data);
 }
 
 async function runTrafficSheetFetch(startDate, endDate) {
