@@ -9,7 +9,7 @@ import { listSyncLogs } from '../data/syncLogs.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
-import { esc } from '../lib/format.js';
+import { esc, fmtRelativeTime } from '../lib/format.js';
 import { aiooSiteCategory, aiooSiteDisplayName, SITE_CATEGORIES } from '../lib/aiooSiteCategory.js';
 
 // Top-of-page "last pulled" stat strip, shared by every network console page - shows when the
@@ -343,6 +343,14 @@ function renderIotDeviceTable(cfg) {
 
   const rows = pageRows.map((d) => {
     const isExcluded = excludedSet.has(d.deviceId);
+    // Connectivity badge is computed from status.ts staleness server-side (iot-sync), NOT the
+    // State column - State is the vendor's last self-reported analytics mode and stays frozen at
+    // whatever it was doing when the device actually went dark, so it's never a reliable "is this
+    // thing actually reachable" signal on its own (confirmed: real devices offline for months
+    // still show State values like "Ready"/"Tracking"/"Idle", never "Offline").
+    const connBadge = d.online
+      ? '<span class="badge b-blue">Online</span>'
+      : '<span class="badge b-red">Offline</span>';
     return `<tr${isExcluded ? ' style="opacity:.55;"' : ''}>
       <td class="small">${esc(d.deviceId)}</td>
       <td>${esc(d.displayName || '-')}</td>
@@ -351,9 +359,11 @@ function renderIotDeviceTable(cfg) {
       <td class="small">${esc(d.storeName || '-')}</td>
       <td class="small">${esc(d.platform)}</td>
       <td class="small">${esc(d.state)}</td>
+      <td>${connBadge}</td>
+      <td class="small">${d.lastSeenUtc ? esc(fmtRelativeTime(d.lastSeenUtc)) : 'never'}</td>
       <td>${admin ? `<button class="btn-sm" onclick="App.toggleIotDeviceExcluded('${esc(d.deviceId)}', ${!isExcluded})">${isExcluded ? 'Include' : 'Exclude'}</button>` : (isExcluded ? '<span class="small muted">Excluded</span>' : '')}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="8"><div class="empty">No devices match.</div></td></tr>`;
+  }).join('') || `<tr><td colspan="10"><div class="empty">No devices match.</div></td></tr>`;
 
   return `<div class="card">
     <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
@@ -369,7 +379,7 @@ function renderIotDeviceTable(cfg) {
     </div>
     <div style="max-height:480px;overflow-y:auto;">
       <table>
-        <thead><tr><th>Device ID</th><th>Name</th><th>MAC Address</th><th>Venue</th><th>Store</th><th>Platform</th><th>State</th><th></th></tr></thead>
+        <thead><tr><th>Device ID</th><th>Name</th><th>MAC Address</th><th>Venue</th><th>Store</th><th>Platform</th><th>State</th><th>Connectivity</th><th>Last Seen</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -457,10 +467,10 @@ function renderIotSiteHeatmap() {
 // "Category - Venue Name" prefix convention confirmed in real device storeName data (venue only
 // ever gets filled in via the same Asset Inventory match this view exists because of, so it's blank
 // for every device right now - storeName carries the vendor's site label instead).
-// Colored the same way as the location-matched heatmap (device.state === 'Offline' share) - unlike
-// the old fallback, this doesn't depend on Offline Status Values calibration (Settings >
-// Integrations), since 'Offline' here is the vendor's own reported per-device state, not a mapped
-// status field.
+// Colored by real connectivity (device.online, computed server-side in iot-sync from status.ts
+// staleness) - NOT device.state, which is the vendor's last self-reported analytics mode and
+// stays frozen at whatever it was doing when the device actually went dark (confirmed against
+// real data: 0 of 559 devices ever reported state "Offline", including ones stale for months).
 function renderIotCategoryHeatmap(cfg) {
   const excludedSet = new Set(cfg.excludedDeviceIds || []);
   const activeDevices = (cfg.lastDevices || []).filter((d) => !excludedSet.has(d.deviceId));
@@ -478,7 +488,7 @@ function renderIotCategoryHeatmap(cfg) {
 
   const tiles = visibleCategories.map((category) => {
     const devices = byCategory.get(category);
-    const offline = devices.filter((d) => d.state === 'Offline').length;
+    const offline = devices.filter((d) => !d.online).length;
     const total = devices.length;
     const color = heatmapColor({ offline, total });
     const siteCount = new Set(devices.map((d) => d.storeName || d.venue || 'Unassigned')).size;
@@ -535,6 +545,7 @@ export function renderIotPanel() {
   ${siteHeatmap}
   <div class="small muted" style="margin:10px 0 8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${c.lastSync ? new Date(c.lastSync).toLocaleString() : 'last sync'}.</div>
   <div class="bento-grid">
+    ${renderIotChartCard('Devices by Connectivity', donutItems(b.byConnectivity), 5)}
     ${renderIotChartCard('Devices by Platform', donutItems(b.byPlatform), 0)}
     ${renderIotChartCard('Devices by State', canonicalStateItems(b.byState), 1)}
     ${renderIotChartCard('Devices by Camera Type', donutItems(b.byCameraType), 2)}
@@ -657,7 +668,7 @@ registerModal('iotCategoryModal', (data) => {
 
   const rows = sites.map((site) => {
     const list = bySite.get(site);
-    const offline = list.filter((d) => d.state === 'Offline').length;
+    const offline = list.filter((d) => !d.online).length;
     return `<tr>
       <td>${esc(aiooSiteDisplayName(site))}</td>
       <td class="tright">${list.length}</td>

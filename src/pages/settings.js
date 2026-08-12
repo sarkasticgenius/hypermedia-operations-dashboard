@@ -487,10 +487,13 @@ function renderGrassfishApiCard(settings) {
 // aioo IoT Admin Console - both endpoints are confirmed live: POST .../auth with
 // username/password returns a token, then GET the Device List Path with that token in a
 // "User-Token" header (not Authorization: Bearer) returns {"result":[...]}. Always shows the
-// fleet-wide "Devices by platform/state/camera type/version" breakdown on the IoT Panel (no
-// calibration needed for those - they're plain labels). The per-Location online/offline rollup
-// still needs "Offline Status Values" set once, same as Broadsign/Grassfish, since which raw
-// device states count as "down" is a judgment call.
+// fleet-wide "Devices by platform/state/camera type/version" breakdown on the IoT Panel.
+// Connectivity (online/offline, for both the "Devices by ..." breakdown and the per-Location
+// heatmap) is computed from status.ts staleness, not a raw-state allowlist - confirmed against
+// real data that status.state never actually contains "Offline" (a device offline for 16+ hours
+// just freezes at whatever analytics state it was last in), so there's nothing to calibrate;
+// "Stale After" below only needs changing if the fleet's normal check-in cadence turns out to be
+// longer than 30 minutes (see iot-sync's header comment for the real-data gap that default sits in).
 function renderIotApiCard(settings) {
   const cfg = settings.iotApi || {};
   const testing = STATE.testing_iotApi;
@@ -515,9 +518,9 @@ function renderIotApiCard(settings) {
           <input id="int-iotApi-apiKey" type="password" value="${esc(cfg.apiKey || '')}">
           <div class="small muted" style="margin-top:4px;">Stored for when aioo issues a key-based auth path - not used by the sync yet, which still logs in with Username/Password above.</div>
         </div>
-        <div class="field"><label>Offline Status Values</label>
-          <input id="int-iotApi-offlineStatusValues" value="${esc(cfg.offlineStatusValues || '')}" placeholder="e.g. Offline,Unknown">
-          <div class="small muted" style="margin-top:4px;">Comma-separated device states (from the counts below) that should count as offline for the per-location heatmap. The "Devices by ..." breakdown on the IoT Panel works without this being set.</div>
+        <div class="field"><label>Stale After (minutes)</label>
+          <input id="int-iotApi-staleAfterMinutes" type="number" min="1" value="${esc(cfg.staleAfterMinutes || '30')}">
+          <div class="small muted" style="margin-top:4px;">A device counts as Offline once it's gone longer than this without checking in (status.ts vs now) - not based on its reported State, which stays frozen at whatever it was last doing rather than switching to "Offline". Default of 30 minutes is well clear of real check-in cadence (confirmed: online devices check in every 1-2 minutes; genuinely down ones are stale by 11+ hours).</div>
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-iotApi-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
