@@ -1,4 +1,4 @@
-import { STATE, loadData, invalidate, openModal, toast, setState } from '../state.js';
+import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
 import { getSetting, saveSetting } from '../data/settings.js';
 import { listLocations } from '../data/locations.js';
@@ -10,6 +10,7 @@ import { supabase } from '../supabaseClient.js';
 import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
+import { aiooSiteCategory, aiooSiteDisplayName, SITE_CATEGORIES } from '../lib/aiooSiteCategory.js';
 
 // Top-of-page "last pulled" stat strip, shared by every network console page - shows when the
 // last sync ran and what it found, with a View Sync Log button for reviewing mismatches over
@@ -443,48 +444,58 @@ function renderIotSiteHeatmap() {
   </div>`;
 }
 
-// Interim per-site tiles straight from the device list's own data (no Asset Inventory/Location
+// Category-aggregated tiles straight from the device list's own data (no Asset Inventory/Location
 // matching needed) - shown only when the location-matched heatmap above has nothing yet, which
 // today means every deployment until IoT cameras get tagged Player Type = "IoT" with a matching
-// Player Box ID in Asset Inventory (see renderIotSiteHeatmap). Mirrors Grassfish's own
-// pre-calibration "Screens by Venue" fallback (see renderGrassfishPanel).
-// Groups by d.storeName rather than d.venue: venue only ever gets filled in via the same Asset
-// Inventory match this fallback exists because of, so it's blank for every device right now - the
-// vendor's own site label (e.g. "Malls - Dragon Mart-1") lives in storeName instead.
-// Deliberately flat-colored (no offline-share heatmap) - Offline Status Values (Settings >
-// Integrations) has never been validated against anything real, since no location has ever matched
-// to check it against, and today it's set to literally every possible state (which would render
-// every tile 100% "offline" and be actively misleading) - color-by-status can follow once that
-// calibration has real data to be checked against.
-function renderIotVenueFallback(cfg) {
+// Player Box ID in Asset Inventory (see renderIotSiteHeatmap).
+// Replaces the old one-tile-per-site grouping (which flooded the grid with a separate tile per
+// mall/station - every "Malls - X"/"Metro - X" venue got its own tile) with one tile per venue
+// CATEGORY (Metro/Malls/In-Store/Outdoor/Other), aggregating every site within it - matches how the
+// Broadsign/Grassfish heatmap merges same-chain locations into one tile above, just one level
+// coarser since these devices aren't matched to a Location yet.
+// Category comes from aiooSiteCategory() (src/lib/aiooSiteCategory.js), which reads the
+// "Category - Venue Name" prefix convention confirmed in real device storeName data (venue only
+// ever gets filled in via the same Asset Inventory match this view exists because of, so it's blank
+// for every device right now - storeName carries the vendor's site label instead).
+// Colored the same way as the location-matched heatmap (device.state === 'Offline' share) - unlike
+// the old fallback, this doesn't depend on Offline Status Values calibration (Settings >
+// Integrations), since 'Offline' here is the vendor's own reported per-device state, not a mapped
+// status field.
+function renderIotCategoryHeatmap(cfg) {
   const excludedSet = new Set(cfg.excludedDeviceIds || []);
   const activeDevices = (cfg.lastDevices || []).filter((d) => !excludedSet.has(d.deviceId));
   if (!activeDevices.length) return '';
 
-  const bySite = new Map();
+  const byCategory = new Map(SITE_CATEGORIES.map((c) => [c, []]));
   activeDevices.forEach((d) => {
     const site = d.storeName || d.venue || 'Unassigned';
-    if (!bySite.has(site)) bySite.set(site, []);
-    bySite.get(site).push(d);
+    byCategory.get(aiooSiteCategory(site)).push(d);
   });
-  const sites = [...bySite.keys()].sort((a, b) => a.localeCompare(b));
-  const search = (STATE.networkSearch || '').trim().toLowerCase();
-  const visibleSites = search ? sites.filter((v) => v.toLowerCase().includes(search)) : sites;
 
-  const tiles = visibleSites.map((v) => {
-    const list = bySite.get(v);
-    return `<div style="background:#2f6fb3;border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;">
-      <div style="font-size:12.5px;font-weight:700;line-height:1.3;">${esc(v)}</div>
-      <div style="font-size:11px;opacity:.95;">${list.length} device${list.length === 1 ? '' : 's'}</div>
+  const search = (STATE.networkSearch || '').trim().toLowerCase();
+  const populatedCategories = SITE_CATEGORIES.filter((c) => byCategory.get(c).length);
+  const visibleCategories = search ? populatedCategories.filter((c) => c.toLowerCase().includes(search)) : populatedCategories;
+
+  const tiles = visibleCategories.map((category) => {
+    const devices = byCategory.get(category);
+    const offline = devices.filter((d) => d.state === 'Offline').length;
+    const total = devices.length;
+    const color = heatmapColor({ offline, total });
+    const siteCount = new Set(devices.map((d) => d.storeName || d.venue || 'Unassigned')).size;
+    const label = category === 'Other' ? 'Other / Unclassified' : category;
+    const flag = category === 'Other' ? ` <span style="background:rgba(255,255,255,.25);border-radius:4px;padding:1px 5px;font-size:10px;font-weight:600;">check</span>` : '';
+    return `<div style="background:${color};border-radius:10px;padding:12px;color:#fff;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;" onclick="App.openIotCategoryModal('${esc(category)}')" title="Click to see sites and devices">
+      <div style="font-size:13px;font-weight:700;line-height:1.3;">${esc(label)}${flag} <span style="font-weight:400;opacity:.85;">(${siteCount} site${siteCount === 1 ? '' : 's'})</span></div>
+      <div style="font-size:11px;opacity:.95;">${total} device${total === 1 ? '' : 's'} - ${offline} offline</div>
     </div>`;
   }).join('');
 
   return `<div class="card">
     <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-      <div><h3>Devices by Site</h3><div class="desc">${sites.length} site(s) reported by the device list itself. Interim view until Asset Inventory has these cameras tagged Player Type = "IoT" with a matching Player Box ID - once that's done this switches to the same location-matched, offline-colored Site Status Heatmap Broadsign/Grassfish use.</div></div>
-      <input id="net-search" placeholder="Search by site name..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+      <div><h3>Devices by Category</h3><div class="desc">${activeDevices.length} device(s) across ${populatedCategories.length} categor${populatedCategories.length === 1 ? 'y' : 'ies'}, colored by offline share - green = all online, red = high offline share. "Other / Unclassified" is devices whose site name doesn't match a known venue category (Metro/Malls/In-Store/Outdoor) - review it for orphaned, demo, or stray devices. Click a tile to see its sites and drill into devices.</div></div>
+      <input id="net-search" placeholder="Search by category..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
     </div>
-    ${visibleSites.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No site matches "${esc(STATE.networkSearch || '')}".</div>`}
+    ${visibleCategories.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No category matches "${esc(STATE.networkSearch || '')}".</div>`}
   </div>`;
 }
 
@@ -512,9 +523,9 @@ export function renderIotPanel() {
 
   // The location-matched heatmap only has data once Asset Inventory has these cameras tagged
   // Player Type = "IoT" with a matching Player Box ID (same prerequisite Broadsign/Grassfish
-  // have) - falls back to grouping the raw device list by its own venue field until then, so the
-  // page still shows a useful per-venue breakdown from day one.
-  const siteHeatmap = renderIotSiteHeatmap() || renderIotVenueFallback(c);
+  // have) - falls back to the category-aggregated heatmap (Metro/Malls/In-Store/Outdoor/Other)
+  // until then, so the page still shows a useful, offline-colored breakdown from day one.
+  const siteHeatmap = renderIotSiteHeatmap() || renderIotCategoryHeatmap(c);
 
   if (!b || !b.totalDevices) {
     return `${statusBar}${siteHeatmap}<div class="card"><div class="empty">No live device data yet.${admin ? ' Configure the API in Settings, then Sync Now.' : ' Ask an Admin to configure this.'}</div></div>`;
@@ -538,6 +549,18 @@ export function openOfflineAssetsModal(opts) {
 
 export function openGrassfishVenueModal(venue) {
   openModal('grassfishVenueModal', { venue });
+}
+
+export function openIotCategoryModal(category) {
+  openModal('iotCategoryModal', { category });
+}
+
+// Jumps to the existing Devices table (below the heatmap on the IoT Panel) pre-filtered to one
+// site, rather than building a second nested device-list modal - "All" so a site with only
+// excluded/offline devices isn't hidden by the default "Active devices" filter.
+export function viewIotSiteDevices(site) {
+  closeModal();
+  setState({ iotDeviceSearch: site, iotDevicePage: 0, iotDeviceFilter: 'all' });
 }
 
 export async function runNetworkSync(settingKey, functionName) {
@@ -609,6 +632,43 @@ registerModal('offlineAssetsModal', (data) => {
       ${(ticketAddOk && bulkPrefill && items.length > 1) ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(bulkPrefill)})'>Create Ticket for All</button>` : ''}
       <button class="btn-sm" onclick="App.closeModal()">Close</button>
     </div>
+  `;
+});
+
+registerModal('iotCategoryModal', (data) => {
+  const category = data.category;
+  const cfg = STATE.pageData.iotApi?.data || {};
+  const excludedSet = new Set(cfg.excludedDeviceIds || []);
+  const devices = (cfg.lastDevices || []).filter((d) => !excludedSet.has(d.deviceId) && aiooSiteCategory(d.storeName || d.venue || 'Unassigned') === category);
+
+  const bySite = new Map();
+  devices.forEach((d) => {
+    const site = d.storeName || d.venue || 'Unassigned';
+    if (!bySite.has(site)) bySite.set(site, []);
+    bySite.get(site).push(d);
+  });
+  const sites = [...bySite.keys()].sort((a, b) => a.localeCompare(b));
+
+  const rows = sites.map((site) => {
+    const list = bySite.get(site);
+    const offline = list.filter((d) => d.state === 'Offline').length;
+    return `<tr>
+      <td>${esc(aiooSiteDisplayName(site))}</td>
+      <td class="tright">${list.length}</td>
+      <td class="tright">${offline}</td>
+      <td><button class="btn-sm" onclick='App.viewIotSiteDevices(${jsonAttr(site)})'>View devices</button></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="4"><div class="empty">No sites in this category.</div></td></tr>`;
+
+  const label = category === 'Other' ? 'Other / Unclassified' : category;
+  return `
+    <h3>${esc(label)} - ${devices.length} device(s)</h3>
+    ${category === 'Other' ? `<p class="small muted">These sites didn't match a known venue category (Metro/Malls/In-Store/Outdoor) or a known retail-chain name - likely orphaned, demo, or test devices rather than real venues. Review them below and exclude any that shouldn't count toward the fleet (Devices table on the main IoT Panel).</p>` : ''}
+    <table>
+      <thead><tr><th>Site</th><th class="tright">Devices</th><th class="tright">Offline</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
   `;
 });
 

@@ -554,8 +554,15 @@ function renderAssetInventoryApiCard(settings) {
           <div class="field"><label>Auth Header Name (optional)</label><input id="int-ai-authHeaderName" value="${esc(cfg.authHeaderName || '')}" placeholder="Authorization"></div>
           <div class="field"><label>Auth Header Value (optional)</label><input id="int-ai-authHeaderValue" type="password" value="${esc(cfg.authHeaderValue || '')}" placeholder="Bearer ..."></div>
         </div>
+        <div class="small muted" style="margin:-6px 0 6px;">Join endpoints (optional) - only fetched when Field Mapping below references them (see "_venue."/"_location."/"_network." below). Leave blank to use each one's default path.</div>
+        <div class="grid2">
+          <div class="field"><label>Venues Path (optional)</label><input id="int-ai-venuesPath" value="${esc(cfg.venuesPath || '')}" placeholder="/inventory/venues"></div>
+          <div class="field"><label>Locations Path (optional)</label><input id="int-ai-locationsPath" value="${esc(cfg.locationsPath || '')}" placeholder="/inventory/locations"></div>
+        </div>
+        <div class="field"><label>Networks Path (optional)</label><input id="int-ai-networksPath" value="${esc(cfg.networksPath || '')}" placeholder="/inventory/networks"></div>
         <div class="field"><label>Field Mapping (JSON: our column -&gt; source field path)</label>
           <textarea id="int-ai-fieldMapping" rows="4" style="font-family:monospace;font-size:12px;">${esc(JSON.stringify(cfg.fieldMapping || { source_asset_id: 'id', name: 'name', venue: 'venue', location: 'location', category: 'category' }, null, 2))}</textarea>
+          <div class="small muted" style="margin-top:4px;">If an asset carries a venue_id/location_id FK instead of a name, map e.g. <code>"venue": "_venue.name"</code> and this pulls the Venues Path above to resolve it. Networks are many-to-many, not a plain column - map <code>"networks": "_network.name"</code> (single network_id FK) or <code>"networks": "_networks"</code> (a network_ids array) to resolve and link them via the Networks Path above; if the source already puts the network name(s) directly on the asset, just map <code>"networks"</code> straight to that field (no join needed).</div>
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-ai-enabled" style="width:auto;" ${cfg.enabled ? 'checked' : ''}> Enabled</label>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
@@ -581,6 +588,9 @@ export async function saveAssetInventoryApiForm(event) {
   cfg.clientSecret = document.getElementById('int-ai-clientSecret').value.trim();
   cfg.authHeaderName = document.getElementById('int-ai-authHeaderName').value.trim();
   cfg.authHeaderValue = document.getElementById('int-ai-authHeaderValue').value.trim();
+  cfg.venuesPath = document.getElementById('int-ai-venuesPath').value.trim();
+  cfg.locationsPath = document.getElementById('int-ai-locationsPath').value.trim();
+  cfg.networksPath = document.getElementById('int-ai-networksPath').value.trim();
   cfg.enabled = document.getElementById('int-ai-enabled').checked;
   try {
     cfg.fieldMapping = JSON.parse(document.getElementById('int-ai-fieldMapping').value || '{}');

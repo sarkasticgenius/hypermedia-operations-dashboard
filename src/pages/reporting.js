@@ -25,6 +25,7 @@ import { esc } from '../lib/format.js';
 import { exportReportingCampaignExcel, exportToExcel } from '../lib/excelExport.js';
 import { exportCampaignPptxReport } from '../lib/pptxReport.js';
 import { isFocMarketingCampaign } from './trafficSheet.js';
+import { listAssetInventory } from '../data/assetsInventory.js';
 
 const REPORTING_TABS = [
   { key: 'adsStats', label: 'Ads Stats' },
@@ -250,9 +251,18 @@ export async function downloadTabExcel() {
   } else if (tab === 'trafficSheet') {
     const directRaw = STATE.reportingAdsStats;
     const dspsRaw = STATE.reportingDsps;
-    const directRows = directRaw ? extractRows(directRaw) : [];
-    const dspsRows = dspsRaw ? extractRows(dspsRaw) : [];
+    let directRows = directRaw ? extractRows(directRaw) : [];
+    let dspsRows = dspsRaw ? extractRows(dspsRaw) : [];
     if (!directRows.length && !dspsRows.length) { toast('No traffic data loaded yet', 'error'); return; }
+    const categoryFilter = STATE.reportingTrafficCategory || 'all';
+    const assetInventoryForCategory = STATE.pageData.assetInventoryForReportingCategories?.data;
+    if (categoryFilter !== 'all' && assetInventoryForCategory) {
+      const venueCategoryMap = buildVenueCategoryMap(assetInventoryForCategory);
+      const directFieldsAll = directRows.length ? detectAllFields(directRows) : {};
+      const dspsFieldsAll = dspsRows.length ? detectAllFields(dspsRows) : {};
+      directRows = directRows.filter((r) => rowMatchesCategory(r, directFieldsAll.site, categoryFilter, venueCategoryMap));
+      dspsRows = dspsRows.filter((r) => rowMatchesCategory(r, dspsFieldsAll.site, categoryFilter, venueCategoryMap));
+    }
     const directFields = directRows.length ? detectAllFields(directRows) : {};
     const dspsFields = dspsRows.length ? detectAllFields(dspsRows) : {};
     const typeFilter = STATE.reportingTrafficType || 'all';
@@ -841,6 +851,60 @@ function renderOverview(rows, fields) {
 }
 
 export function setTrafficTypeFilter(v) { setState({ reportingTrafficType: v }); }
+export function setTrafficCategoryTab(v) { setState({ reportingTrafficCategory: v }); }
+
+// Venue-category classification for Reporting's site names - lets Traffic Data be browsed by
+// category the same way the separate Traffic Sheet workspace is, without a venueType/network field
+// (the AiOO Reporting API's /stats-ads site names are bare venue names like "Dubai Festival City",
+// "Al Rigga", "ENOC Dubai" - confirmed against real data they do NOT carry a "Category - " prefix
+// the way IoT device storeName does, so that convention doesn't apply here).
+// Asset Inventory's own `category` column (Metro/Malls/In-Store/Outdoor/Petrol Stations - the same
+// categorization an admin already maintains for every physical screen) turned out to be a reliable,
+// already-populated ground truth for these exact venue names (spot-checked against real Reporting
+// site names: "Al Rigga"->Metro, "Burjuman Mall"->Malls, "ENOC Dubai"->Petrol Stations, "Union Coop
+// AL WARQA"->In-Store, etc. - near-exact matches). Built as name -> most-common-category (by row
+// count) since a handful of venue names legitimately span two physical venues in different
+// categories (e.g. "Mall of the Emirates" is both a Metro station and a separate MAF mall - same
+// ambiguity trafficSheet.js documents for its own venueType-based matching).
+export const REPORTING_SITE_CATEGORIES = ['Metro', 'Malls', 'In-Store', 'Petrol Stations', 'Outdoor', 'Other'];
+const CATEGORY_NORMALIZE = { 'in-store': 'In-Store', 'in store': 'In-Store', malls: 'Malls', mall: 'Malls', metro: 'Metro', outdoor: 'Outdoor', 'petrol stations': 'Petrol Stations' };
+const REPORTING_RETAIL_CHAIN_KEYWORDS = ['LULU', 'UNION COOP', 'ADCOOP', 'CARREFOUR'];
+
+function buildVenueCategoryMap(assetInventory) {
+  const counts = new Map(); // normalized venue name -> Map<category, count>
+  (assetInventory || []).forEach((r) => {
+    const venue = String(r.venue || '').trim().toLowerCase();
+    const category = CATEGORY_NORMALIZE[String(r.category || '').trim().toLowerCase()];
+    if (!venue || !category) return;
+    if (!counts.has(venue)) counts.set(venue, new Map());
+    const byCategory = counts.get(venue);
+    byCategory.set(category, (byCategory.get(category) || 0) + 1);
+  });
+  const map = new Map();
+  counts.forEach((byCategory, venue) => {
+    let best = null; let bestCount = 0;
+    byCategory.forEach((count, category) => { if (count > bestCount) { best = category; bestCount = count; } });
+    if (best) map.set(venue, best);
+  });
+  return map;
+}
+
+function reportingSiteCategory(rawName, venueCategoryMap) {
+  const name = String(rawName || '').trim();
+  if (!name) return 'Other';
+  const known = venueCategoryMap.get(name.toLowerCase());
+  if (known) return known;
+  const upper = name.toUpperCase();
+  if (REPORTING_RETAIL_CHAIN_KEYWORDS.some((k) => upper.includes(k))) return 'In-Store';
+  if (upper.includes('ENOC')) return 'Petrol Stations';
+  return 'Other';
+}
+
+function rowMatchesCategory(row, siteField, category, venueCategoryMap) {
+  if (category === 'all') return true;
+  if (!siteField) return false;
+  return reportingSiteCategory(row[siteField], venueCategoryMap) === category;
+}
 
 // Site-level rollup: how many distinct campaigns ran on each site (any type), so it's obvious at a
 // glance which malls/locations are busiest - matches trafficSheet.js's own location-centric view,
@@ -879,12 +943,13 @@ function renderTrafficByLocation(campaigns) {
 // clearly instead of just being absent from stats-ads/stats-dsps entirely. Only rendered when
 // Placements Stats has been loaded this session (that's the only source for the "no ads at all"
 // case - stats-ads/stats-dsps simply don't have a row for a placement with zero activity).
-function renderPlacementAdCoverage(directRows, directFields, dspsRows, dspsFields) {
+function renderPlacementAdCoverage(directRows, directFields, dspsRows, dspsFields, category, venueCategoryMap) {
   const statsRaw = STATE.reportingPlacementsStats;
   if (!statsRaw) return '<div class="card"><div class="empty">Open Placements Stats first to see which placements have no ads running - stats-ads/stats-dsps only ever include placements that already have activity, so a placement with zero ads never appears there at all.</div></div>';
-  const statsRows = extractRows(statsRaw);
+  let statsRows = extractRows(statsRaw);
   const statsFields = statsRows.length ? detectAllFields(statsRows) : {};
   if (!statsFields.site || !statsFields.placement) return '';
+  if (category && category !== 'all') statsRows = statsRows.filter((r) => rowMatchesCategory(r, statsFields.site, category, venueCategoryMap));
 
   const adCountByScreen = new Map();
   function ingest(rows, fields) {
@@ -932,10 +997,42 @@ function renderPlacementAdCoverage(directRows, directFields, dspsRows, dspsField
 // across both types. Also includes a By Location rollup and a Placements ad-coverage check
 // (mirrors the "which malls are running how many campaigns" view from the separate Traffic Sheet
 // workspace, and flags dead/unused placements) - see the two render functions above.
-function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
+function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
   const typeFilter = STATE.reportingTrafficType || 'all';
-  const directFields = directRows.length ? detectAllFields(directRows) : {};
-  const dspsFields = dspsRows.length ? detectAllFields(dspsRows) : {};
+  const categoryFilter = STATE.reportingTrafficCategory || 'all';
+  const directFieldsAll = directRowsAll.length ? detectAllFields(directRowsAll) : {};
+  const dspsFieldsAll = dspsRowsAll.length ? detectAllFields(dspsRowsAll) : {};
+
+  // Venue-category sub-tabs (Metro/Malls/In-Store/Petrol Stations/Outdoor/Other), same browsing
+  // model as the separate Traffic Sheet workspace's venue tabs - see reportingSiteCategory's
+  // comment for why this is keyed off Asset Inventory's category column rather than a naming
+  // convention. Skipped entirely (no tabs, no filtering) while Asset Inventory is still loading, or
+  // if the sync has never run - categorization just isn't possible yet either way.
+  const assetInventory = loadData('assetInventoryForReportingCategories', listAssetInventory);
+  const venueCategoryMap = (assetInventory && !assetInventory.__error) ? buildVenueCategoryMap(assetInventory) : null;
+
+  let categoryTabsUi = '';
+  if (venueCategoryMap && (directFieldsAll.site || dspsFieldsAll.site)) {
+    // Counts computed against the full (unfiltered) row set so switching tabs never shows a stale count.
+    const categoryCounts = { all: directRowsAll.length + dspsRowsAll.length };
+    REPORTING_SITE_CATEGORIES.forEach((c) => {
+      const dCount = directFieldsAll.site ? directRowsAll.filter((r) => reportingSiteCategory(r[directFieldsAll.site], venueCategoryMap) === c).length : 0;
+      const pCount = dspsFieldsAll.site ? dspsRowsAll.filter((r) => reportingSiteCategory(r[dspsFieldsAll.site], venueCategoryMap) === c).length : 0;
+      categoryCounts[c] = dCount + pCount;
+    });
+    categoryTabsUi = renderTabs(
+      [{ key: 'all', label: 'All', count: categoryCounts.all }, ...REPORTING_SITE_CATEGORIES.map((c) => ({ key: c, label: c, count: categoryCounts[c] }))],
+      categoryFilter,
+      'App.setTrafficCategoryTab',
+    );
+  }
+
+  const activeCategoryFilter = venueCategoryMap ? categoryFilter : 'all';
+  const directRows = activeCategoryFilter === 'all' ? directRowsAll : directRowsAll.filter((r) => rowMatchesCategory(r, directFieldsAll.site, activeCategoryFilter, venueCategoryMap));
+  const dspsRows = activeCategoryFilter === 'all' ? dspsRowsAll : dspsRowsAll.filter((r) => rowMatchesCategory(r, dspsFieldsAll.site, activeCategoryFilter, venueCategoryMap));
+  const directFields = directRows.length ? detectAllFields(directRows) : directFieldsAll;
+  const dspsFields = dspsRows.length ? detectAllFields(dspsRows) : dspsFieldsAll;
+
   const typeFilterUi = `
     <div class="field" style="margin-bottom:12px;max-width:220px;"><label>Type</label>
       <select onchange="App.setTrafficTypeFilter(this.value)">
@@ -945,9 +1042,9 @@ function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
       </select>
     </div>
   `;
-  if (!directRows.length && !dspsRows.length) return `${typeFilterUi}<div class="card"><div class="empty">No data for this date range.</div></div>`;
+  if (!directRows.length && !dspsRows.length) return `${categoryTabsUi}${typeFilterUi}<div class="card"><div class="empty">No data for this ${activeCategoryFilter === 'all' ? 'date range' : 'category, in this date range'}.</div></div>`;
   if ((!directFields.campaign || !directFields.date) && (!dspsFields.campaign || !dspsFields.date)) {
-    return `${typeFilterUi}<div class="card"><div class="empty">Can't build a day-grid without a recognizable campaign and date column in the response.</div></div>`;
+    return `${categoryTabsUi}${typeFilterUi}<div class="card"><div class="empty">Can't build a day-grid without a recognizable campaign and date column in the response.</div></div>`;
   }
 
   const dates = [];
@@ -1014,6 +1111,7 @@ function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
   const tableHead = `<thead><tr><th>Campaign</th><th>Type</th><th class="tright">Playouts</th><th class="tright">Impressions</th><th class="tright">Avg Multiplier</th>${showDayGrid ? dates.map((d) => `<th class="tsheet-day" title="${esc(d)}">${esc(d.slice(8, 10))}</th>`).join('') : ''}</tr></thead>`;
 
   return `
+    ${categoryTabsUi}
     ${typeFilterUi}
     <div class="card">
       <div class="card-head"><h3>Traffic Data</h3><div class="desc">${campaigns.length} campaign(s)${showDayGrid ? ', day-by-day. Each day cell shows Playouts on top and Impressions below (hover a date header for the full date)' : ' - totals for'} from ${esc(start)} to ${esc(end)} - ${regularCampaigns.length} regular, ${focCampaigns.length} FOC/Marketing. "Avg Multiplier" = Impressions &divide; Playouts.</div></div>
@@ -1036,7 +1134,7 @@ function renderAdditionalTrafficSheet(directRows, dspsRows, start, end) {
     </div>
     ` : ''}
     ${renderTrafficByLocation(campaigns)}
-    ${renderPlacementAdCoverage(directRows, directFields, dspsRows, dspsFields)}
+    ${renderPlacementAdCoverage(directRows, directFields, dspsRows, dspsFields, activeCategoryFilter, venueCategoryMap)}
   `;
 }
 
