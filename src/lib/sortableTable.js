@@ -40,7 +40,15 @@ export const FIXED_TABLE_STYLE = 'table-layout:fixed;';
 // genuine change to the underlying data (a new filter/search, a fresh fetch) shifts it. Capped to
 // [min,max] so one outlier value can't blow the column out; the header label's own length is always
 // included as a floor so a short value set still leaves room for the label.
-export function colWidthCh(rows, accessor, label, { min = 6, max = 40, pad = 2 } = {}) {
+//
+// pad defaults to 5, not a couple of characters of breathing room - a table cell's own padding
+// (~10px each side, ~20px/2.7ch total at this app's font size) counts against a column's specified
+// width under table-layout:fixed the same way border-box would, regardless of the cell's own
+// box-sizing, so a value that's a tight character-count match for its column (e.g. a 4-digit number
+// in a 7ch column) was overflowing and getting silently ellipsis-clipped even though nothing about
+// the VALUE itself was too long - confirmed live (Placements Stats' "calls" column truncating an
+// unremarkable 4-digit count to 2 digits).
+export function colWidthCh(rows, accessor, label, { min = 8, max = 40, pad = 5 } = {}) {
   let longest = (label || '').length;
   for (const r of rows) {
     const v = accessor(r);

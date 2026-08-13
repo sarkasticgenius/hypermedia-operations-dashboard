@@ -172,22 +172,33 @@ function availsPlacementOptions() {
   rows.forEach((r) => {
     const pid = r[fields.placementId];
     if (pid == null || seen.has(pid)) return;
-    // Whitespace collapsed (not just trimmed) - real vendor data has placements like
-    // "CONCOURSE SCREEN  2" with a stray double space before the number where the equivalent
-    // "SCREEN 1" only has one. A space (0x20) sorts before any digit, so that lone extra space
-    // made "SCREEN  2" compare as LESS than "SCREEN 1" - the number sat one position further
-    // right than the comparison expected, entirely unrelated to which number it actually was.
-    // Confirmed against live Al Furjan/Discovery Gardens placement names.
+    // Whitespace collapsed (not just trimmed) for the DISPLAY text - real vendor data has stray
+    // double spaces here and there, and this is cheap tidying regardless of the sort-key work below.
     const site = fields.site ? String(r[fields.site] ?? '').trim().replace(/\s+/g, ' ') : '';
     const placement = String(r[fields.placement] ?? '').trim().replace(/\s+/g, ' ');
-    seen.set(pid, { id: pid, placement, site });
+    seen.set(pid, { id: pid, placement, site, siteKey: sortKeyFor(site), placementKey: sortKeyFor(placement) });
   });
-  // { numeric: true } sorts "Screen 2" before "Screen 10" - plain localeCompare treats these as
-  // strings ("1" < "2" character-by-character), so "Screen 10" through "Screen 18" sorted right
-  // after "Screen 1" and before "Screen 2" (confirmed against live EXPO 2020 placement names).
+  // Sorted on the normalized *Key fields, not the raw display text - see sortKeyFor's own comment
+  // for why the raw text can't be compared directly. { numeric: true } on top of that sorts
+  // "Screen 2" before "Screen 10" (plain string compare treats these as "1" < "2" character-by-
+  // character, so "10" through "18" sorted right after "1" and before "2" - confirmed against live
+  // EXPO 2020 placement names).
   return [...seen.values()].sort((a, b) =>
-    a.site.localeCompare(b.site, undefined, { numeric: true })
-    || a.placement.localeCompare(b.placement, undefined, { numeric: true }));
+    a.siteKey.localeCompare(b.siteKey, undefined, { numeric: true })
+    || a.placementKey.localeCompare(b.placementKey, undefined, { numeric: true }));
+}
+
+// Real placement names from this vendor use "-" as a catch-all separator with wildly inconsistent
+// spacing around it depending on who/what entered that particular row - the same numbered-suffix
+// idea shows up as "PARKING-01" (no space), "PARKING -02" (space before only), and "COLUMN - 3"
+// (space both sides), all for siblings that should sort together as 01/02/03. Comparing the raw
+// text directly means whichever spacing variant a given digit happens to have decides sort order
+// ahead of the digit itself (confirmed live: REEM MALL's parking screens and food-court columns
+// both scattered out of numeric order this way). Collapsing every hyphen's surrounding whitespace
+// to a single canonical "-" (no space) before comparing removes the inconsistency; the ORIGINAL
+// spacing is kept for display (this key is sort-only, never rendered).
+function sortKeyFor(s) {
+  return String(s || '').replace(/\s*-\s*/g, '-');
 }
 
 export function toggleAvailsPlacement(id) {
