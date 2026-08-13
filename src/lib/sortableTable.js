@@ -5,11 +5,42 @@ import { esc } from './format.js';
 // sortTh()/applySort()/toggleSort() (its one genuinely reusable pattern) -
 // state lives in STATE.tableSort[scope] so multiple tables on one page (or
 // across pages) don't collide.
-export function sortTh(scope, key, label) {
+//
+// widthCh (optional, in `ch` units - roughly one character wide, so it scales with font size)
+// pins the column to a fixed width. Pair this with `table-layout:fixed` on the parent <table> (see
+// FIXED_TABLE_STYLE below) - without an explicit width per column, an auto-layout table re-measures
+// column widths from whatever rows are currently in the DOM, so sorting a paginated/sliced table
+// (which swaps in a different subset of rows) visibly shifts every column even though the header
+// row itself never changed. A fixed width sourced from the full (unsliced) row set, not just the
+// currently-visible page, stays constant across sorts and page turns.
+export function sortTh(scope, key, label, widthCh) {
   const sort = STATE.tableSort?.[scope];
   const active = sort && sort.key === key;
   const arrow = active ? (sort.dir === 'desc' ? ' ▼' : ' ▲') : '';
-  return `<th style="cursor:pointer;user-select:none;" onclick="App.toggleSort('${scope}','${key}')">${esc(label)}${arrow}</th>`;
+  const widthStyle = widthCh ? `width:${widthCh}ch;` : '';
+  return `<th style="${widthStyle}cursor:pointer;user-select:none;" onclick="App.toggleSort('${scope}','${key}')">${esc(label)}${arrow}</th>`;
+}
+
+// Inline style for the <table> tag itself, pairing with sortTh's widthCh above - table-layout:fixed
+// makes column widths come from the header row's specified widths alone, immune to which body rows
+// happen to be rendered on a given page/sort. Exported as a constant so every table using this
+// pattern stays visually consistent.
+export const FIXED_TABLE_STYLE = 'table-layout:fixed;';
+
+// Computes a stable per-column width (in ch) from the FULL row set (before any pagination slicing),
+// so the result doesn't change depending on which page/sort order is currently on screen - only a
+// genuine change to the underlying data (a new filter/search, a fresh fetch) shifts it. Capped to
+// [min,max] so one outlier value can't blow the column out; the header label's own length is always
+// included as a floor so a short value set still leaves room for the label.
+export function colWidthCh(rows, accessor, label, { min = 6, max = 40, pad = 2 } = {}) {
+  let longest = (label || '').length;
+  for (const r of rows) {
+    const v = accessor(r);
+    if (v == null || v === '') continue;
+    const len = String(v).length;
+    if (len > longest) longest = len;
+  }
+  return Math.max(min, Math.min(max, longest + pad));
 }
 
 export function toggleSort(scope, key) {

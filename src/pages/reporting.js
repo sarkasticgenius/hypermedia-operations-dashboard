@@ -26,7 +26,7 @@ import { exportReportingCampaignExcel, exportToExcel } from '../lib/excelExport.
 import { exportCampaignPptxReport } from '../lib/pptxReport.js';
 import { isFocMarketingCampaign, statusBadge, groupDatesByMonth, formatMonthLabel } from './trafficSheet.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
-import { sortTh, applySort } from '../lib/sortableTable.js';
+import { sortTh, applySort, colWidthCh, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 
 const REPORTING_TABS = [
   { key: 'adsStats', label: 'Ads Stats' },
@@ -441,12 +441,20 @@ async function loadCampaignAdsInfo(campaignRows, fields) {
 // sets that param when given one (see aioo-reporting-proxy/index.ts), so omitting it returns
 // every campaign in one call. Used by the Traffic Data grid to get real flight dates + Status for
 // every campaign shown at once, instead of one /campaigns request per campaign row.
+// Collapses runs of internal whitespace (not just leading/trailing) before lowercasing, so a
+// campaign name that differs from /campaigns' own `name` only by double spaces/tabs/newlines - easy
+// to pick up from copy-paste when a campaign is created - still matches instead of silently missing
+// Start/End/Days/Status for that row.
+function normalizeCampaignName(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 async function loadAllCampaignsMeta() {
   const data = await fetchReportingStats('/campaigns', {});
   const list = Array.isArray(data) ? data : [];
   const map = new Map();
   list.forEach((c) => {
-    const name = String(c.name || '').trim().toLowerCase();
+    const name = normalizeCampaignName(c.name);
     if (name) map.set(name, { start: c.start, end: c.end, status: c.status, type: c.type });
   });
   return map;
@@ -517,7 +525,7 @@ function renderKeyValueTable(title, desc, rows, keyLabel, numericFieldMap) {
   const body = rows.map((r) => `<tr><td>${esc(r.key)}</td>${cols.map((c) => `<td class="tright">${(r[c] ?? 0).toLocaleString()}</td>`).join('')}</tr>`).join('');
   return `<div class="card">
     <div class="card-head"><h3>${esc(title)}</h3>${desc ? `<div class="desc">${esc(desc)}</div>` : ''}</div>
-    <div class="tsheet-wrap"><table><thead><tr><th>${esc(keyLabel)}</th>${cols.map((c) => `<th class="tright">${esc(colLabel(c))}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>
+    <div class="tsheet-wrap"><table class="zebra"><thead><tr><th>${esc(keyLabel)}</th>${cols.map((c) => `<th class="tright">${esc(colLabel(c))}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>
   </div>`;
 }
 
@@ -686,7 +694,7 @@ function renderCampaignList(rows, fields) {
     // visible/debuggable rather than just disappearing.
     const columns = Object.keys(rows[0]);
     const tableRows = rows.slice(0, 200).map((r) => `<tr>${columns.map((c) => `<td>${esc(String(r[c] ?? ''))}</td>`).join('')}</tr>`).join('');
-    return `${heroTiles}<div class="card"><div class="card-head"><h3>Ads Stats</h3><div class="desc">${rows.length} row(s)${rows.length > 200 ? ' (showing first 200)' : ''} - no Campaign column detected, showing raw rows.</div></div><div class="tsheet-wrap"><table><thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table></div></div>`;
+    return `${heroTiles}<div class="card"><div class="card-head"><h3>Ads Stats</h3><div class="desc">${rows.length} row(s)${rows.length > 200 ? ' (showing first 200)' : ''} - no Campaign column detected, showing raw rows.</div></div><div class="tsheet-wrap"><table class="zebra"><thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table></div></div>`;
   }
 
   const campaigns = campaignSummaries(rows, fields);
@@ -704,7 +712,7 @@ function renderCampaignList(rows, fields) {
     <div class="card">
       <div class="card-head"><h3>Campaigns</h3><div class="desc">${campaigns.length} campaign(s) in this date range. Click one for its detail, screen breakdown, and a downloadable report.</div></div>
       <div class="tsheet-wrap">
-        <table>
+        <table class="zebra">
           <thead><tr><th>Campaign</th><th class="tright">Impressions</th><th class="tright">Playouts</th><th class="tright">Sites</th></tr></thead>
           <tbody>${bodyRows}</tbody>
         </table>
@@ -853,13 +861,13 @@ function renderCampaignDetail(campaign, campaignRows, fields) {
     ${adsLoading || adsInfo?.length ? `
       <div class="card">
         <div class="card-head"><h3>Delivery Type &amp; Line Items</h3><div class="desc">${adsLoading ? 'Loading...' : `Direct: ${directCount}, Programmatic: ${programmaticCount}. "Playouts" (in this table only) only applies to loop/cycle-paced line items.`}</div></div>
-        ${adsLoading ? '' : `<div class="tsheet-wrap"><table><thead><tr><th>Ad (Line Item)</th><th>Type</th><th>Volume Type</th><th class="tright">Playouts</th></tr></thead><tbody>${lineItemRows}</tbody></table></div>`}
+        ${adsLoading ? '' : `<div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Ad (Line Item)</th><th>Type</th><th>Volume Type</th><th class="tright">Playouts</th></tr></thead><tbody>${lineItemRows}</tbody></table></div>`}
       </div>
     ` : ''}
     <div class="card">
       <div class="card-head"><h3>Screen Breakdown</h3><div class="desc">${screenRows.length} screen(s), Direct delivery only, for this campaign in the current date range.</div></div>
       <div class="tsheet-wrap">
-        <table>
+        <table class="zebra">
           <thead><tr><th>Site</th><th>Placement</th>${fields.playouts ? '<th class="tright">Playouts</th>' : ''}${fields.impressions ? '<th class="tright">Impressions</th>' : ''}</tr></thead>
           <tbody>${screenTableRows}</tbody>
         </table>
@@ -966,7 +974,7 @@ function renderTrafficByLocation(campaigns) {
   </tr>`).join('');
   return `<div class="card">
     <div class="card-head"><h3>By Location</h3><div class="desc">${rows.length} location(s) - how many distinct campaigns are running at each, matching the current Type filter.</div></div>
-    <div class="tsheet-wrap"><table><thead><tr><th>Site</th><th class="tright">Campaigns</th><th class="tright">Playouts</th><th class="tright">Impressions</th></tr></thead><tbody>${body}</tbody></table></div>
+    <div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Site</th><th class="tright">Campaigns</th><th class="tright">Playouts</th><th class="tright">Impressions</th></tr></thead><tbody>${body}</tbody></table></div>
   </div>`;
 }
 
@@ -1015,7 +1023,7 @@ function renderPlacementAdCoverage(directRows, directFields, dspsRows, dspsField
   </tr>`).join('');
   return `<div class="card">
     <div class="card-head"><h3>Placements - Ad Coverage</h3><div class="desc">${rows.length} placement(s) from Placements Stats, ${noAdsCount} with no campaigns running (any type) in the current date range.${rows.length > 200 ? ' Showing first 200.' : ''}</div></div>
-    <div class="tsheet-wrap"><table><thead><tr><th>Site</th><th>Placement</th><th class="tright">Campaigns Running</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
+    <div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Site</th><th>Placement</th><th class="tright">Campaigns Running</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
   </div>`;
 }
 
@@ -1154,7 +1162,8 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
   // non-blocking, same pattern as the Asset Inventory category lookup above: render with what's
   // available now, pick up the rest on the next render once the fetch resolves.
   const campaignsMetaEntry = loadData('reportingAllCampaignsMeta', loadAllCampaignsMeta);
-  const campaignsMeta = (campaignsMetaEntry && !campaignsMetaEntry.__error) ? campaignsMetaEntry : null;
+  const campaignsMetaError = campaignsMetaEntry?.__error || null;
+  const campaignsMeta = (campaignsMetaEntry && !campaignsMetaError) ? campaignsMetaEntry : null;
   const campaignsMetaLoading = campaignsMetaEntry === null;
 
   // Loop Count, fetched for every distinct line item across every campaign currently shown (see
@@ -1175,7 +1184,7 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
     let totalPlayouts = 0;
     let totalImpressions = 0;
     c.dayMap.forEach((d) => { totalPlayouts += d.playouts; totalImpressions += d.impressions; });
-    const meta = campaignsMeta?.get(c.campaign.trim().toLowerCase());
+    const meta = campaignsMeta?.get(normalizeCampaignName(c.campaign));
     const realStart = meta?.start ? new Date(meta.start * 1000).toISOString().slice(0, 10) : '';
     const realEnd = meta?.end ? new Date(meta.end * 1000).toISOString().slice(0, 10) : '';
     const campaignDays = (meta?.start && meta?.end) ? Math.round((meta.end - meta.start) / 86400) + 1 : '';
@@ -1210,6 +1219,14 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
   const focCampaigns = campaigns.filter((c) => isFocMarketingCampaign({ campaignName: c.campaign }));
   const bodyRows = regularCampaigns.map(campaignRow).join('');
   const focBodyRows = focCampaigns.map(campaignRow).join('');
+  // Surfaced so a broken/failed name match isn't just silently blank Start/End/Days/Status cells
+  // with no clue why - either the whole /campaigns lookup failed (network/auth/API error) or it
+  // succeeded but some campaign names here didn't find a match in it (name drifted, campaign
+  // deleted/renamed on AiOO's side since, etc).
+  const unmatchedCount = campaignsMeta ? campaigns.filter((c) => !campaignsMeta.get(normalizeCampaignName(c.campaign))).length : 0;
+  const metaWarning = campaignsMetaError
+    ? `<div class="login-error" style="margin-bottom:14px;">Couldn't load Start/End/Days/Status from AiOO's Campaigns API: ${esc(campaignsMetaError)}</div>`
+    : (unmatchedCount ? `<div class="login-error" style="margin-bottom:14px;">${unmatchedCount} of ${campaigns.length} campaign(s) below have no Start/End/Days/Status - their name didn't match anything in AiOO's Campaigns API (renamed/deleted there, or a name mismatch).</div>` : '');
   // Same two-row month-then-day header as Traffic Sheet's own renderDayGrid (trafficSheet.js) - a
   // merged "Mon YYYY" row above the per-day columns, so a multi-month range reads the same way here
   // as it does there.
@@ -1220,10 +1237,11 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
   return `
     ${categoryTabsUi}
     ${typeFilterUi}
+    ${metaWarning}
     <div class="card">
       <div class="card-head"><h3>Traffic Data</h3><div class="desc">${campaigns.length} campaign(s)${showDayGrid ? ', day-by-day. Each day cell shows Playouts on top and Impressions below (hover a date header for the full date)' : ' - totals for'} from ${esc(start)} to ${esc(end)} - ${regularCampaigns.length} regular, ${focCampaigns.length} FOC/Marketing. Start/End/Days/Status come from AiOO's Campaigns API (GET /campaigns) and Loop Count from its Ads API (GET /ads/{id}), both matched to these rows by name/line item.</div></div>
       <div class="tsheet-wrap">
-        <table class="tsheet-table">
+        <table class="tsheet-table zebra">
           ${tableHead}
           <tbody>${bodyRows || `<tr><td colspan="${TRAFFIC_GRID_META_COLS + (showDayGrid ? dates.length : 0)}"><div class="empty">No regular campaigns for this date range.</div></td></tr>`}</tbody>
         </table>
@@ -1233,7 +1251,7 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
     <div class="card">
       <div class="card-head"><h3>FOC / Marketing <span class="badge b-amber">${focCampaigns.length}</span></h3><div class="desc">Same FOC/Marketing keyword grouping used on the Traffic Sheet workspace.</div></div>
       <div class="tsheet-wrap">
-        <table class="tsheet-table">
+        <table class="tsheet-table zebra">
           ${tableHead}
           <tbody>${focBodyRows}</tbody>
         </table>
@@ -1244,6 +1262,14 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
     ${renderPlacementAdCoverage(directRows, directFields, dspsRows, dspsFields, activeCategoryFilter, venueCategoryMap)}
   `;
 }
+
+export function setGenericTablePage(scope, page) {
+  STATE.genericTablePage = STATE.genericTablePage || {};
+  STATE.genericTablePage[scope] = page;
+  setState({});
+}
+
+const GENERIC_TABLE_PAGE_SIZE = 200;
 
 // Shared renderer for the two other date-range stats endpoints (Programmatic/Placements) and the
 // Status Report - dynamic columns exactly as returned, plus optional totals for known numeric
@@ -1265,9 +1291,27 @@ function renderGenericTable(title, desc, rows, opts = {}) {
   const accessors = {};
   columns.forEach((c) => { accessors[c] = (r) => r[c]; });
   const sortedRows = applySort(rows, title, accessors);
-  const tableRows = sortedRows.slice(0, 200).map((r) => {
+
+  // Column widths are computed from the FULL sorted row set (every row, not just the page about to
+  // be sliced out below) and the table is rendered with a fixed layout, so a column's width comes
+  // only from this one-time calculation - it can't shift every time sorting or paging swaps in a
+  // different subset of rows the way an auto-layout table's content-driven sizing would. Capped at
+  // 24ch so one freak long value (a stray URL, a long free-text note) can't blow a column out; long
+  // values still show in full via the title tooltip and can be read by widening the browser/zooming
+  // out, they just don't force every other row onto multiple lines.
+  const widths = {};
+  columns.forEach((c) => { widths[c] = colWidthCh(sortedRows, (r) => r[c], c, { min: 6, max: 24 }); });
+
+  const totalPages = Math.max(1, Math.ceil(sortedRows.length / GENERIC_TABLE_PAGE_SIZE));
+  const page = Math.min(STATE.genericTablePage?.[title] || 0, totalPages - 1);
+  const pageRows = sortedRows.slice(page * GENERIC_TABLE_PAGE_SIZE, page * GENERIC_TABLE_PAGE_SIZE + GENERIC_TABLE_PAGE_SIZE);
+
+  const tableRows = pageRows.map((r) => {
     const flagged = opts.highlightRow ? opts.highlightRow(r) : false;
-    return `<tr${flagged ? ' style="background:var(--red-bg);"' : ''}>${columns.map((c) => `<td>${esc(String(r[c] ?? ''))}</td>`).join('')}${flagged ? '<td><span class="badge b-red">No ad calls</span></td>' : (opts.highlightRow ? '<td></td>' : '')}</tr>`;
+    return `<tr${flagged ? ' style="background:var(--red-bg);"' : ''}>${columns.map((c) => {
+      const v = String(r[c] ?? '');
+      return `<td class="tsheet-ellipsis" title="${esc(v)}">${esc(v)}</td>`;
+    }).join('')}${flagged ? '<td><span class="badge b-red">No ad calls</span></td>' : (opts.highlightRow ? '<td></td>' : '')}</tr>`;
   }).join('');
   const tiles = (opts.sumFields || [])
     .filter(({ key }) => columns.includes(key))
@@ -1277,10 +1321,15 @@ function renderGenericTable(title, desc, rows, opts = {}) {
   return `
     <div class="bento-stats">${statTile('info', 'Rows', rows.length)}${flaggedCount ? statTile('alert', 'No Ad Calls', flaggedCount) : ''}${tiles}</div>
     <div class="card">
-      <div class="card-head"><h3>${esc(title)}</h3><div class="desc">${esc(desc)}${rows.length > 200 ? ' (showing first 200 of the current sort order)' : ''}</div></div>
+      <div class="card-head"><h3>${esc(title)}</h3><div class="desc">${esc(desc)}${totalPages > 1 ? ` - page ${page + 1} of ${totalPages}` : ''}</div></div>
       <div class="tsheet-wrap">
-        <table><thead><tr>${columns.map((c) => sortTh(title, c, c)).join('')}${opts.highlightRow ? '<th></th>' : ''}</tr></thead><tbody>${tableRows}</tbody></table>
+        <table class="zebra" style="${FIXED_TABLE_STYLE}"><thead><tr>${columns.map((c) => sortTh(title, c, c, widths[c])).join('')}${opts.highlightRow ? '<th></th>' : ''}</tr></thead><tbody>${tableRows}</tbody></table>
       </div>
+      ${totalPages > 1 ? `<div style="display:flex;justify-content:center;gap:10px;align-items:center;margin-top:10px;">
+        <button class="btn-sm" ${page === 0 ? 'disabled' : ''} onclick="App.setGenericTablePage('${esc(title)}',${page - 1})">Prev</button>
+        <span class="small muted">Page ${page + 1} of ${totalPages} (${sortedRows.length} rows)</span>
+        <button class="btn-sm" ${page >= totalPages - 1 ? 'disabled' : ''} onclick="App.setGenericTablePage('${esc(title)}',${page + 1})">Next</button>
+      </div>` : ''}
     </div>
   `;
 }
@@ -1326,7 +1375,7 @@ function renderLastPlayouts(data) {
     <div class="card">
       <div class="card-head"><h3>Last Playouts</h3><div class="desc">${rows.length} playout(s) across ${placementIds.length} placement(s)${rows.length > 200 ? ' (showing most recent 200)' : ''}. Campaign is resolved from Ads Stats/Programmatic Stats data already loaded this session - open one of those tabs first if it's showing blank.</div></div>
       <div class="tsheet-wrap">
-        <table><thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>
+        <table class="zebra"><thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>
       </div>
     </div>
   `;
@@ -1361,11 +1410,11 @@ function renderAvails(data) {
     </div>
     <div class="card">
       <div class="card-head"><h3>Per-Site Availability</h3><div class="desc">Sorted by reserved ratio descending.</div></div>
-      <div class="tsheet-wrap"><table><thead><tr><th>Site</th><th class="tright">Cycle Length</th><th class="tright">Reserved</th><th class="tright">Available</th><th class="tright">Avail. Playouts</th></tr></thead><tbody>${siteRows || '<tr><td colspan="5">No sites.</td></tr>'}</tbody></table></div>
+      <div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Site</th><th class="tright">Cycle Length</th><th class="tright">Reserved</th><th class="tright">Available</th><th class="tright">Avail. Playouts</th></tr></thead><tbody>${siteRows || '<tr><td colspan="5">No sites.</td></tr>'}</tbody></table></div>
     </div>
     <div class="card">
       <div class="card-head"><h3>Daily Timeline</h3></div>
-      <div class="tsheet-wrap"><table><thead><tr><th>Date</th><th class="tright">Reserved</th><th class="tright">Avail. Playouts</th><th class="tright">Avail. Impressions</th></tr></thead><tbody>${timelineRows || '<tr><td colspan="4">No data.</td></tr>'}</tbody></table></div>
+      <div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Date</th><th class="tright">Reserved</th><th class="tright">Avail. Playouts</th><th class="tright">Avail. Impressions</th></tr></thead><tbody>${timelineRows || '<tr><td colspan="4">No data.</td></tr>'}</tbody></table></div>
     </div>
   `;
 }

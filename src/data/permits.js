@@ -26,15 +26,13 @@ export function permitStatus(p) {
   return 'Active';
 }
 
-// Badge/text color for a permit's expiry urgency - a finer-grained tier than permitStatus()'s own
-// label: under 10 days (or already expired) reads as red instead of the usual amber "Expiring
-// Soon", so the most urgent renewals stand out from the rest of the 30-day window instead of all
-// looking the same color.
+// Badge/text color for a permit's expiry urgency - under 10 days (or already expired) is the only
+// case that should read as the yellow/amber "needs attention" color; everything with 10+ days left
+// stays green regardless of permitStatus()'s wider 30-day "Expiring Soon" label.
 export function permitStatusColor(p) {
   const diffDays = permitDaysToExpire(p);
   if (diffDays == null) return 'b-green';
-  if (diffDays < 10) return 'b-red';
-  if (diffDays <= 30) return 'b-amber';
+  if (diffDays < 10) return 'b-amber';
   return 'b-green';
 }
 

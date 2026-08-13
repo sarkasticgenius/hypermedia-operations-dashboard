@@ -22,6 +22,7 @@
   /* Secondary surfaces - split out from the hardcoded hex values scattered through this file so
      dark mode (below) can retheme them in one place instead of chasing every literal #fff. */
   --row-hover:#fbfbfa;
+  --row-alt:#eef5fc;
   --nav-hover:#faf9f7;
   --tabs-bg:#f2f0ec;
   --tab-hover-bg:rgba(255,255,255,0.75);
@@ -52,6 +53,7 @@
   --red:#f0665a;
   --red-bg:rgba(240,102,90,0.14);
   --row-hover:rgba(255,255,255,0.035);
+  --row-alt:rgba(111,161,255,0.08);
   --nav-hover:rgba(255,255,255,0.05);
   --tabs-bg:#221e15;
   --tab-hover-bg:rgba(255,255,255,0.08);
@@ -206,6 +208,13 @@ tr:hover td{background:var(--row-hover);}
 .tright{text-align:right;}
 .tcenter{text-align:center;}
 
+/* Alternating light-blue/white row banding for Reporting page tables - opt-in via .zebra on the
+   <table> so it doesn't change every other table in the app. Set on <tr> (not <td>) so an
+   inline-styled "flagged" row - e.g. Placements Stats' red "no ad calls" tint - still wins via CSS
+   specificity instead of being painted over. */
+.zebra tbody tr:nth-child(even){background:var(--row-alt);}
+.zebra tr:hover td{background:var(--row-hover);}
+
 .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700;}
 .b-green{background:var(--green-bg);color:var(--green);}
 .b-gray{background:var(--gray-bg);color:var(--gray);}
@@ -254,6 +263,10 @@ tr:hover td{background:var(--row-hover);}
 .tsheet-table .tsheet-cell{text-align:center;color:var(--text-dim);}
 .tsheet-table .tsheet-cell.tsheet-active{background:#ffe066;color:#1a1a1a;font-weight:700;}
 .tsheet-nowrap{white-space:nowrap;}
+/* Single-line, fixed-width cells (used with FIXED_TABLE_STYLE tables) - clips overlong values with
+   an ellipsis instead of wrapping onto multiple lines or spilling into the next column; the full
+   value is still available via the cell's title tooltip. */
+.tsheet-ellipsis{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
 /* gantt */
 .gantt-wrap{overflow-x:auto;}
