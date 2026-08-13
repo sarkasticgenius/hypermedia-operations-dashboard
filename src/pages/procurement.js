@@ -58,7 +58,7 @@ export function renderProcurement() {
       <td class="tright">${o.qty}</td>
       <td>${fmtDate(o.order_date)}</td>
       <td>${esc(o.destination || '-')}</td>
-      <td><span class="badge ${STATUS_BADGE[o.status] || 'b-gray'}">${esc(o.status)}</span></td>
+      <td class="tcenter"><span class="badge ${STATUS_BADGE[o.status] || 'b-gray'}">${esc(o.status)}</span></td>
       <td class="small">${warrantyLabel(o, assets, categories)}</td>
       <td>${o.delivery_note_path ? `<span class="file-chip">FILE: ${esc(o.delivery_note_filename || 'delivery-note')}</span> <a href="#" onclick="App.viewDeliveryNote('${o.delivery_note_path}');return false;" class="link-btn" style="font-size:11px;">View</a>` : '<span class="muted small">-</span>'}</td>
       <td>
@@ -81,7 +81,7 @@ export function renderProcurement() {
     <div class="card">
       ${orders.length === 0 ? '<div class="empty">No purchase orders yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('procurement', 'asset', 'Asset')}${sortTh('procurement', 'qty', 'Qty')}${sortTh('procurement', 'orderDate', 'Order Date')}${sortTh('procurement', 'destination', 'Destination')}${sortTh('procurement', 'status', 'Status')}<th>Warranty</th><th>Delivery Note</th><th></th></tr></thead>
+          <thead><tr>${sortTh('procurement', 'asset', 'Asset')}${sortTh('procurement', 'qty', 'Qty')}${sortTh('procurement', 'orderDate', 'Order Date')}${sortTh('procurement', 'destination', 'Destination')}${sortTh('procurement', 'status', 'Status', null, 'center')}<th>Warranty</th><th>Delivery Note</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

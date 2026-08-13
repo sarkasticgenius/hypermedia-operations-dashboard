@@ -146,7 +146,7 @@ export function renderAssetsInventory() {
       <td>${esc(r.category || '-')}</td>
       <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
       <td>${esc(r.player_type || '-')}${r.player_box_id ? `<div class="small muted">${esc(r.player_box_id)}</div>` : ''}${r.last_poll_utc ? `<div class="small muted">Last poll: ${esc(new Date(r.last_poll_utc).toLocaleString())}</div>` : ''}</td>
-      <td>${r.pdooh_ready ? '<span class="badge b-green">Yes</span>' : '<span class="muted small">No</span>'}</td>
+      <td class="tcenter">${r.pdooh_ready ? '<span class="badge b-green">Yes</span>' : '<span class="muted small">No</span>'}</td>
       <td>${r.contractor_id ? esc(contractorLabel(contractors, r.contractor_id)) : '<span class="muted small">-</span>'}</td>
       <td>${ticketCountByAsset[r.id] ? `<button class="link-btn" onclick="App.openAssetTicketHistory('${r.id}')">${ticketCountByAsset[r.id]}</button>` : '<span class="muted small">0</span>'}</td>
       <td>
@@ -216,7 +216,7 @@ export function renderAssetsInventory() {
     </div>` : ''}
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr>${bulkOk ? `<th><input type="checkbox" ${allPageSelected ? 'checked' : ''} onchange="App.toggleAssetInvSelectAllOnPage(this.checked)" title="Select all on this page"></th>` : ''}${sortTh('assetsInventory', 'name', 'Name')}${sortTh('assetsInventory', 'venue', 'Venue / Location')}${sortTh('assetsInventory', 'category', 'Category')}${sortTh('assetsInventory', 'format', 'Format')}${sortTh('assetsInventory', 'player', 'Player')}${sortTh('assetsInventory', 'pdooh', 'pDOOH')}${sortTh('assetsInventory', 'contractor', 'Contractor')}<th>Tickets</th><th></th></tr></thead>
+        <thead><tr>${bulkOk ? `<th><input type="checkbox" ${allPageSelected ? 'checked' : ''} onchange="App.toggleAssetInvSelectAllOnPage(this.checked)" title="Select all on this page"></th>` : ''}${sortTh('assetsInventory', 'name', 'Name')}${sortTh('assetsInventory', 'venue', 'Venue / Location')}${sortTh('assetsInventory', 'category', 'Category')}${sortTh('assetsInventory', 'format', 'Format')}${sortTh('assetsInventory', 'player', 'Player')}${sortTh('assetsInventory', 'pdooh', 'pDOOH', null, 'center')}${sortTh('assetsInventory', 'contractor', 'Contractor')}<th>Tickets</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
       ${pager}
@@ -564,14 +564,14 @@ registerModal('assetTicketHistory', (data) => {
     <tr>
       <td>${fmtDate(t.date_reported)}</td>
       <td>${esc(t.title)}</td>
-      <td><span class="badge ${TICKET_STATUS_BADGE[t.status] || 'b-gray'}">${esc(t.status)}</span></td>
+      <td class="tcenter"><span class="badge ${TICKET_STATUS_BADGE[t.status] || 'b-gray'}">${esc(t.status)}</span></td>
       <td>${esc(t.priority || '')}</td>
     </tr>
   `).join('') || `<tr><td colspan="4"><div class="empty">No tickets for this screen.</div></td></tr>`;
   return `
     <h3>Ticket History${row ? ` - ${esc(row.venue || row.name)}` : ''}</h3>
     <div class="small muted" style="margin-bottom:8px;">${history.length} ticket${history.length === 1 ? '' : 's'} raised for this screen.</div>
-    <table><thead><tr><th>Reported</th><th>Title</th><th>Status</th><th>Priority</th></tr></thead><tbody>${rows}</tbody></table>
+    <table><thead><tr><th>Reported</th><th>Title</th><th class="tcenter">Status</th><th>Priority</th></tr></thead><tbody>${rows}</tbody></table>
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
   `;
 });

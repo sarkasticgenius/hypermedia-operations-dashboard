@@ -46,8 +46,8 @@ export function renderPermits() {
         <td>${esc(p.location || '-')}</td>
         <td>${p.issue_date ? fmtDate(p.issue_date) : '-'}</td>
         <td>${fmtDate(p.expiry_date)}</td>
-        <td><span class="badge ${color}">${esc(daysToExpireLabel(p))}</span></td>
-        <td><span class="badge ${color}">${status}</span></td>
+        <td class="tcenter"><span class="badge ${color}">${esc(daysToExpireLabel(p))}</span></td>
+        <td class="tcenter"><span class="badge ${color}">${status}</span></td>
         <td>${p.document_path ? `<span class="file-chip">FILE: ${esc(p.document_filename || 'document')}</span> <a href="#" onclick="App.viewPermitDocument('${jsAttr(p.document_path)}');return false;" class="link-btn" style="font-size:11px;">View</a> <a href="#" onclick="App.downloadPermitDocument('${jsAttr(p.document_path)}','${jsAttr(p.document_filename || 'document')}');return false;" class="link-btn" style="font-size:11px;">Download</a>` : '<span class="muted small">-</span>'}</td>
         <td>
           ${canEdit('permits') ? `<button class="btn-sm" onclick="App.editPermit('${p.id}')">Edit</button>` : ''}
@@ -69,7 +69,7 @@ export function renderPermits() {
     <div class="card">
       ${permits.length === 0 ? '<div class="empty">No permits yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('permits', 'location', 'Location')}${sortTh('permits', 'startDate', 'Start Date')}${sortTh('permits', 'expiry', 'Expiry')}${sortTh('permits', 'daysToExpire', 'Days to Expire')}${sortTh('permits', 'status', 'Status')}<th>Document</th><th></th></tr></thead>
+          <thead><tr>${sortTh('permits', 'location', 'Location')}${sortTh('permits', 'startDate', 'Start Date')}${sortTh('permits', 'expiry', 'Expiry')}${sortTh('permits', 'daysToExpire', 'Days to Expire', null, 'center')}${sortTh('permits', 'status', 'Status', null, 'center')}<th>Document</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

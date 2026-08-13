@@ -26,7 +26,7 @@ export function renderCampaigns() {
       <td>${c.client ? `${brandLogoTag(c.client, 18)} ` : ''}${esc(c.client || '-')}</td>
       <td>${fmtDate(c.start_date)} - ${fmtDate(c.end_date)}</td>
       <td>${fmtMoney(c.budget)}</td>
-      <td><span class="badge ${STATUS_BADGE[c.status] || 'b-gray'}">${esc(c.status)}</span></td>
+      <td class="tcenter"><span class="badge ${STATUS_BADGE[c.status] || 'b-gray'}">${esc(c.status)}</span></td>
       <td>
         ${canEdit('campaigns') ? `<button class="btn-sm" onclick="App.editCampaign('${c.id}')">Edit</button>` : ''}
         ${canDelete('campaigns') ? `<button class="btn-sm" onclick="App.removeCampaign('${c.id}')">Delete</button>` : ''}
@@ -46,7 +46,7 @@ export function renderCampaigns() {
     <div class="card">
       ${campaigns.length === 0 ? '<div class="empty">No campaigns yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('campaigns', 'name', 'Name')}${sortTh('campaigns', 'client', 'Client')}${sortTh('campaigns', 'dates', 'Dates')}${sortTh('campaigns', 'budget', 'Budget')}${sortTh('campaigns', 'status', 'Status')}<th></th></tr></thead>
+          <thead><tr>${sortTh('campaigns', 'name', 'Name')}${sortTh('campaigns', 'client', 'Client')}${sortTh('campaigns', 'dates', 'Dates')}${sortTh('campaigns', 'budget', 'Budget')}${sortTh('campaigns', 'status', 'Status', null, 'center')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

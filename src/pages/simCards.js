@@ -82,7 +82,7 @@ export function renderSimCards() {
         <td>${esc(s.carrier || '-')}</td>
         <td>${esc(s.data_plan || '-')}</td>
         <td>${fmtMoney(s.billing_cost)}</td>
-        <td><span class="badge ${s.status === 'Deployed' ? 'b-green' : 'b-gray'}">${esc(s.status)}</span></td>
+        <td class="tcenter"><span class="badge ${s.status === 'Deployed' ? 'b-green' : 'b-gray'}">${esc(s.status)}</span></td>
         <td>${esc(s.deployed_location_name || '-')}</td>
         <td>
           ${canEdit('simCards') ? `<button class="btn-sm" onclick="App.editSimCard('${s.id}')">Edit</button>` : ''}
@@ -110,7 +110,7 @@ export function renderSimCards() {
     <div class="card">
       ${visible.length === 0 ? '<div class="empty">No SIM cards match your filters.</div>' : `
         <table>
-          <thead><tr>${sortTh('simCards', 'simNumber', 'SIM Number')}${sortTh('simCards', 'carrier', 'Carrier')}${sortTh('simCards', 'dataPlan', 'Data Plan')}${sortTh('simCards', 'billing', 'Billing')}${sortTh('simCards', 'status', 'Status')}${sortTh('simCards', 'deployedAt', 'Deployed At')}<th></th></tr></thead>
+          <thead><tr>${sortTh('simCards', 'simNumber', 'SIM Number')}${sortTh('simCards', 'carrier', 'Carrier')}${sortTh('simCards', 'dataPlan', 'Data Plan')}${sortTh('simCards', 'billing', 'Billing')}${sortTh('simCards', 'status', 'Status', null, 'center')}${sortTh('simCards', 'deployedAt', 'Deployed At')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

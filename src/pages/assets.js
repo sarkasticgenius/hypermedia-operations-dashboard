@@ -103,7 +103,7 @@ function renderInventoryView(data) {
         <td><div>${esc(a.name)}</div><div class="small muted">${esc(a.category)}${meta ? ' · ' + meta : ''}</div></td>
         <td>${fmtMoney(a.unit_price)}</td>
         <td class="tright"><strong>${a.stock_available}</strong></td>
-        <td><span class="badge ${statusBadgeClass(a.status)}">${esc(a.status)}</span></td>
+        <td class="tcenter"><span class="badge ${statusBadgeClass(a.status)}">${esc(a.status)}</span></td>
         <td>
           ${canEdit('assets') ? `<button class="btn-sm" onclick="App.editAsset('${a.id}')">Edit</button>` : ''}
           ${canEdit('assets') && a.stock_available > 0 ? `<button class="btn-sm" onclick="App.openDeployModal('${a.id}')">Deploy</button>` : ''}
@@ -136,7 +136,7 @@ function renderInventoryView(data) {
     <div class="card">
       ${visible.length === 0 ? '<div class="empty">No spare hardware assets match your filters.</div>' : `
         <table>
-          <thead><tr>${sortTh('assetsInventoryList', 'name', 'Asset')}${sortTh('assetsInventoryList', 'price', 'Unit Price')}${sortTh('assetsInventoryList', 'available', 'Available (Spare)')}${sortTh('assetsInventoryList', 'status', 'Status')}<th></th></tr></thead>
+          <thead><tr>${sortTh('assetsInventoryList', 'name', 'Asset')}${sortTh('assetsInventoryList', 'price', 'Unit Price')}${sortTh('assetsInventoryList', 'available', 'Available (Spare)')}${sortTh('assetsInventoryList', 'status', 'Status', null, 'center')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -185,7 +185,7 @@ function renderDeployedView(data) {
         <td class="tright">${a.stock_on_site}</td>
         <td class="tright">${a.stock_available}</td>
         <td class="small">${esc(deployedLocs)}</td>
-        <td><span class="badge ${statusBadgeClass(a.status)}">${esc(a.status)}</span></td>
+        <td class="tcenter"><span class="badge ${statusBadgeClass(a.status)}">${esc(a.status)}</span></td>
         <td>
           ${canEdit('assets') ? `<button class="btn-sm" onclick="App.editAsset('${a.id}')">Edit</button>` : ''}
           ${canEdit('assets') && a.stock_available > 0 ? `<button class="btn-sm" onclick="App.openDeployModal('${a.id}')">Deploy More</button>` : ''}
@@ -209,7 +209,7 @@ function renderDeployedView(data) {
     <div class="card">
       ${deployed.length === 0 ? '<div class="empty">No assets have been deployed out of the warehouse yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('assetsDeployedList', 'name', 'Asset')}${sortTh('assetsDeployedList', 'onSite', 'On Site')}${sortTh('assetsDeployedList', 'available', 'Available (Spare)')}<th>Deployed Locations</th>${sortTh('assetsDeployedList', 'status', 'Status')}<th></th></tr></thead>
+          <thead><tr>${sortTh('assetsDeployedList', 'name', 'Asset')}${sortTh('assetsDeployedList', 'onSite', 'On Site')}${sortTh('assetsDeployedList', 'available', 'Available (Spare)')}<th>Deployed Locations</th>${sortTh('assetsDeployedList', 'status', 'Status', null, 'center')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

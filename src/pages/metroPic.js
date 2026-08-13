@@ -30,8 +30,8 @@ export function renderMetroPic() {
         <td>${esc(m.phone || '-')}</td>
         <td>${fmtDate(m.validity_start)}</td>
         <td>${fmtDate(m.validity_end)}</td>
-        <td><span class="badge ${di.overdue ? 'b-red' : di.urgent ? 'b-amber' : 'b-gray'}">${esc(di.text)}</span></td>
-        <td><span class="badge ${STATUS_BADGE[status] || 'b-gray'}">${status}</span></td>
+        <td class="tcenter"><span class="badge ${di.overdue ? 'b-red' : di.urgent ? 'b-amber' : 'b-gray'}">${esc(di.text)}</span></td>
+        <td class="tcenter"><span class="badge ${STATUS_BADGE[status] || 'b-gray'}">${status}</span></td>
         <td>
           ${canEdit('metroPic') ? `<button class="btn-sm" onclick="App.editMetroPic('${m.id}')">Edit</button>` : ''}
           ${canEdit('metroPic') ? `<button class="btn-sm" onclick="App.renewMetroPicRow('${m.id}')">Renew</button>` : ''}
@@ -53,7 +53,7 @@ export function renderMetroPic() {
     <div class="card">
       ${pics.length === 0 ? '<div class="empty">No Metro PICs yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('metroPics', 'station', 'Company Name')}${sortTh('metroPics', 'picName', 'PIC Name')}${sortTh('metroPics', 'phone', 'Phone')}${sortTh('metroPics', 'validityStart', 'Valid From')}${sortTh('metroPics', 'validityEnd', 'Valid Until')}${sortTh('metroPics', 'daysToExpire', 'Days to Expire')}${sortTh('metroPics', 'status', 'Status')}<th></th></tr></thead>
+          <thead><tr>${sortTh('metroPics', 'station', 'Company Name')}${sortTh('metroPics', 'picName', 'PIC Name')}${sortTh('metroPics', 'phone', 'Phone')}${sortTh('metroPics', 'validityStart', 'Valid From')}${sortTh('metroPics', 'validityEnd', 'Valid Until')}${sortTh('metroPics', 'daysToExpire', 'Days to Expire', null, 'center')}${sortTh('metroPics', 'status', 'Status', null, 'center')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

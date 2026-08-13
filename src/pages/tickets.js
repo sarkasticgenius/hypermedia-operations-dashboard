@@ -160,7 +160,7 @@ function renderListView(visible) {
     <tr>
       <td>${esc(t.title)}</td>
       <td>${esc(t.location || '-')}</td>
-      <td><span class="badge ${STATUS_BADGE[t.status] || 'b-gray'}">${esc(t.status)}</span></td>
+      <td class="tcenter"><span class="badge ${STATUS_BADGE[t.status] || 'b-gray'}">${esc(t.status)}</span></td>
       <td>${esc(t.priority)}</td>
       <td>${fmtDate(t.date_reported)}</td>
       <td>
@@ -173,7 +173,7 @@ function renderListView(visible) {
     <div class="card">
       ${visible.length === 0 ? '<div class="empty">No tickets match your filters.</div>' : `
         <table>
-          <thead><tr>${sortTh('ticketsList', 'title', 'Title')}${sortTh('ticketsList', 'location', 'Location')}${sortTh('ticketsList', 'status', 'Status')}${sortTh('ticketsList', 'priority', 'Priority')}${sortTh('ticketsList', 'reported', 'Reported')}<th></th></tr></thead>
+          <thead><tr>${sortTh('ticketsList', 'title', 'Title')}${sortTh('ticketsList', 'location', 'Location')}${sortTh('ticketsList', 'status', 'Status', null, 'center')}${sortTh('ticketsList', 'priority', 'Priority')}${sortTh('ticketsList', 'reported', 'Reported')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -342,13 +342,13 @@ function renderTicketHistoryBlock(assetInvId, tickets, excludeId) {
     <tr>
       <td>${fmtDate(t.date_reported)}</td>
       <td>${esc(t.title)}</td>
-      <td><span class="badge ${STATUS_BADGE[t.status] || 'b-gray'}">${esc(t.status)}</span></td>
+      <td class="tcenter"><span class="badge ${STATUS_BADGE[t.status] || 'b-gray'}">${esc(t.status)}</span></td>
     </tr>
   `).join('');
   return `
     <details style="margin:-6px 0 10px;" ${history.length > 3 ? '' : 'open'}>
       <summary class="small" style="cursor:pointer;font-weight:600;">${history.length} prior ticket${history.length === 1 ? '' : 's'} for this screen</summary>
-      <table style="margin-top:6px;"><thead><tr><th>Reported</th><th>Title</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+      <table style="margin-top:6px;"><thead><tr><th>Reported</th><th>Title</th><th class="tcenter">Status</th></tr></thead><tbody>${rows}</tbody></table>
     </details>
   `;
 }

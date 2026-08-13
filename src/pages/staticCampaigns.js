@@ -49,7 +49,7 @@ function renderListTab() {
       <td>${esc(c.client || '-')}</td>
       <td>${esc(c.format || '-')}</td>
       <td>${fmtDate(c.start_date)} - ${fmtDate(c.end_date)}</td>
-      <td><span class="badge ${STATUS_BADGE[c.status] || 'b-gray'}">${esc(c.status)}</span></td>
+      <td class="tcenter"><span class="badge ${STATUS_BADGE[c.status] || 'b-gray'}">${esc(c.status)}</span></td>
       <td>
         ${canEdit('staticCampaigns') ? `<button class="btn-sm" onclick="App.editStaticCampaign('${c.id}')">Edit</button>` : ''}
         ${canDelete('staticCampaigns') ? `<button class="btn-sm" onclick="App.removeStaticCampaign('${c.id}')">Delete</button>` : ''}
@@ -67,7 +67,7 @@ function renderListTab() {
     <div class="card">
       ${campaigns.length === 0 ? '<div class="empty">No static campaigns yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('staticCampaignsList', 'name', 'Name')}${sortTh('staticCampaignsList', 'client', 'Client')}${sortTh('staticCampaignsList', 'format', 'Format')}${sortTh('staticCampaignsList', 'dates', 'Dates')}${sortTh('staticCampaignsList', 'status', 'Status')}<th></th></tr></thead>
+          <thead><tr>${sortTh('staticCampaignsList', 'name', 'Name')}${sortTh('staticCampaignsList', 'client', 'Client')}${sortTh('staticCampaignsList', 'format', 'Format')}${sortTh('staticCampaignsList', 'dates', 'Dates')}${sortTh('staticCampaignsList', 'status', 'Status', null, 'center')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
@@ -93,7 +93,7 @@ function renderMachinesTab() {
         <td>${esc(m.name)}</td>
         <td>${esc(m.category || '-')}</td>
         <td>${esc(contractor ? contractor.name : '-')}</td>
-        <td><span class="badge ${m.status === 'Available' ? 'b-green' : m.status === 'Maintenance' ? 'b-amber' : 'b-gray'}">${esc(m.status)}</span></td>
+        <td class="tcenter"><span class="badge ${m.status === 'Available' ? 'b-green' : m.status === 'Maintenance' ? 'b-amber' : 'b-gray'}">${esc(m.status)}</span></td>
         <td>
           ${canEdit('staticCampaigns') ? `<button class="btn-sm" onclick="App.editStaticMachine('${m.id}')">Edit</button>` : ''}
           ${canDelete('staticCampaigns') ? `<button class="btn-sm" onclick="App.removeStaticMachine('${m.id}')">Delete</button>` : ''}
@@ -112,7 +112,7 @@ function renderMachinesTab() {
     <div class="card">
       ${machines.length === 0 ? '<div class="empty">No machines yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('staticMachinesList', 'name', 'Name')}${sortTh('staticMachinesList', 'category', 'Category')}${sortTh('staticMachinesList', 'contractor', 'Contractor')}${sortTh('staticMachinesList', 'status', 'Status')}<th></th></tr></thead>
+          <thead><tr>${sortTh('staticMachinesList', 'name', 'Name')}${sortTh('staticMachinesList', 'category', 'Category')}${sortTh('staticMachinesList', 'contractor', 'Contractor')}${sortTh('staticMachinesList', 'status', 'Status', null, 'center')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

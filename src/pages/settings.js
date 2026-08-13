@@ -49,7 +49,7 @@ function renderCategoriesTab() {
   const rows = categories.map((c) => `
     <tr>
       <td>${esc(c.name)}</td>
-      <td>${c.is_rental ? '<span class="badge b-amber">Rental-tracked</span>' : '-'}</td>
+      <td class="tcenter">${c.is_rental ? '<span class="badge b-amber">Rental-tracked</span>' : '-'}</td>
       <td>
         <button class="btn-sm" onclick="App.editCategoryModal('${c.id}')">Edit</button>
         <button class="btn-sm" onclick="App.removeCategory('${c.id}')">Delete</button>
@@ -59,7 +59,7 @@ function renderCategoriesTab() {
   return `
     <div class="card">
       <div class="card-head"><h3>Asset Categories</h3><div class="desc">Rental-tracked categories (Scaffolding, Spider Lift) show a rental period + maintenance location instead of a warranty date on the Asset form.</div></div>
-      <table><thead><tr><th>Name</th><th>Type</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <table><thead><tr><th>Name</th><th class="tcenter">Type</th><th></th></tr></thead><tbody>${rows}</tbody></table>
       <button class="btn btn-orange" style="margin-top:14px;" onclick="App.editCategoryModal(null)">+ Add Category</button>
     </div>
   `;

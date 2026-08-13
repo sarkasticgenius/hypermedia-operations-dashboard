@@ -47,13 +47,13 @@ export function renderDashboard() {
       <div class="card-head"><h3>Recent tickets</h3></div>
       ${tickets.length === 0 ? '<div class="empty">No tickets yet.</div>' : `
         <table>
-          <thead><tr><th>Title</th><th>Location</th><th>Status</th><th>Priority</th><th>Reported</th></tr></thead>
+          <thead><tr><th>Title</th><th>Location</th><th class="tcenter">Status</th><th>Priority</th><th>Reported</th></tr></thead>
           <tbody>
             ${tickets.slice(0, 8).map((t) => `
               <tr>
                 <td>${esc(t.title)}</td>
                 <td>${esc(t.location || '-')}</td>
-                <td><span class="badge ${t.status === 'Closed' ? 'b-gray' : t.status === 'Open' ? 'b-red' : 'b-amber'}">${esc(t.status)}</span></td>
+                <td class="tcenter"><span class="badge ${t.status === 'Closed' ? 'b-gray' : t.status === 'Open' ? 'b-red' : 'b-amber'}">${esc(t.status)}</span></td>
                 <td>${esc(t.priority)}</td>
                 <td>${esc(t.date_reported || '-')}</td>
               </tr>

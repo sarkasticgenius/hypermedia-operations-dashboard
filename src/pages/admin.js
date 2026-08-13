@@ -41,7 +41,7 @@ function renderUsersTab() {
         <td>${esc(u.name)}</td>
         <td>${esc(u.role)}</td>
         <td>${esc(summary)}</td>
-        <td>${u.active ? '<span class="badge b-green">Active</span>' : '<span class="badge b-gray">Deactivated</span>'}</td>
+        <td class="tcenter">${u.active ? '<span class="badge b-green">Active</span>' : '<span class="badge b-gray">Deactivated</span>'}</td>
         <td>
           <button class="btn-sm" onclick="App.editUser('${u.id}')">Edit</button>
           <button class="btn-sm" onclick="App.toggleUserActive('${u.id}', ${u.active})">${u.active ? 'Deactivate' : 'Activate'}</button>
@@ -58,7 +58,7 @@ function renderUsersTab() {
     </div>
     <div class="card">
       <table>
-        <thead><tr>${sortTh('users', 'username', 'Username')}${sortTh('users', 'name', 'Name')}${sortTh('users', 'role', 'Role')}<th>Access</th>${sortTh('users', 'status', 'Status')}<th></th></tr></thead>
+        <thead><tr>${sortTh('users', 'username', 'Username')}${sortTh('users', 'name', 'Name')}${sortTh('users', 'role', 'Role')}<th>Access</th>${sortTh('users', 'status', 'Status', null, 'center')}<th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>

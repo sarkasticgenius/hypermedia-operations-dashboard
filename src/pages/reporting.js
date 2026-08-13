@@ -822,7 +822,7 @@ function renderCampaignDetail(campaign, campaignRows, fields) {
   const lineItemRows = (adsInfo || []).map((a) => `
     <tr>
       <td>${esc(a.name || '')}</td>
-      <td><span class="badge ${a.demand_type === 'programmatic' ? 'b-amber' : 'b-blue'}">${a.demand_type === 'programmatic' ? 'Programmatic' : 'Direct'}</span></td>
+      <td class="tcenter"><span class="badge ${a.demand_type === 'programmatic' ? 'b-amber' : 'b-blue'}">${a.demand_type === 'programmatic' ? 'Programmatic' : 'Direct'}</span></td>
       <td>${esc(a.volume_type || '')}</td>
       <td class="tright">${a.volume_type === 'cycle' ? (a.cycle_playouts ?? '') : ''}</td>
     </tr>
@@ -874,7 +874,7 @@ function renderCampaignDetail(campaign, campaignRows, fields) {
     ${adsLoading || adsInfo?.length ? `
       <div class="card">
         <div class="card-head"><h3>Delivery Type &amp; Line Items</h3><div class="desc">${adsLoading ? 'Loading...' : `Direct: ${directCount}, Programmatic: ${programmaticCount}. "Playouts" (in this table only) only applies to loop/cycle-paced line items.`}</div></div>
-        ${adsLoading ? '' : `<div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Ad (Line Item)</th><th>Type</th><th>Volume Type</th><th class="tright">Playouts</th></tr></thead><tbody>${lineItemRows}</tbody></table></div>`}
+        ${adsLoading ? '' : `<div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Ad (Line Item)</th><th class="tcenter">Type</th><th>Volume Type</th><th class="tright">Playouts</th></tr></thead><tbody>${lineItemRows}</tbody></table></div>`}
       </div>
     ` : ''}
     <div class="card">
@@ -1210,12 +1210,12 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
     return `<tr>
       <td class="tsheet-nowrap">${esc(c.campaignId)}</td>
       <td>${esc(c.campaign)}</td>
-      <td><span class="badge ${c.type === 'Programmatic' ? 'b-amber' : 'b-blue'}">${c.type}</span></td>
+      <td class="tcenter"><span class="badge ${c.type === 'Programmatic' ? 'b-amber' : 'b-blue'}">${c.type}</span></td>
       <td class="tsheet-nowrap">${esc(realStart)}</td>
       <td class="tsheet-nowrap">${esc(realEnd)}</td>
       <td class="tcenter">${campaignDays}</td>
       <td class="tcenter">${esc(loopCount)}${!loopCount && adsLoopLoading ? '<span class="small muted">...</span>' : ''}</td>
-      <td>${statusCell}</td>
+      <td class="tcenter">${statusCell}</td>
       <td class="tright">${totalPlayouts.toLocaleString()}</td>
       <td class="tright">${totalImpressions.toLocaleString()}</td>
       ${showDayGrid ? dates.map((d) => {
@@ -1245,7 +1245,7 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
   // as it does there.
   const monthHeadRow = showDayGrid ? `<tr><th colspan="${TRAFFIC_GRID_META_COLS}"></th>${dateGroups.map((g) => `<th colspan="${g.dates.length}" class="tsheet-month-head">${esc(formatMonthLabel(g.month))}</th>`).join('')}</tr>` : '';
   const dayHeadCells = showDayGrid ? dates.map((d) => `<th class="tsheet-day" title="${esc(d)}">${esc(d.slice(8, 10))}</th>`).join('') : '';
-  const tableHead = `<thead>${monthHeadRow}<tr><th>Campaign ID</th><th>Campaign Name</th><th>Type</th><th>Start</th><th>End</th><th class="tcenter">Days</th><th class="tcenter">Loop Count</th><th>Status</th><th class="tright">Playouts</th><th class="tright">Impressions</th>${dayHeadCells}</tr></thead>`;
+  const tableHead = `<thead>${monthHeadRow}<tr><th>Campaign ID</th><th>Campaign Name</th><th class="tcenter">Type</th><th>Start</th><th>End</th><th class="tcenter">Days</th><th class="tcenter">Loop Count</th><th class="tcenter">Status</th><th class="tright">Playouts</th><th class="tright">Impressions</th>${dayHeadCells}</tr></thead>`;
 
   return `
     ${categoryTabsUi}
@@ -1314,6 +1314,18 @@ function renderGenericTable(title, desc, rows, opts = {}) {
   // out, they just don't force every other row onto multiple lines.
   const widths = {};
   columns.forEach((c) => { widths[c] = colWidthCh(sortedRows, (r) => r[c], c, { min: 6, max: 24 }); });
+  // Every column above has a specified (capped) width, but table-layout:fixed doesn't stretch
+  // specified widths to fill a wider container on its own - the table just ends up narrower than
+  // its card on any screen wider than the content actually needs, leaving a large dead gap on the
+  // right (confirmed live on a normal desktop width). Leaving the single column with the most
+  // genuine content - by UNcapped length, so two columns that both hit the 24ch cap still pick the
+  // one that actually needed more room, not just whichever came first - unset fixes this: an unset
+  // column under table-layout:fixed always absorbs 100% of whatever space is left over after the
+  // other (still-fixed, still full-dataset-derived, still sort/page-stable) columns, so the table
+  // fills its container at any width without reintroducing the original column-jump-on-sort issue.
+  const rawWidths = {};
+  columns.forEach((c) => { rawWidths[c] = colWidthCh(sortedRows, (r) => r[c], c, { min: 6, max: Infinity }); });
+  const flexCol = columns.reduce((best, c) => (rawWidths[c] > rawWidths[best] ? c : best), columns[0]);
 
   const totalPages = Math.max(1, Math.ceil(sortedRows.length / GENERIC_TABLE_PAGE_SIZE));
   const page = Math.min(STATE.genericTablePage?.[title] || 0, totalPages - 1);
@@ -1336,7 +1348,7 @@ function renderGenericTable(title, desc, rows, opts = {}) {
     <div class="card">
       <div class="card-head"><h3>${esc(title)}</h3><div class="desc">${esc(desc)}${totalPages > 1 ? ` - page ${page + 1} of ${totalPages}` : ''}</div></div>
       <div class="tsheet-wrap">
-        <table class="zebra" style="${FIXED_TABLE_STYLE}"><thead><tr>${columns.map((c) => sortTh(title, c, c, widths[c])).join('')}${opts.highlightRow ? '<th style="width:14ch;"></th>' : ''}</tr></thead><tbody>${tableRows}</tbody></table>
+        <table class="zebra" style="${FIXED_TABLE_STYLE}"><thead><tr>${columns.map((c) => sortTh(title, c, c, c === flexCol ? undefined : widths[c])).join('')}${opts.highlightRow ? '<th style="width:14ch;"></th>' : ''}</tr></thead><tbody>${tableRows}</tbody></table>
       </div>
       ${totalPages > 1 ? `<div style="display:flex;justify-content:center;gap:10px;align-items:center;margin-top:10px;">
         <button class="btn-sm" ${page === 0 ? 'disabled' : ''} onclick="App.setGenericTablePage('${esc(title)}',${page - 1})">Prev</button>
