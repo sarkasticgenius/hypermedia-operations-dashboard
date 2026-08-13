@@ -34,6 +34,7 @@ export function renderPermits() {
 
   const sorted = applySort(permits, 'permits', {
     location: (p) => p.location || '',
+    startDate: (p) => p.issue_date || '',
     expiry: (p) => p.expiry_date || '', daysToExpire: (p) => permitDaysToExpire(p), status: (p) => permitStatus(p),
   });
 
@@ -43,6 +44,7 @@ export function renderPermits() {
     return `
       <tr>
         <td>${esc(p.location || '-')}</td>
+        <td>${p.issue_date ? fmtDate(p.issue_date) : '-'}</td>
         <td>${fmtDate(p.expiry_date)}</td>
         <td><span class="badge ${color}">${esc(daysToExpireLabel(p))}</span></td>
         <td><span class="badge ${color}">${status}</span></td>
@@ -67,7 +69,7 @@ export function renderPermits() {
     <div class="card">
       ${permits.length === 0 ? '<div class="empty">No permits yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('permits', 'location', 'Location')}${sortTh('permits', 'expiry', 'Expiry')}${sortTh('permits', 'daysToExpire', 'Days to Expire')}${sortTh('permits', 'status', 'Status')}<th>Document</th><th></th></tr></thead>
+          <thead><tr>${sortTh('permits', 'location', 'Location')}${sortTh('permits', 'startDate', 'Start Date')}${sortTh('permits', 'expiry', 'Expiry')}${sortTh('permits', 'daysToExpire', 'Days to Expire')}${sortTh('permits', 'status', 'Status')}<th>Document</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

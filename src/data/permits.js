@@ -18,20 +18,23 @@ export function permitDaysToExpire(p) {
   return Math.round((expiry - today) / 86400000);
 }
 
+// "Expiring Soon" is deliberately a narrow, under-10-days window (not the wider 30-day heads-up
+// some other expiry trackers use) - this also drives the Ops Overview alerts feed, so widening it
+// here would also widen how far out that feed starts flagging permits.
 export function permitStatus(p) {
   const diffDays = permitDaysToExpire(p);
   if (diffDays == null) return 'Active';
   if (diffDays < 0) return 'Expired';
-  if (diffDays <= 30) return 'Expiring Soon';
+  if (diffDays < 10) return 'Expiring Soon';
   return 'Active';
 }
 
-// Badge/text color for a permit's expiry urgency - under 10 days (or already expired) is the only
-// case that should read as the yellow/amber "needs attention" color; everything with 10+ days left
-// stays green regardless of permitStatus()'s wider 30-day "Expiring Soon" label.
+// Badge/text color for a permit's expiry urgency - already-expired reads as red (most severe),
+// under 10 days left reads as amber/yellow ("Expiring Soon"), everything else stays green.
 export function permitStatusColor(p) {
   const diffDays = permitDaysToExpire(p);
   if (diffDays == null) return 'b-green';
+  if (diffDays < 0) return 'b-red';
   if (diffDays < 10) return 'b-amber';
   return 'b-green';
 }

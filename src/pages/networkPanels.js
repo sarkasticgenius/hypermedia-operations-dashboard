@@ -427,7 +427,7 @@ function renderIotDeviceTable(cfg) {
     </div>
     <div style="max-height:480px;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${sortTh('iotDevices', 'deviceId', 'Device ID', 14)}${sortTh('iotDevices', 'name', 'Name', 18)}${sortTh('iotDevices', 'mac', 'MAC Address', 15)}${sortTh('iotDevices', 'venue', 'Venue', 22)}${sortTh('iotDevices', 'platform', 'Platform', 12)}${sortTh('iotDevices', 'state', 'State', 10)}${sortTh('iotDevices', 'connectivity', 'Connectivity', 13)}${sortTh('iotDevices', 'lastSeen', 'Last Seen', 14)}<th></th></tr></thead>
+        <thead><tr>${sortTh('iotDevices', 'deviceId', 'Device ID', 14)}${sortTh('iotDevices', 'name', 'Name', 18)}${sortTh('iotDevices', 'mac', 'MAC Address', 15)}${sortTh('iotDevices', 'venue', 'Venue')}${sortTh('iotDevices', 'platform', 'Platform', 12)}${sortTh('iotDevices', 'state', 'State', 10)}${sortTh('iotDevices', 'connectivity', 'Connectivity', 13)}${sortTh('iotDevices', 'lastSeen', 'Last Seen', 14)}<th style="width:9ch;"></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -745,7 +745,7 @@ registerModal('iotCategoryModal', (data) => {
     <h3>${esc(label)} - ${devices.length} device(s)</h3>
     ${category === 'Other' ? `<p class="small muted">These sites didn't match a known venue category (Metro/Malls/In-Store/Outdoor) or a known retail-chain name - likely orphaned, demo, or test devices rather than real venues. Review them below and exclude any that shouldn't count toward the fleet (Devices table on the main IoT Panel).</p>` : ''}
     <table style="${FIXED_TABLE_STYLE}">
-      <thead><tr>${sortTh('iotCategorySites', 'site', 'Site', 22)}${sortTh('iotCategorySites', 'devices', 'Devices', 10)}${sortTh('iotCategorySites', 'offline', 'Offline', 10)}<th></th></tr></thead>
+      <thead><tr>${sortTh('iotCategorySites', 'site', 'Site')}${sortTh('iotCategorySites', 'devices', 'Devices', 10)}${sortTh('iotCategorySites', 'offline', 'Offline', 10)}<th style="width:12ch;"></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>

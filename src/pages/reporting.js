@@ -172,9 +172,22 @@ function availsPlacementOptions() {
   rows.forEach((r) => {
     const pid = r[fields.placementId];
     if (pid == null || seen.has(pid)) return;
-    seen.set(pid, { id: pid, placement: String(r[fields.placement] ?? ''), site: fields.site ? String(r[fields.site] ?? '') : '' });
+    // Whitespace collapsed (not just trimmed) - real vendor data has placements like
+    // "CONCOURSE SCREEN  2" with a stray double space before the number where the equivalent
+    // "SCREEN 1" only has one. A space (0x20) sorts before any digit, so that lone extra space
+    // made "SCREEN  2" compare as LESS than "SCREEN 1" - the number sat one position further
+    // right than the comparison expected, entirely unrelated to which number it actually was.
+    // Confirmed against live Al Furjan/Discovery Gardens placement names.
+    const site = fields.site ? String(r[fields.site] ?? '').trim().replace(/\s+/g, ' ') : '';
+    const placement = String(r[fields.placement] ?? '').trim().replace(/\s+/g, ' ');
+    seen.set(pid, { id: pid, placement, site });
   });
-  return [...seen.values()].sort((a, b) => a.site.localeCompare(b.site) || a.placement.localeCompare(b.placement));
+  // { numeric: true } sorts "Screen 2" before "Screen 10" - plain localeCompare treats these as
+  // strings ("1" < "2" character-by-character), so "Screen 10" through "Screen 18" sorted right
+  // after "Screen 1" and before "Screen 2" (confirmed against live EXPO 2020 placement names).
+  return [...seen.values()].sort((a, b) =>
+    a.site.localeCompare(b.site, undefined, { numeric: true })
+    || a.placement.localeCompare(b.placement, undefined, { numeric: true }));
 }
 
 export function toggleAvailsPlacement(id) {
@@ -1323,7 +1336,7 @@ function renderGenericTable(title, desc, rows, opts = {}) {
     <div class="card">
       <div class="card-head"><h3>${esc(title)}</h3><div class="desc">${esc(desc)}${totalPages > 1 ? ` - page ${page + 1} of ${totalPages}` : ''}</div></div>
       <div class="tsheet-wrap">
-        <table class="zebra" style="${FIXED_TABLE_STYLE}"><thead><tr>${columns.map((c) => sortTh(title, c, c, widths[c])).join('')}${opts.highlightRow ? '<th></th>' : ''}</tr></thead><tbody>${tableRows}</tbody></table>
+        <table class="zebra" style="${FIXED_TABLE_STYLE}"><thead><tr>${columns.map((c) => sortTh(title, c, c, widths[c])).join('')}${opts.highlightRow ? '<th style="width:14ch;"></th>' : ''}</tr></thead><tbody>${tableRows}</tbody></table>
       </div>
       ${totalPages > 1 ? `<div style="display:flex;justify-content:center;gap:10px;align-items:center;margin-top:10px;">
         <button class="btn-sm" ${page === 0 ? 'disabled' : ''} onclick="App.setGenericTablePage('${esc(title)}',${page - 1})">Prev</button>
