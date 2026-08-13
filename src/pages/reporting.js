@@ -1323,6 +1323,12 @@ function renderGenericTable(title, desc, rows, opts = {}) {
   // 24ch so one freak long value (a stray URL, a long free-text note) can't blow a column out; long
   // values still show in full via the title tooltip and can be read by widening the browser/zooming
   // out, they just don't force every other row onto multiple lines.
+  //
+  // Tried raising this to 40 to give long site/placement names more room, but a wide endpoint like
+  // stats-dsps (17 columns) already has several OTHER genuinely-long text columns (dsp_seat's
+  // auction IDs, in particular) - letting every one of them grow past 24 consumed so much width
+  // that the flex column below (see flexCol) had nothing left to claim and rendered at 0px,
+  // hiding its entire column outright. That's strictly worse than a 24ch ellipsis, so this stays.
   const widths = {};
   columns.forEach((c) => { widths[c] = colWidthCh(sortedRows, (r) => r[c], c, { min: 6, max: 24 }); });
   // Every column above has a specified (capped) width, but table-layout:fixed doesn't stretch
@@ -1336,7 +1342,19 @@ function renderGenericTable(title, desc, rows, opts = {}) {
   // fills its container at any width without reintroducing the original column-jump-on-sort issue.
   const rawWidths = {};
   columns.forEach((c) => { rawWidths[c] = colWidthCh(sortedRows, (r) => r[c], c, { min: 6, max: Infinity }); });
-  const flexCol = columns.reduce((best, c) => (rawWidths[c] > rawWidths[best] ? c : best), columns[0]);
+  const widest = columns.reduce((best, c) => (rawWidths[c] > rawWidths[best] ? c : best), columns[0]);
+  // A wide endpoint (stats-dsps: 17 columns) can need MORE total width across its other, still-
+  // fixed columns than a typical card even has to give - confirmed live: leaving p_name unset there
+  // didn't widen it, it collapsed to 0px, hiding the column outright, because there was no leftover
+  // space at all once every other column claimed its own share. table-layout:fixed can't give a
+  // column negative width, so an unset column is only safe when the REST of the row has genuine
+  // room to spare. SAFE_FIXED_CH is a conservative estimate of that (comfortably under a normal
+  // card's content width even accounting for the sidebar) - past it, every column keeps its own
+  // capped width and the table scrolls horizontally instead (already supported via .tsheet-wrap),
+  // which is strictly better than one column vanishing.
+  const SAFE_FIXED_CH = 110;
+  const otherColsCh = columns.filter((c) => c !== widest).reduce((sum, c) => sum + widths[c], 0);
+  const flexCol = otherColsCh <= SAFE_FIXED_CH ? widest : null;
 
   const totalPages = Math.max(1, Math.ceil(sortedRows.length / GENERIC_TABLE_PAGE_SIZE));
   const page = Math.min(STATE.genericTablePage?.[title] || 0, totalPages - 1);
