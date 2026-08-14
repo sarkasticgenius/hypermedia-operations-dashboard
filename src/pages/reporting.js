@@ -201,13 +201,33 @@ function sortKeyFor(s) {
   return String(s || '').replace(/\s*-\s*/g, '-');
 }
 
+// One entry per distinct site/location in availsPlacementOptions()'s result, in the same
+// natural/normalized order, for the Avails tab's Location dropdown - picking a location first,
+// then an asset at that location, replaced the old "type into a free-text box to search 1000+
+// placements at once" flow (confirmed live: a plain flat list that size needed real effort to
+// search through blind; grouping by location first means picking from a dropdown of maybe a dozen
+// to a few dozen familiar venue names instead).
+function availsLocationGroups(allOptions) {
+  const counts = new Map();
+  allOptions.forEach((o) => {
+    const site = o.site || '(No site)';
+    counts.set(site, (counts.get(site) || 0) + 1);
+  });
+  return [...counts.entries()]
+    .sort((a, b) => sortKeyFor(a[0]).localeCompare(sortKeyFor(b[0]), undefined, { numeric: true }))
+    .map(([site, count]) => ({ site, count }));
+}
+
 export function toggleAvailsPlacement(id) {
   const current = new Set((STATE.reportingAvailsPlacementIds || []).map(String));
   const key = String(id);
   if (current.has(key)) current.delete(key); else current.add(key);
   setState({ reportingAvailsPlacementIds: [...current] });
 }
-export function setAvailsPlacementSearch(v) { setState({ reportingAvailsPlacementSearch: v }); }
+// Switching locations clears any in-progress asset filter from the previous location - carrying it
+// over would silently hide every asset at the new location until the user noticed and cleared it.
+export function setAvailsLocation(v) { setState({ reportingAvailsLocation: v, reportingAvailsAssetSearch: '' }); }
+export function setAvailsAssetSearch(v) { setState({ reportingAvailsAssetSearch: v }); }
 
 // A comma-separated placement_ids list with hundreds of entries is a likely cause of "no forecast
 // coming back" on its own (URL/param-length limits on the vendor's side) - this is a soft warning,
@@ -1558,44 +1578,52 @@ export function renderReporting() {
     const allOptions = availsPlacementOptions();
     const pickedIds = new Set((STATE.reportingAvailsPlacementIds || []).map(String));
     const selectedOptions = allOptions.filter((o) => pickedIds.has(String(o.id)));
-    const placementSearch = (STATE.reportingAvailsPlacementSearch || '').trim().toLowerCase();
-    // Rendering all 1000+ options as checkboxes at once was the "window not properly displayed"
-    // problem - every checkbox click re-renders the whole page (see render()'s innerHTML-replace
-    // model), so a list that size got rebuilt from scratch, resetting scroll position, on every
-    // single click. A search box is required once the list is large enough for that to matter;
-    // small lists still just show everything, no need to force a search first.
-    const REQUIRE_SEARCH_ABOVE = 150;
-    const MAX_RENDERED_OPTIONS = 200;
-    const searchable = allOptions.length > REQUIRE_SEARCH_ABOVE;
-    const matched = placementSearch
-      ? allOptions.filter((o) => `${o.site} ${o.placement}`.toLowerCase().includes(placementSearch))
-      : (searchable ? [] : allOptions);
-    const shown = matched.slice(0, MAX_RENDERED_OPTIONS);
+    const locationGroups = availsLocationGroups(allOptions);
+    const selectedLocation = STATE.reportingAvailsLocation || '';
+    const locationOptions = selectedLocation ? allOptions.filter((o) => (o.site || '(No site)') === selectedLocation) : [];
+    // A single location can still have 100+ assets (REEM MALL alone has 100+) - a filter box scoped
+    // to just that location's own assets only shows up once there's actually enough of them to be
+    // worth filtering, same threshold idea as the old flat list but against a far smaller starting
+    // count now that a location's picked first.
+    const REQUIRE_ASSET_SEARCH_ABOVE = 20;
+    const assetSearch = (STATE.reportingAvailsAssetSearch || '').trim().toLowerCase();
+    const assetSearchable = locationOptions.length > REQUIRE_ASSET_SEARCH_ABOVE;
+    const matchedAssets = (assetSearchable && assetSearch)
+      ? locationOptions.filter((o) => o.placement.toLowerCase().includes(assetSearch))
+      : locationOptions;
     content = `
       <div class="toolbar">
         ${allOptions.length ? `
           <div class="field">
-            <label>Pick placement(s) from loaded data (${allOptions.length} available)</label>
-            ${selectedOptions.length ? `
-              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
-                ${selectedOptions.map((o) => `
-                  <span class="badge b-blue" style="cursor:pointer;" onclick="App.toggleAvailsPlacement('${esc(String(o.id))}')" title="Click to remove">
-                    ${esc(o.site)}${o.site && o.placement ? ' - ' : ''}${esc(o.placement)} &times;
-                  </span>
-                `).join('')}
-              </div>
-            ` : ''}
-            <input id="avails-placement-search" placeholder="Search by site or placement name..." value="${esc(STATE.reportingAvailsPlacementSearch || '')}" oninput="App.setAvailsPlacementSearch(this.value)" style="width:100%;max-width:420px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
-            <div style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);border-radius:8px;padding:8px;">
-              ${shown.length ? shown.map((o) => `
-                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                  <input type="checkbox" onchange="App.toggleAvailsPlacement('${esc(String(o.id))}')" ${pickedIds.has(String(o.id)) ? 'checked' : ''}>
-                  ${esc(o.site)}${o.site && o.placement ? ' - ' : ''}${esc(o.placement)}
-                </label>
-              `).join('') : `<div class="empty">${searchable && !placementSearch ? `Type above to search ${allOptions.length} placements.` : 'No placements match that search.'}</div>`}
-            </div>
-            ${matched.length > MAX_RENDERED_OPTIONS ? `<div class="small muted" style="margin-top:4px;">${matched.length} matches - showing the first ${MAX_RENDERED_OPTIONS}. Narrow your search to see more.</div>` : ''}
+            <label>Location (${locationGroups.length} available)</label>
+            <select id="avails-location-select" onchange="App.setAvailsLocation(this.value)" style="width:100%;max-width:420px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+              <option value="">Select a location...</option>
+              ${locationGroups.map((g) => `<option value="${esc(g.site)}" ${selectedLocation === g.site ? 'selected' : ''}>${esc(g.site)} (${g.count})</option>`).join('')}
+            </select>
           </div>
+          ${selectedOptions.length ? `
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0;">
+              ${selectedOptions.map((o) => `
+                <span class="badge b-blue" style="cursor:pointer;" onclick="App.toggleAvailsPlacement('${esc(String(o.id))}')" title="Click to remove">
+                  ${esc(o.site)}${o.site && o.placement ? ' - ' : ''}${esc(o.placement)} &times;
+                </span>
+              `).join('')}
+            </div>
+          ` : ''}
+          ${selectedLocation ? `
+            <div class="field" style="margin-top:10px;">
+              <label>Assets at ${esc(selectedLocation)} (${locationOptions.length})</label>
+              ${assetSearchable ? `<input id="avails-asset-search" placeholder="Filter assets at this location..." value="${esc(STATE.reportingAvailsAssetSearch || '')}" oninput="App.setAvailsAssetSearch(this.value)" style="width:100%;max-width:420px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">` : ''}
+              <div style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);border-radius:8px;padding:8px;">
+                ${matchedAssets.length ? matchedAssets.map((o) => `
+                  <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                    <input type="checkbox" onchange="App.toggleAvailsPlacement('${esc(String(o.id))}')" ${pickedIds.has(String(o.id)) ? 'checked' : ''}>
+                    ${esc(o.placement)}
+                  </label>
+                `).join('') : `<div class="empty">No assets at this location match that filter.</div>`}
+              </div>
+            </div>
+          ` : `<div class="desc" style="margin-top:10px;">Pick a location above to see its assets, or use an Ad ID/manual Placement IDs below.</div>`}
         ` : `<div class="desc">No placements loaded to pick from yet - open Ads Stats or Placements Stats first, or enter Placement IDs manually below.</div>`}
         <div class="toolbar-actions" style="align-items:flex-end;flex-wrap:wrap;margin-top:10px;">
           <div class="field" style="margin-bottom:0;"><label>Placement IDs (manual, optional)</label><input id="avails-placement-ids-manual" placeholder="e.g. 123,124"></div>
@@ -1605,7 +1633,7 @@ export function renderReporting() {
           <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.applyAvailsFilter()">${loading ? 'Loading...' : 'Get Forecast'}</button>
           ${STATE.reportingAvails ? `<button class="btn-outline btn-sm" type="button" onclick="App.downloadTabExcel()">Download Excel</button>` : ''}
         </div>
-        <div class="desc" style="margin-top:6px;">Pick placements above, or an Ad ID/manual Placement IDs. End date is exclusive (must be after Start) - leave both blank for today through today + 7 days. Selecting a very large number of placements may cause the forecast to fail silently on the vendor's side - narrow it down if nothing comes back.</div>
+        <div class="desc" style="margin-top:6px;">Pick a location, then its asset(s) above, or an Ad ID/manual Placement IDs. End date is exclusive (must be after Start) - leave both blank for today through today + 7 days. Selecting a very large number of placements may cause the forecast to fail silently on the vendor's side - narrow it down if nothing comes back.</div>
       </div>
       ${errorMsg ? `<div class="login-error" style="margin-bottom:14px;">${esc(errorMsg)}</div>` : ''}
       ${renderAvails(STATE.reportingAvails)}
