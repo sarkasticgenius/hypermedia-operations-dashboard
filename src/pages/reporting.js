@@ -1618,7 +1618,7 @@ export function renderReporting() {
               <div style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);border-radius:8px;padding:8px;">
                 ${matchedAssets.length ? matchedAssets.map((o) => `
                   <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                    <input type="checkbox" onchange="App.toggleAvailsPlacement('${esc(String(o.id))}')" ${pickedIds.has(String(o.id)) ? 'checked' : ''}>
+                    <input type="checkbox" style="width:auto;" onchange="App.toggleAvailsPlacement('${esc(String(o.id))}')" ${pickedIds.has(String(o.id)) ? 'checked' : ''}>
                     ${esc(o.placement)}
                   </label>
                 `).join('') : `<div class="empty">No assets at this location match that filter.</div>`}
