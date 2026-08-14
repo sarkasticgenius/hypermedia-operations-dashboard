@@ -1581,22 +1581,23 @@ export function renderReporting() {
     const locationGroups = availsLocationGroups(allOptions);
     const selectedLocation = STATE.reportingAvailsLocation || '';
     const locationOptions = selectedLocation ? allOptions.filter((o) => (o.site || '(No site)') === selectedLocation) : [];
-    // A single location can still have 100+ assets (REEM MALL alone has 100+) - a filter box scoped
-    // to just that location's own assets only shows up once there's actually enough of them to be
-    // worth filtering, same threshold idea as the old flat list but against a far smaller starting
-    // count now that a location's picked first.
-    const REQUIRE_ASSET_SEARCH_ABOVE = 20;
+    // Always available, not just past some count threshold - some vendor placement names use
+    // ambiguous/inconsistent numbering (confirmed live: Dalma Mall has both "...MPI-1A (11A)..."
+    // and plain "...MPI-9A" naming, where which number is authoritative for sort purposes is
+    // genuinely unclear) - filtering straight to what you're looking for by typing it is a more
+    // reliable way to find an asset than counting on any general sort to read as "correct" for
+    // every naming convention this vendor's data happens to use.
     const assetSearch = (STATE.reportingAvailsAssetSearch || '').trim().toLowerCase();
-    const assetSearchable = locationOptions.length > REQUIRE_ASSET_SEARCH_ABOVE;
-    const matchedAssets = (assetSearchable && assetSearch)
+    const matchedAssets = assetSearch
       ? locationOptions.filter((o) => o.placement.toLowerCase().includes(assetSearch))
       : locationOptions;
     content = `
       <div class="toolbar">
+        <div style="width:100%;">
         ${allOptions.length ? `
-          <div class="field">
+          <div class="field" style="max-width:420px;">
             <label>Location (${locationGroups.length} available)</label>
-            <select id="avails-location-select" onchange="App.setAvailsLocation(this.value)" style="width:100%;max-width:420px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+            <select id="avails-location-select" onchange="App.setAvailsLocation(this.value)" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
               <option value="">Select a location...</option>
               ${locationGroups.map((g) => `<option value="${esc(g.site)}" ${selectedLocation === g.site ? 'selected' : ''}>${esc(g.site)} (${g.count})</option>`).join('')}
             </select>
@@ -1611,9 +1612,9 @@ export function renderReporting() {
             </div>
           ` : ''}
           ${selectedLocation ? `
-            <div class="field" style="margin-top:10px;">
+            <div class="field" style="margin-top:10px;max-width:420px;">
               <label>Assets at ${esc(selectedLocation)} (${locationOptions.length})</label>
-              ${assetSearchable ? `<input id="avails-asset-search" placeholder="Filter assets at this location..." value="${esc(STATE.reportingAvailsAssetSearch || '')}" oninput="App.setAvailsAssetSearch(this.value)" style="width:100%;max-width:420px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">` : ''}
+              <input id="avails-asset-search" placeholder="Filter assets at this location..." value="${esc(STATE.reportingAvailsAssetSearch || '')}" oninput="App.setAvailsAssetSearch(this.value)" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
               <div style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);border-radius:8px;padding:8px;">
                 ${matchedAssets.length ? matchedAssets.map((o) => `
                   <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
@@ -1625,6 +1626,7 @@ export function renderReporting() {
             </div>
           ` : `<div class="desc" style="margin-top:10px;">Pick a location above to see its assets, or use an Ad ID/manual Placement IDs below.</div>`}
         ` : `<div class="desc">No placements loaded to pick from yet - open Ads Stats or Placements Stats first, or enter Placement IDs manually below.</div>`}
+        </div>
         <div class="toolbar-actions" style="align-items:flex-end;flex-wrap:wrap;margin-top:10px;">
           <div class="field" style="margin-bottom:0;"><label>Placement IDs (manual, optional)</label><input id="avails-placement-ids-manual" placeholder="e.g. 123,124"></div>
           <div class="field" style="margin-bottom:0;"><label>or Ad ID</label><input id="avails-ad-id" placeholder="e.g. 1791994057"></div>
