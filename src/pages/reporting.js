@@ -1459,6 +1459,18 @@ function renderLastPlayouts(data) {
 // no single "how booked is this" number - Reserved % = 1 - available/total, computed here the same
 // way the API's own per-site/per-day `reserved` ratios are described, just rolled up to an overall
 // figure so the top of the page answers "is this inventory actually available" at a glance.
+// A site/day is genuinely overbooked - not just "busy" - when more has been committed against it
+// than its cycle-length capacity can physically deliver in that window: Reserved and Available are
+// independent raw fields from AiOO (not complements of each other, so they don't have to sum to
+// 100%), and the vendor's own forecast engine signals overbooking two ways - a Reserved ratio past
+// 100%, or Available Playouts/Impressions going negative (how far into the negative it's been
+// oversold). Either one alone is enough to flag it.
+function isOverbooked(reserved, availPlayouts, availImpressions) {
+  return (reserved != null && reserved > 1)
+    || (availPlayouts != null && availPlayouts < 0)
+    || (availImpressions != null && availImpressions < 0);
+}
+
 function renderAvails(data) {
   if (!data) return '<div class="card"><div class="empty">Pick one or more placements above (or enter an Ad ID) and click "Get Forecast".</div></div>';
   const pct = (n) => n == null ? '' : `${Math.round(n * 100)}%`;
@@ -1467,9 +1479,18 @@ function renderAvails(data) {
   const timelineDates = Object.keys(data.timeline || {}).sort();
   const timelineRows = timelineDates.map((d) => {
     const t = data.timeline[d];
-    return `<tr><td>${esc(d)}</td><td class="tright">${pct(t.reserved)}</td><td class="tright">${(t.available_playouts ?? 0).toLocaleString()}</td><td class="tright">${(t.available_impressions ?? 0).toLocaleString()}</td></tr>`;
+    const overbooked = isOverbooked(t.reserved, t.available_playouts, t.available_impressions);
+    return `<tr${overbooked ? ' style="background:var(--red-bg);"' : ''}><td>${esc(d)}</td><td class="tright">${pct(t.reserved)}</td><td class="tright">${(t.available_playouts ?? 0).toLocaleString()}</td><td class="tright">${(t.available_impressions ?? 0).toLocaleString()}</td><td>${overbooked ? '<span class="badge b-red">Overbooked</span>' : ''}</td></tr>`;
   }).join('');
-  const siteRows = (data.sites || []).map((s) => `<tr><td>${esc(s.name)}</td><td class="tright">${s.cycle_length ?? ''}</td><td class="tright">${pct(s.reserved)}</td><td class="tright">${pct(s.available)}</td><td class="tright">${(s.available_playouts ?? 0).toLocaleString()}</td></tr>`).join('');
+  const overbookedDays = timelineDates.filter((d) => {
+    const t = data.timeline[d];
+    return isOverbooked(t.reserved, t.available_playouts, t.available_impressions);
+  }).length;
+  const siteRows = (data.sites || []).map((s) => {
+    const overbooked = isOverbooked(s.reserved, s.available_playouts, null);
+    return `<tr${overbooked ? ' style="background:var(--red-bg);"' : ''}><td>${esc(s.name)}</td><td class="tright">${s.cycle_length ?? ''}</td><td class="tright">${pct(s.reserved)}</td><td class="tright">${pct(s.available)}</td><td class="tright">${(s.available_playouts ?? 0).toLocaleString()}</td><td>${overbooked ? '<span class="badge b-red">Overbooked</span>' : ''}</td></tr>`;
+  }).join('');
+  const overbookedSites = (data.sites || []).filter((s) => isOverbooked(s.reserved, s.available_playouts, null)).length;
   return `
     <div class="bento-stats">
       ${statTile('info', 'Sites', data.nb_sites ?? 0)}
@@ -1481,14 +1502,16 @@ function renderAvails(data) {
       ${statTile('ok', 'Available Playouts', (data.available_playouts ?? 0).toLocaleString())}
       ${statTile('info', 'Total Impressions', (data.impressions ?? 0).toLocaleString())}
       ${statTile('ok', 'Available Impressions', (data.available_impressions ?? 0).toLocaleString())}
+      ${overbookedSites ? statTile('alert', 'Overbooked Sites', overbookedSites) : ''}
+      ${overbookedDays ? statTile('alert', 'Overbooked Days', overbookedDays) : ''}
     </div>
     <div class="card">
-      <div class="card-head"><h3>Per-Site Availability</h3><div class="desc">Sorted by reserved ratio descending.</div></div>
-      <div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Site</th><th class="tright">Cycle Length</th><th class="tright">Reserved</th><th class="tright">Available</th><th class="tright">Avail. Playouts</th></tr></thead><tbody>${siteRows || '<tr><td colspan="5">No sites.</td></tr>'}</tbody></table></div>
+      <div class="card-head"><h3>Per-Site Availability</h3><div class="desc">Sorted by reserved ratio descending. A site is flagged Overbooked when Reserved is past 100% or Avail. Playouts has gone negative - more has been committed against it than its cycle-length capacity can actually deliver.</div></div>
+      <div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Site</th><th class="tright">Cycle Length</th><th class="tright">Reserved</th><th class="tright">Available</th><th class="tright">Avail. Playouts</th><th></th></tr></thead><tbody>${siteRows || '<tr><td colspan="6">No sites.</td></tr>'}</tbody></table></div>
     </div>
     <div class="card">
       <div class="card-head"><h3>Daily Timeline</h3></div>
-      <div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Date</th><th class="tright">Reserved</th><th class="tright">Avail. Playouts</th><th class="tright">Avail. Impressions</th></tr></thead><tbody>${timelineRows || '<tr><td colspan="4">No data.</td></tr>'}</tbody></table></div>
+      <div class="tsheet-wrap"><table class="zebra"><thead><tr><th>Date</th><th class="tright">Reserved</th><th class="tright">Avail. Playouts</th><th class="tright">Avail. Impressions</th><th></th></tr></thead><tbody>${timelineRows || '<tr><td colspan="5">No data.</td></tr>'}</tbody></table></div>
     </div>
   `;
 }
