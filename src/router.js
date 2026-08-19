@@ -23,6 +23,7 @@ export const PAGE_AREA = {
   clientCampaignMonitor: 'clientCampaigns',
   reporting: 'reporting',
   dashboards: 'dashboards',
+  creativeResizer: null,
   admin: 'admin',
   settings: 'admin',
   recycleBin: 'admin',

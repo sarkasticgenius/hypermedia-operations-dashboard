@@ -21,6 +21,17 @@ export function initRender(el, fn) {
   renderFn = fn;
 }
 
+// Callbacks run after every render() call, in addition to the normal HTML-string rebuild above.
+// Only needed by pages that own a real, persistent (non-string) DOM subtree - e.g. Creative
+// Resizer's canvas/video/ffmpeg workspace, which can't be safely torn down and recreated from a
+// string every time some unrelated part of the app calls setState() (a toast elsewhere, a
+// background data refresh). Such a page keeps its live subtree in a detached element and uses this
+// hook to re-attach it into its render()-generated placeholder every time, instead of rebuilding it.
+const afterRenderHooks = [];
+export function onAfterRender(fn) {
+  afterRenderHooks.push(fn);
+}
+
 // innerHTML replace on every render kills focus/caret position in whatever input the user is
 // typing in - this restores it by id, same trick the original app used. It also tears down and
 // rebuilds every DOM node, so any scrollable container snaps back to scrollTop 0 on every
@@ -84,6 +95,8 @@ export function render() {
     const newContent = document.querySelector('.content');
     if (newContent) newContent.scrollTop = contentScroll;
   }
+
+  afterRenderHooks.forEach((fn) => fn());
 }
 
 export function setState(patch) {
