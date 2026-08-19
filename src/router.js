@@ -23,6 +23,7 @@ export const PAGE_AREA = {
   clientCampaignMonitor: 'clientCampaigns',
   reporting: 'reporting',
   dashboards: 'dashboards',
+  workspaceDirectory: 'workspaceDirectory',
   creativeResizer: null,
   admin: 'admin',
   settings: 'admin',

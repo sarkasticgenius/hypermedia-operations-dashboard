@@ -23,6 +23,7 @@ import * as settingsPage from './pages/settings.js';
 import * as networkPanelsPage from './pages/networkPanels.js';
 import * as bulkImportPage from './pages/bulkImport.js';
 import * as creativeResizerPage from './pages/creativeResizer.js';
+import * as workspaceDirectoryPage from './pages/workspaceDirectory.js';
 import * as recycleBinPage from './pages/recycleBin.js';
 import * as clientCampaignMonitorPage from './pages/clientCampaignMonitor.js';
 import { initContractorPortal, renderContractorPortal, bindContractorPortalForm } from './pages/contractorPortal.js';
@@ -75,6 +76,7 @@ registerPage('broadsignPanel', networkPanelsPage.renderBroadsignPanel);
 registerPage('grassfishPanel', networkPanelsPage.renderGrassfishPanel);
 registerPage('iotPanel', networkPanelsPage.renderIotPanel);
 registerPage('creativeResizer', creativeResizerPage.renderCreativeResizer);
+registerPage('workspaceDirectory', workspaceDirectoryPage.renderWorkspaceDirectory);
 
 // Every inline onclick="App.xyz(...)" in the HTML-string page templates resolves against this
 // single global, assembled here from each page module's exported handlers. Keeps the render-
@@ -118,6 +120,7 @@ window.App = {
   ...settingsPage,
   ...networkPanelsPage,
   ...bulkImportPage,
+  ...workspaceDirectoryPage,
   ...recycleBinPage,
   ...clientCampaignMonitorPage,
 };

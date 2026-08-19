@@ -536,6 +536,172 @@ function renderIotApiCard(settings) {
   `;
 }
 
+// Inverted from every other card on this tab: those pull FROM a vendor API on our schedule, this
+// one accepts a PUSH from scripts/workspace-directory-agent.ps1 running on each PC, authenticated
+// by this shared secret (x-agent-secret header) rather than an API key we're calling out with -
+// see supabase/functions/workspace-directory-checkin. The download button bakes the current
+// secret, this project's Supabase URL, and its anon key (safe to embed - already public in the
+// deployed bundle, access is enforced by RLS/the secret check, not by hiding it) directly into
+// the generated script, so there's no separate "enter these 3 values" step on each PC.
+function renderWorkspaceDirectoryAgentCard(settings) {
+  const cfg = settings.workspaceDirectoryAgent || {};
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Workspace Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk ID, OS, logged-in user, installed software) - feeds the Workspace Directory page. Generate a secret, save, then download and run the install script (as Administrator) on each PC.</div></div>
+      <form onsubmit="App.saveWorkspaceDirectoryAgentForm(event)">
+        <div class="field"><label>Shared Agent Secret</label>
+          <div style="display:flex;gap:8px;">
+            <input id="int-wda-secret" type="password" autocomplete="off" value="${esc(cfg.secret || '')}" style="flex:1;">
+            <button type="button" class="btn-outline btn-sm" onclick="App.generateWorkspaceDirectorySecret()">Generate</button>
+          </div>
+          <div class="small muted" style="margin-top:4px;">Every agent sends this in an x-agent-secret header instead of signing in as a user. Rotating it means re-downloading and re-installing the script on every PC.</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-orange" type="submit">Save</button>
+          <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentScript()">Download Install Script</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+export function generateWorkspaceDirectorySecret() {
+  const el = document.getElementById('int-wda-secret');
+  if (el) el.value = crypto.randomUUID().replace(/-/g, '');
+}
+
+export async function saveWorkspaceDirectoryAgentForm(event) {
+  event.preventDefault();
+  const secret = document.getElementById('int-wda-secret').value.trim();
+  if (!secret) { toast('Generate or enter a secret first', 'error'); return; }
+  try {
+    await saveSetting('workspaceDirectoryAgent', { secret });
+    await logAudit('Save integration settings', 'workspaceDirectoryAgent');
+    invalidate('settings');
+    toast('Settings saved');
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// A single self-elevating .ps1 (no separate .cmd launcher needed, unlike the reference NSOC agent)
+// - collects basic inventory and POSTs it to workspace-directory-checkin, then installs itself as
+// a 15-minute scheduled task so it keeps checking in unattended.
+function buildWorkspaceDirectoryAgentScript(secret) {
+  const checkinUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-checkin`;
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return `# Workspace Digital Directory Agent
+# Collects basic PC inventory and checks in with the Hypermedia Operations Dashboard every 15
+# minutes via a scheduled task. Re-run this script any time to update the install.
+
+param([switch]$Once)
+
+$CheckinUrl = "${checkinUrl}"
+$AgentSecret = "${secret}"
+$AnonKey = "${anonKey}"
+$TaskName = "WorkspaceDirectoryAgent"
+
+# Self-elevate if not already running as Administrator (needed to register the SYSTEM-level task).
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $Once -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`"" -Verb RunAs
+    exit
+}
+
+function Get-AnyDeskId {
+    $paths = @(
+        "$env:ProgramData\\AnyDesk\\service.conf",
+        "$env:ProgramData\\AnyDesk\\system.conf",
+        "$env:APPDATA\\AnyDesk\\user.conf"
+    )
+    foreach ($path in $paths) {
+        if (Test-Path $path) {
+            $content = Get-Content -Path $path -ErrorAction SilentlyContinue
+            $match = $content | Select-String -Pattern "ad.anynet.id=(\\d+)"
+            if ($match) { return $match.Matches[0].Groups[1].Value }
+        }
+    }
+    return $null
+}
+
+function Get-PrimaryIPv4 {
+    try {
+        return Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+            Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.InterfaceAlias -notmatch 'Loopback' } |
+            Select-Object -First 1 -ExpandProperty IPAddress
+    } catch { return $null }
+}
+
+function Get-InstalledSoftware {
+    $keys = @(
+        'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+        'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+        'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'
+    )
+    $items = foreach ($key in $keys) {
+        Get-ItemProperty -Path $key -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName } |
+            Select-Object @{n='name';e={$_.DisplayName}}, @{n='version';e={$_.DisplayVersion}}
+    }
+    $items | Sort-Object name -Unique
+}
+
+function Invoke-Checkin {
+    $os = Get-CimInstance Win32_OperatingSystem
+    $payload = @{
+        hostname     = $env:COMPUTERNAME
+        ip           = Get-PrimaryIPv4
+        anydeskId    = Get-AnyDeskId
+        os           = $os.Caption
+        osVersion    = $os.Version
+        loggedInUser = (Get-CimInstance Win32_ComputerSystem).UserName
+        software     = @(Get-InstalledSoftware)
+        agentVersion = "1.0"
+    } | ConvertTo-Json -Depth 4 -Compress
+
+    try {
+        Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body $payload -ContentType "application/json" \`
+            -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 20 | Out-Null
+        Write-Host "Checked in successfully."
+    } catch {
+        Write-Warning "Check-in failed: $($_.Exception.Message)"
+    }
+}
+
+if (-not $Once) {
+    $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -Once"
+    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration ([TimeSpan]::MaxValue)
+    $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+    try {
+        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+            Set-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal | Out-Null
+        } else {
+            Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Description "Reports this PC's inventory to the Hypermedia Operations Dashboard." | Out-Null
+        }
+        Write-Host "Scheduled task '$TaskName' installed (runs every 15 minutes)." -ForegroundColor Green
+    } catch {
+        Write-Warning "Could not register the scheduled task: $($_.Exception.Message)"
+    }
+}
+
+Invoke-Checkin
+`;
+}
+
+export function downloadWorkspaceDirectoryAgentScript() {
+  const settings = STATE.pageData.settings?.data || {};
+  const secret = settings.workspaceDirectoryAgent?.secret;
+  if (!secret) { toast('Save a secret first', 'error'); return; }
+  const blob = new Blob([buildWorkspaceDirectoryAgentScript(secret)], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'Install-WorkspaceDirectoryAgent.ps1';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 function renderAssetInventoryApiCard(settings) {
   const cfg = settings.assetInventoryApi || {};
   const testing = STATE.testing_assetInventoryApi;
@@ -901,6 +1067,7 @@ function renderIntegrationsTab() {
     ${renderBroadsignApiCard(settings)}
     ${renderGrassfishApiCard(settings)}
     ${renderIotApiCard(settings)}
+    ${renderWorkspaceDirectoryAgentCard(settings)}
     ${renderAssetInventoryApiCard(settings)}
     ${renderBrandfetchCard(settings)}
     ${integrationField(settings, 'trafficSheetApi', 'Traffic Sheet API (AdLive Center)', [
