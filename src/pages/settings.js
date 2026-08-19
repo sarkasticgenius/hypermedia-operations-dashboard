@@ -543,11 +543,19 @@ function renderIotApiCard(settings) {
 // secret, this project's Supabase URL, and its anon key (safe to embed - already public in the
 // deployed bundle, access is enforced by RLS/the secret check, not by hiding it) directly into
 // the generated script, so there's no separate "enter these 3 values" step on each PC.
+//
+// The installed script itself is a small, fixed outer shell (elevate, register the scheduled
+// task, fetch-and-run, POST); WHAT it collects lives in the Data Collector Script below instead,
+// fetched fresh by every agent on every run from workspace-directory-collector. Editing that
+// textarea and hitting Save is how new fields (another remote-access tool, a new "problem" check,
+// etc.) reach every already-installed PC without re-visiting any of them.
 function renderWorkspaceDirectoryAgentCard(settings) {
   const cfg = settings.workspaceDirectoryAgent || {};
+  const collector = settings.workspaceDirectoryCollector || {};
+  const collectorScript = collector.script || defaultCollectorScript();
   return `
     <div class="card">
-      <div class="card-head"><h3>Workspace Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk ID, OS, logged-in user, installed software) - feeds the Workspace Directory page. Generate a secret, save, then download and run the install script (as Administrator) on each PC.</div></div>
+      <div class="card-head"><h3>Digital Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, OS, logged-in user, installed software, disk volumes, hardware, antivirus status, detected problems) - feeds the Digital Directory page. Generate a secret, save, then download and run the install script (as Administrator) on each PC.</div></div>
       <form onsubmit="App.saveWorkspaceDirectoryAgentForm(event)">
         <div class="field"><label>Shared Agent Secret</label>
           <div style="display:flex;gap:8px;">
@@ -560,6 +568,15 @@ function renderWorkspaceDirectoryAgentCard(settings) {
           <button class="btn btn-orange" type="submit">Save</button>
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentScript()">Download Install Script</button>
         </div>
+      </form>
+      <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
+      <form onsubmit="App.saveWorkspaceDirectoryCollectorForm(event)">
+        <div class="field"><label>Data Collector Script (PowerShell)</label>
+          <textarea id="int-wda-collector" rows="14" style="min-height:280px;font-family:monospace;font-size:12px;">${esc(collectorScript)}</textarea>
+          <div class="small muted" style="margin-top:4px;">Runs on every PC on every check-in (every 6 hours), fetched fresh - no re-install needed to roll out a change. Must end with a single hashtable as its last expression (the fields the Digital Directory page reads); see the built-in default above for the exact shape. If this fails to fetch or throws, each agent falls back to the same default logic baked into the installed script, so a bad edit here degrades gracefully rather than breaking check-ins.${collector.version ? ` Current version: ${collector.version}.` : ''}</div>
+        </div>
+        <button class="btn btn-orange" type="submit">Save Collector Script</button>
+        <button type="button" class="btn-outline btn-sm" onclick="App.resetWorkspaceDirectoryCollector()">Reset to Default</button>
       </form>
     </div>
   `;
@@ -583,31 +600,31 @@ export async function saveWorkspaceDirectoryAgentForm(event) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-// A single self-elevating .ps1 (no separate .cmd launcher needed, unlike the reference NSOC agent)
-// - collects basic inventory and POSTs it to workspace-directory-checkin, then installs itself as
-// a 15-minute scheduled task so it keeps checking in unattended.
-function buildWorkspaceDirectoryAgentScript(secret) {
-  const checkinUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-checkin`;
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  return `# Workspace Digital Directory Agent
-# Collects basic PC inventory and checks in with the Hypermedia Operations Dashboard every 15
-# minutes via a scheduled task. Re-run this script any time to update the install.
-
-param([switch]$Once)
-
-$CheckinUrl = "${checkinUrl}"
-$AgentSecret = "${secret}"
-$AnonKey = "${anonKey}"
-$TaskName = "WorkspaceDirectoryAgent"
-
-# Self-elevate if not already running as Administrator (needed to register the SYSTEM-level task).
-$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $Once -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`"" -Verb RunAs
-    exit
+export async function saveWorkspaceDirectoryCollectorForm(event) {
+  event.preventDefault();
+  const script = document.getElementById('int-wda-collector').value;
+  const settings = STATE.pageData.settings?.data || {};
+  const version = (settings.workspaceDirectoryCollector?.version || 0) + 1;
+  try {
+    await saveSetting('workspaceDirectoryCollector', { script, version });
+    await logAudit('Save Digital Directory collector script', `v${version}`);
+    invalidate('settings');
+    toast(`Collector script saved (v${version}) - every PC picks it up on its next check-in.`);
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
 }
 
-function Get-AnyDeskId {
+export function resetWorkspaceDirectoryCollector() {
+  const el = document.getElementById('int-wda-collector');
+  if (el) el.value = defaultCollectorScript();
+}
+
+// The default/fallback collector, used both as (a) the pre-filled Data Collector Script textarea
+// value and (b) baked directly into the installed agent as Invoke-DefaultCollector, so day-one
+// installs (and any run where fetching the remote version fails) still work. Ends with a single
+// hashtable literal - its shape is exactly the workspace-directory-checkin request body.
+function defaultCollectorScript() {
+  return `function Get-AnyDeskId {
     $paths = @(
         "$env:ProgramData\\AnyDesk\\service.conf",
         "$env:ProgramData\\AnyDesk\\system.conf",
@@ -622,6 +639,27 @@ function Get-AnyDeskId {
     }
     return $null
 }
+
+function Get-TeamViewerId {
+    $keys = @('HKLM:\\SOFTWARE\\TeamViewer', 'HKLM:\\SOFTWARE\\WOW6432Node\\TeamViewer')
+    foreach ($base in $keys) {
+        if (Test-Path $base) {
+            $prop = Get-ItemProperty -Path $base -Name ClientID -ErrorAction SilentlyContinue
+            if ($prop -and $prop.ClientID) { return [string]$prop.ClientID }
+            $sub = Get-ChildItem -Path $base -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like 'Version*' } | Select-Object -First 1
+            if ($sub) {
+                $subProp = Get-ItemProperty -Path $sub.PSPath -Name ClientID -ErrorAction SilentlyContinue
+                if ($subProp -and $subProp.ClientID) { return [string]$subProp.ClientID }
+            }
+        }
+    }
+    return $null
+}
+
+# Extend this to detect more remote-access tools (Chrome Remote Desktop, LogMeIn, etc.) as
+# @{ tool = 'ToolName'; id = '...' } entries - the intended extension point for "any remote
+# software ID", since there's no single universal way to enumerate every possible tool.
+function Get-OtherRemoteIds { @() }
 
 function Get-PrimaryIPv4 {
     try {
@@ -645,23 +683,206 @@ function Get-InstalledSoftware {
     $items | Sort-Object name -Unique
 }
 
-function Invoke-Checkin {
-    $os = Get-CimInstance Win32_OperatingSystem
-    $payload = @{
-        hostname     = $env:COMPUTERNAME
-        ip           = Get-PrimaryIPv4
-        anydeskId    = Get-AnyDeskId
-        os           = $os.Caption
-        osVersion    = $os.Version
-        loggedInUser = (Get-CimInstance Win32_ComputerSystem).UserName
-        software     = @(Get-InstalledSoftware)
-        agentVersion = "1.0"
-    } | ConvertTo-Json -Depth 4 -Compress
+function Get-Volumes {
+    Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue | ForEach-Object {
+        [ordered]@{
+            drive  = $_.DeviceID
+            label  = $_.VolumeName
+            sizeGb = [math]::Round(($_.Size / 1GB), 1)
+            freeGb = [math]::Round(($_.FreeSpace / 1GB), 1)
+        }
+    }
+}
 
+function Get-Components {
+    $cpu = (Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1).Name
+    $ramBytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).TotalPhysicalMemory
+    $gpu = (Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Select-Object -First 1).Name
+    $disks = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue | ForEach-Object {
+        "$($_.Model) ($([math]::Round($_.Size / 1GB))GB)"
+    }
+    [ordered]@{
+        cpu   = $cpu
+        ramGb = if ($ramBytes) { [math]::Round($ramBytes / 1GB) } else { $null }
+        gpu   = $gpu
+        disks = @($disks)
+    }
+}
+
+function Get-AntivirusStatus {
     try {
-        Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body $payload -ContentType "application/json" \`
-            -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 20 | Out-Null
+        Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntivirusProduct -ErrorAction Stop | ForEach-Object {
+            # productState's middle byte roughly encodes on/off - a widely-used (if undocumented by
+            # Microsoft) heuristic, not a guaranteed API. Good enough for "is something reporting
+            # itself enabled", not a substitute for a real endpoint-security report.
+            $state = [Convert]::ToString([int]$_.productState, 16).PadLeft(6, '0')
+            $enabled = $state.Substring(2, 2) -in @('10', '11')
+            [ordered]@{ name = $_.displayName; enabled = $enabled }
+        }
+    } catch { @() }
+}
+
+function Get-NetworkBytesTotal {
+    # A raw, ever-increasing counter, not "data left" - the dashboard computes usage by diffing
+    # this against the previous reading each check-in. Prefers a cellular/WWAN adapter if one is
+    # up (the actual metered SIM link on a kiosk PC); otherwise sums every active adapter, which is
+    # still a useful "how much has this PC used" signal on a wired/Wi-Fi machine.
+    try {
+        $adapters = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' }
+        $cellular = $adapters | Where-Object { $_.InterfaceDescription -match 'cellular|wwan|mobile broadband' }
+        $targets = if ($cellular) { $cellular } else { $adapters }
+        $total = 0
+        foreach ($a in $targets) {
+            $s = Get-NetAdapterStatistics -Name $a.Name -ErrorAction SilentlyContinue
+            if ($s) { $total += [int64]$s.ReceivedBytes + [int64]$s.SentBytes }
+        }
+        return $total
+    } catch { return $null }
+}
+
+function Get-Problems($volumes, $antivirus, $anydeskId, $teamviewerId) {
+    $problems = @()
+    foreach ($v in $volumes) {
+        if ($v.sizeGb -gt 0 -and ($v.freeGb / $v.sizeGb) -lt 0.10) {
+            $problems += "Low disk space on $($v.drive) ($($v.freeGb)GB free of $($v.sizeGb)GB)"
+        }
+    }
+    if (-not $antivirus -or $antivirus.Count -eq 0) {
+        $problems += "No antivirus product detected"
+    } else {
+        foreach ($av in $antivirus) {
+            if (-not $av.enabled) { $problems += "$($av.name) is reporting disabled" }
+        }
+    }
+    if (-not $anydeskId -and -not $teamviewerId) {
+        $problems += "No remote-access tool (AnyDesk/TeamViewer) detected"
+    }
+    return @($problems)
+}
+
+$__volumes = @(Get-Volumes)
+$__antivirus = @(Get-AntivirusStatus)
+$__anydeskId = Get-AnyDeskId
+$__teamviewerId = Get-TeamViewerId
+$__os = Get-CimInstance Win32_OperatingSystem
+
+@{
+    hostname       = $env:COMPUTERNAME
+    ip             = Get-PrimaryIPv4
+    anydeskId      = $__anydeskId
+    teamviewerId   = $__teamviewerId
+    otherRemoteIds = @(Get-OtherRemoteIds)
+    os             = $__os.Caption
+    osVersion      = $__os.Version
+    loggedInUser   = (Get-CimInstance Win32_ComputerSystem).UserName
+    software       = @(Get-InstalledSoftware)
+    volumes        = $__volumes
+    components     = Get-Components
+    antivirus      = $__antivirus
+    problems       = @(Get-Problems $__volumes $__antivirus $__anydeskId $__teamviewerId)
+    networkBytesTotal = Get-NetworkBytesTotal
+    agentVersion   = "2.0"
+}`;
+}
+
+// The fixed outer shell: self-elevate, register the 6-hour scheduled task, then on every run try
+// the remote collector first (Data Collector Script above) and fall back to the identical logic
+// baked in here as Invoke-DefaultCollector if the fetch fails, the response is empty, or the
+// remote script itself throws - so a bad edit in Settings degrades a PC back to default behavior
+// instead of breaking its check-ins. Also handles the single-slot remote command: runs whatever
+// pendingCommand comes back in the check-in response immediately (no extra request), but only
+// REPORTS the output on the *next* cycle (cached in a small local JSON file meanwhile) - so a
+// command never costs a second network round-trip, matching the same "minimize data usage" goal
+// the 6-hour interval itself exists for. One JSON POST/GET pair per PC every 6 hours is on the
+// order of a few KB each way - negligible next to a typical SIM data plan even at the low end.
+function buildWorkspaceDirectoryAgentScript(secret) {
+  const checkinUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-checkin`;
+  const collectorUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-collector`;
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const indented = defaultCollectorScript().split('\n').map((l) => `    ${l}`).join('\n');
+  return `# Digital Directory Agent
+# Collects PC inventory and checks in with the Hypermedia Operations Dashboard every 6 hours via a
+# scheduled task - deliberately infrequent, since several of these PCs run on metered cellular SIM
+# data rather than broadband. What gets collected is fetched fresh from the dashboard on every run
+# (Settings > Integrations > Digital Directory Agent > Data Collector Script) - this outer shell
+# itself never needs to change or be re-installed to pick up a new field. Re-run this script any
+# time to update the install (e.g. after rotating the secret).
+
+param([switch]$Once)
+
+$CheckinUrl = "${checkinUrl}"
+$CollectorUrl = "${collectorUrl}"
+$AgentSecret = "${secret}"
+$AnonKey = "${anonKey}"
+$TaskName = "WorkspaceDirectoryAgent"
+$StateDir = "$env:ProgramData\\WorkspaceDirectoryAgent"
+$PendingResultFile = Join-Path $StateDir "pending-command-result.json"
+
+# Self-elevate if not already running as Administrator (needed to register the SYSTEM-level task).
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $Once -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`"" -Verb RunAs
+    exit
+}
+
+function Invoke-DefaultCollector {
+${indented}
+}
+
+function Get-RemoteCollectorScript {
+    try {
+        $resp = Invoke-RestMethod -Method Get -Uri $CollectorUrl -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
+        if ($resp -and $resp.script) { return $resp.script }
+    } catch {
+        Write-Warning "Could not fetch remote collector script, using built-in default: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+# Runs an admin-queued command locally and caches its output to report on the NEXT check-in,
+# rather than opening a second connection just to report it now.
+function Invoke-PendingCommand($command) {
+    try {
+        $output = Invoke-Expression $command 2>&1 | Out-String
+    } catch {
+        $output = "ERROR: $($_.Exception.Message)"
+    }
+    New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+    @{ output = $output.Substring(0, [Math]::Min(8000, $output.Length)); ranAt = (Get-Date).ToString("o") } |
+        ConvertTo-Json | Set-Content -Path $PendingResultFile -Encoding utf8
+}
+
+function Invoke-Checkin {
+    $remoteScript = Get-RemoteCollectorScript
+    $data = $null
+    if ($remoteScript) {
+        try {
+            $data = & ([ScriptBlock]::Create($remoteScript))
+        } catch {
+            Write-Warning "Remote collector script failed, falling back to built-in default: $($_.Exception.Message)"
+        }
+    }
+    if (-not $data) { $data = Invoke-DefaultCollector }
+
+    # A previous cycle's command result, if one is waiting locally - reported on this check-in,
+    # then removed so it isn't sent again next time.
+    if (Test-Path $PendingResultFile) {
+        try {
+            $cached = Get-Content -Path $PendingResultFile -Raw | ConvertFrom-Json
+            if ($cached.output) { $data.commandOutput = $cached.output }
+            Remove-Item -Path $PendingResultFile -Force -ErrorAction SilentlyContinue
+        } catch { Write-Warning "Could not read cached command result: $($_.Exception.Message)" }
+    }
+
+    $payload = $data | ConvertTo-Json -Depth 6 -Compress
+    try {
+        $response = Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body $payload -ContentType "application/json" \`
+            -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 30
         Write-Host "Checked in successfully."
+        if ($response -and $response.pendingCommand) {
+            Write-Host "Running queued command..."
+            Invoke-PendingCommand $response.pendingCommand
+        }
     } catch {
         Write-Warning "Check-in failed: $($_.Exception.Message)"
     }
@@ -669,7 +890,7 @@ function Invoke-Checkin {
 
 if (-not $Once) {
     $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -Once"
-    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration ([TimeSpan]::MaxValue)
+    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6) -RepetitionDuration ([TimeSpan]::MaxValue)
     $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
     try {
         if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -677,7 +898,7 @@ if (-not $Once) {
         } else {
             Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Description "Reports this PC's inventory to the Hypermedia Operations Dashboard." | Out-Null
         }
-        Write-Host "Scheduled task '$TaskName' installed (runs every 15 minutes)." -ForegroundColor Green
+        Write-Host "Scheduled task '$TaskName' installed (runs every 6 hours)." -ForegroundColor Green
     } catch {
         Write-Warning "Could not register the scheduled task: $($_.Exception.Message)"
     }
@@ -695,7 +916,7 @@ export function downloadWorkspaceDirectoryAgentScript() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'Install-WorkspaceDirectoryAgent.ps1';
+  a.download = 'Install-DigitalDirectoryAgent.ps1';
   document.body.appendChild(a);
   a.click();
   a.remove();
