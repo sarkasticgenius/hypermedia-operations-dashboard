@@ -8,10 +8,10 @@ import { esc, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
 
-// The agent checks in every 6 hours (deliberately infrequent - several of these PCs run on
-// metered cellular SIM data). 8 hours gives one cycle of slack before flagging Offline, rather
-// than a device looking "down" just because its check-in landed a few minutes late.
-const STALE_AFTER_MINUTES = 8 * 60;
+// The agent checks in once a day (deliberately infrequent - several of these PCs run on
+// metered cellular SIM data). 30 hours gives a bit over one cycle of slack before flagging
+// Offline, rather than a device looking "down" just because its daily check-in landed a bit late.
+const STALE_AFTER_MINUTES = 30 * 60;
 
 function isOnline(d) {
   if (!d.last_seen) return false;
@@ -121,22 +121,28 @@ function deviceRow(d, editOk, deleteOk, assetInventory) {
 function dataUsageTile(d, sim) {
   const allocGb = Number(sim?.data_allocation_gb) || 0;
   const usedGb = (d.data_used_mb_period || 0) / 1024;
+  const leftGb = Math.max(0, allocGb - usedGb);
+  const last24hGb = (d.data_used_mb_last_24h || 0) / 1024;
   const pct = allocGb ? Math.min(100, (usedGb / allocGb) * 100) : 0;
   const color = pct >= 90 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
-  return `<div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:12px;min-height:96px;display:flex;flex-direction:column;justify-content:space-between;gap:8px;">
+  const phone = sim?.sim_number || sim?.iccid || '';
+  return `<div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;">
     <div>
       <div style="font-size:12.5px;font-weight:700;">${esc(d.hostname)}</div>
-      <div class="small muted">${esc(d.location || 'Unassigned')}${sim?.sim_number ? ` &middot; SIM ${esc(sim.sim_number)}` : ''}</div>
+      <div class="small muted">${esc(d.location || 'Unassigned')}${phone ? ` &middot; ${esc(phone)}` : ''}</div>
     </div>
-    <div>
-      <div class="small" style="display:flex;justify-content:space-between;">
-        <span>${usedGb.toFixed(2)} GB used</span>
-        <span class="muted">${allocGb ? `of ${allocGb} GB` : 'no plan size set'}</span>
-      </div>
-      <div style="height:7px;border-radius:4px;overflow:hidden;background:var(--bg);margin-top:4px;">
-        <div style="width:${pct.toFixed(1)}%;height:100%;background:${color};"></div>
-      </div>
+    <div style="height:7px;border-radius:4px;overflow:hidden;background:var(--bg);">
+      <div style="width:${pct.toFixed(1)}%;height:100%;background:${color};"></div>
     </div>
+    <div class="small" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;">
+      <span class="muted">Total Data</span><span style="text-align:right;">${allocGb ? `${allocGb} GB` : '&mdash;'}</span>
+      <span class="muted">Data Used</span><span style="text-align:right;">${usedGb.toFixed(2)} GB</span>
+      <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? `${leftGb.toFixed(2)} GB` : '&mdash;'}</span>
+      <span class="muted">Percentage</span><span style="text-align:right;color:${color};">${allocGb ? `${pct.toFixed(1)}%` : '&mdash;'}</span>
+      <span class="muted">Last 24h</span><span style="text-align:right;">${last24hGb.toFixed(2)} GB</span>
+      <span class="muted">Last Update</span><span style="text-align:right;">${d.last_seen ? fmtRelativeTime(d.last_seen) : '&mdash;'}</span>
+    </div>
+    ${d.notes ? `<div class="small muted" style="border-top:1px solid var(--border);padding-top:6px;white-space:pre-wrap;">${esc(d.notes)}</div>` : ''}
   </div>`;
 }
 
@@ -152,7 +158,7 @@ export function renderWorkspaceDirectory() {
   if (assetInventory?.__error) return loadingCard(assetInventory.__error);
 
   if (!devices.length) {
-    return `<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Digital Directory Agent) on a PC and it'll appear here within a few hours (it checks in every 6 hours).</div></div>`;
+    return `<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Digital Directory Agent) on a PC and it'll appear here within a few minutes of install (after that, it checks in once a day).</div></div>`;
   }
 
   const simById = new Map(simCards.map((s) => [s.id, s]));
@@ -172,7 +178,7 @@ export function renderWorkspaceDirectory() {
   const dataDevices = devices.filter((d) => d.sim_card_id);
   const dataTilesHtml = dataDevices.length
     ? `<div class="card">
-        <div class="card-head"><h3>SIM Data Usage</h3><div class="desc">Devices linked to a SIM Card record (Edit &gt; Linked SIM Card). Usage is a running total since tracking started/was last reset here - not a carrier-billed figure - computed from the PC's own network adapter counters each check-in.</div></div>
+        <div class="card-head"><h3>SIM Data Usage</h3><div class="desc">Devices linked to a SIM Card record (Edit &gt; Linked SIM Card). Data Used/Left/Percentage are a running total since tracking started/was last reset here; Last 24h is just the latest check-in's usage. Figures are computed from the PC's own network adapter counters, not a carrier-billed figure. Comments shown below a tile come from that device's Notes (Edit).</div></div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;">
           ${dataDevices.map((d) => dataUsageTile(d, simById.get(d.sim_card_id))).join('')}
         </div>
@@ -213,7 +219,7 @@ export function renderWorkspaceDirectory() {
     ${dataTilesHtml}
     <div class="card">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES / 60}+ hours (the agent checks in every 6 hours).</div></div>
+        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES / 60}+ hours (the agent checks in once a day).</div></div>
         <input placeholder="Search hostname, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
       </div>
       <div style="max-height:520px;overflow-y:auto;overflow-x:auto;">
@@ -280,7 +286,7 @@ export async function clearWorkspacePendingCommand(deviceId) {
 export async function resetWorkspaceDataUsage(deviceId) {
   if (!confirm('Reset this device\'s tracked data usage back to zero?')) return;
   try {
-    await updateWorkspaceDevice(deviceId, { data_used_mb_period: 0 });
+    await updateWorkspaceDevice(deviceId, { data_used_mb_period: 0, data_used_mb_last_24h: 0 });
     await logAudit('Reset workspace device data usage', deviceId);
     invalidate('workspaceDevices');
     toast('Data usage reset');
@@ -416,8 +422,15 @@ registerModal('workspaceEdit', (data) => {
           <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id AnyDeskSoftwareGmbH.AnyDesk --silent --accept-package-agreements --accept-source-agreements')">AnyDesk</button>
           <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id TeamViewer.TeamViewer --silent --accept-package-agreements --accept-source-agreements')">TeamViewer</button>
         </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+          <span class="small muted" style="align-self:center;">Uninstall:</span>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id 7zip.7zip --silent')">7-Zip</button>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id Google.Chrome --silent')">Chrome</button>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id AnyDeskSoftwareGmbH.AnyDesk --silent')">AnyDesk</button>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id TeamViewer.TeamViewer --silent')">TeamViewer</button>
+        </div>
         <textarea id="wd-edit-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent">${esc(device.pending_command || '')}</textarea>
-        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. The presets above use <code>winget</code> (built into Windows 10 21H2+/11) - requires that PC to already have it. Covers installing/updating software or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
+        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. The presets above use <code>winget</code> (built into Windows 10 21H2+/11) - requires that PC to already have it. For anything not in the presets, type <code>winget uninstall -e --id &lt;PackageId&gt; --silent</code> directly, or run <code>winget list</code> as a command first (its output shows up in Details) to find the exact package ID installed on that PC. Covers installing/updating/removing software or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>

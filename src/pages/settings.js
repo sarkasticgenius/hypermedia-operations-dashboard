@@ -574,7 +574,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
       <form onsubmit="App.saveWorkspaceDirectoryCollectorForm(event)">
         <div class="field"><label>Data Collector Script (PowerShell)</label>
           <textarea id="int-wda-collector" rows="14" style="min-height:280px;font-family:monospace;font-size:12px;">${esc(collectorScript)}</textarea>
-          <div class="small muted" style="margin-top:4px;">Runs on every PC on every check-in (every 6 hours), fetched fresh - no re-install needed to roll out a change. Must end with a single hashtable as its last expression (the fields the Digital Directory page reads); see the built-in default above for the exact shape. If this fails to fetch or throws, each agent falls back to the same default logic baked into the installed script, so a bad edit here degrades gracefully rather than breaking check-ins.${collector.version ? ` Current version: ${collector.version}.` : ''}</div>
+          <div class="small muted" style="margin-top:4px;">Runs on every PC on every check-in (once a day), fetched fresh - no re-install needed to roll out a change. Must end with a single hashtable as its last expression (the fields the Digital Directory page reads); see the built-in default above for the exact shape. If this fails to fetch or throws, each agent falls back to the same default logic baked into the installed script, so a bad edit here degrades gracefully rather than breaking check-ins.${collector.version ? ` Current version: ${collector.version}.` : ''}</div>
         </div>
         <button class="btn btn-orange" type="submit">Save Collector Script</button>
         <button type="button" class="btn-outline btn-sm" onclick="App.resetWorkspaceDirectoryCollector()">Reset to Default</button>
@@ -810,7 +810,7 @@ $__os = Get-CimInstance Win32_OperatingSystem
 // tray icon + status window - written to $StateDir\tray.ps1 by the outer install script (embedded
 // below as base64 so nothing here needs escaping for PowerShell-inside-PowerShell) and run via its
 // own "at any user's logon" scheduled task, since a tray icon needs a real interactive desktop
-// session - the 6-hourly check-in task runs headless as SYSTEM and can't show one itself. Reads
+// session - the once-daily check-in task runs headless as SYSTEM and can't show one itself. Reads
 // $StateDir\status.json (written by Invoke-Checkin after every attempt) so the window always
 // reflects the real last result, and its "Check In Now" button runs the same agent.ps1 the
 // scheduled task does, so a manual check from the tray behaves identically to an automatic one.
@@ -979,7 +979,7 @@ $trayIcon.ShowBalloonTip(4000, "Jstar", "Digital Directory Agent is active on th
 `;
 }
 
-// The fixed outer shell: self-elevate, register the 6-hour scheduled task, then on every run try
+// The fixed outer shell: self-elevate, register the once-daily scheduled task, then on every run try
 // the remote collector first (Data Collector Script above) and fall back to the identical logic
 // baked in here as Invoke-DefaultCollector if the fetch fails, the response is empty, or the
 // remote script itself throws - so a bad edit in Settings degrades a PC back to default behavior
@@ -987,7 +987,7 @@ $trayIcon.ShowBalloonTip(4000, "Jstar", "Digital Directory Agent is active on th
 // pendingCommand comes back in the check-in response immediately (no extra request), but only
 // REPORTS the output on the *next* cycle (cached in a small local JSON file meanwhile) - so a
 // command never costs a second network round-trip, matching the same "minimize data usage" goal
-// the 6-hour interval itself exists for. One JSON POST/GET pair per PC every 6 hours is on the
+// the once-daily interval itself exists for. One JSON POST/GET pair per PC per day is on the
 // order of a few KB each way - negligible next to a typical SIM data plan even at the low end.
 function buildWorkspaceDirectoryAgentScript(secret) {
   const checkinUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-checkin`;
@@ -999,7 +999,7 @@ function buildWorkspaceDirectoryAgentScript(secret) {
   // just writes the decoded bytes straight to tray.ps1 at install time.
   const trayScriptB64 = btoa(unescape(encodeURIComponent(buildTrayScript())));
   return `# Digital Directory Agent
-# Collects PC inventory and checks in with the Hypermedia Operations Dashboard every 6 hours via a
+# Collects PC inventory and checks in with the Hypermedia Operations Dashboard once a day via a
 # scheduled task - deliberately infrequent, since several of these PCs run on metered cellular SIM
 # data rather than broadband. What gets collected is fetched fresh from the dashboard on every run
 # (Settings > Integrations > Digital Directory Agent > Data Collector Script) - this outer shell
@@ -1121,7 +1121,7 @@ if (-not $Once) {
     # range", confirmed live) - Task Scheduler's own convention for "repeat indefinitely" is an
     # EMPTY Duration, not the largest representable one, so that's set directly on the trigger
     # object instead of passed as a constructor value.
-    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
+    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Days 1)
     $Trigger.Repetition.Duration = ""
     $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
     try {
@@ -1130,7 +1130,7 @@ if (-not $Once) {
         } else {
             Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Description "Reports this PC's inventory to the Hypermedia Operations Dashboard." | Out-Null
         }
-        Write-Host "Scheduled task '$TaskName' installed (runs every 6 hours)." -ForegroundColor Green
+        Write-Host "Scheduled task '$TaskName' installed (runs once a day)." -ForegroundColor Green
     } catch {
         Write-Warning "Could not register the scheduled task: $($_.Exception.Message)"
     }

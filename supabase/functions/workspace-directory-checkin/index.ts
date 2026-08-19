@@ -14,17 +14,19 @@
 // here - this function just stores whatever comes in, defensively capped/typed.
 //
 // Two other things happen here, both to keep the remote-command feature bandwidth-light (several
-// of these PCs are on metered cellular SIMs, checking in only every 6 hours by design):
+// of these PCs are on metered cellular SIMs, checking in only once a day by design):
 //  - Network usage: the agent reports networkBytesTotal, a raw cumulative counter off its network
 //    adapter(s). This function diffs it against the PREVIOUS reading and adds the delta (in MB) to
 //    data_used_mb_period - a running total since whenever tracking started (or was last reset from
-//    the dashboard), not a calendar-anchored figure. A lower new reading than the stored one means
-//    the counter reset (reboot) - treated as zero delta rather than going negative.
+//    the dashboard), not a calendar-anchored figure. Since check-ins are daily, this same delta is
+//    also stored as data_used_mb_last_24h so the dashboard can show "used in the last 24h" without
+//    recomputing it. A lower new reading than the stored one means the counter reset (reboot) -
+//    treated as zero delta rather than going negative.
 //  - Remote command: admin queues one PowerShell one-liner per device (pending_command, set from
 //    the dashboard) - this function hands it back in the response for the agent to run locally
 //    (no extra request), and accepts the PREVIOUS command's output back via body.commandOutput on
 //    the agent's *next* check-in (cached locally by the agent meanwhile), clearing pending_command
-//    once recorded. So a command takes up to one extra 6-hour cycle to report back, in exchange for
+//    once recorded. So a command takes up to one extra day to report back, in exchange for
 //    never needing a second network round-trip.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
@@ -106,8 +108,12 @@ Deno.serve(async (req) => {
       const priorCounter = existing?.network_bytes_total;
       const priorUsedMb = existing?.data_used_mb_period || 0;
       const deltaBytes = (typeof priorCounter === 'number' && newCounter >= priorCounter) ? newCounter - priorCounter : 0;
+      const deltaMb = deltaBytes / (1024 * 1024);
       row.network_bytes_total = newCounter;
-      row.data_used_mb_period = priorUsedMb + deltaBytes / (1024 * 1024);
+      row.data_used_mb_period = priorUsedMb + deltaMb;
+      // Same delta this cycle produced, kept separately - with daily check-ins this IS "used in the
+      // last 24h", without the dashboard needing to diff two history rows to show that figure.
+      row.data_used_mb_last_24h = deltaMb;
     }
 
     // A previous cycle's command result, cached locally by the agent and reported back now -
