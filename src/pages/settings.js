@@ -1096,7 +1096,13 @@ function Invoke-Checkin {
 
 if (-not $Once) {
     $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -Once"
-    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6) -RepetitionDuration ([TimeSpan]::MaxValue)
+    # [TimeSpan]::MaxValue as -RepetitionDuration overflows Task Scheduler's XML duration format on
+    # some Windows builds ("The task XML contains a value which is incorrectly formatted or out of
+    # range", confirmed live) - Task Scheduler's own convention for "repeat indefinitely" is an
+    # EMPTY Duration, not the largest representable one, so that's set directly on the trigger
+    # object instead of passed as a constructor value.
+    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
+    $Trigger.Repetition.Duration = ""
     $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
     try {
         if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
