@@ -87,6 +87,8 @@ Deno.serve(async (req) => {
       anydesk_id: body.anydeskId ? String(body.anydeskId).slice(0, 50) : null,
       teamviewer_id: body.teamviewerId ? String(body.teamviewerId).slice(0, 50) : null,
       other_remote_ids: otherRemoteIds,
+      broadsign_player_id: body.broadsignPlayerId ? String(body.broadsignPlayerId).slice(0, 100) : null,
+      grassfish_box_id: body.grassfishBoxId ? String(body.grassfishBoxId).slice(0, 100) : null,
       os_name: body.os ? String(body.os).slice(0, 200) : null,
       os_version: body.osVersion ? String(body.osVersion).slice(0, 100) : null,
       logged_in_user: body.loggedInUser ? String(body.loggedInUser).slice(0, 200) : null,

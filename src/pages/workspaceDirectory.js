@@ -2,6 +2,7 @@ import { STATE, loadData, invalidate, toast, setState, openModal, closeModal } f
 import { registerModal, loadingCard } from '../modals.js';
 import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice } from '../data/workspaceDevices.js';
 import { listSimCards } from '../data/simCards.js';
+import { listAssetInventory } from '../data/assetsInventory.js';
 import { canEdit, canDelete } from '../auth.js';
 import { esc, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
@@ -66,7 +67,36 @@ export function copyWorkspaceId(event, id) {
   navigator.clipboard?.writeText(id).then(() => toast('Copied')).catch(() => {});
 }
 
-function deviceRow(d, editOk, deleteOk) {
+export function fillWorkspaceCommand(command) {
+  const el = document.getElementById('wd-edit-command');
+  if (el) el.value = command;
+}
+
+// Cross-references this PC with the screen it drives in the Broadsign/Grassfish Console, by the
+// same Player Box ID those syncs themselves match on (see broadsign-sync/grassfish-sync) - so an
+// admin can see "this PC is behind screen X at location Y" without leaving Digital Directory.
+function matchedScreenFor(d, assetInventory) {
+  if (!Array.isArray(assetInventory)) return null;
+  const id = (d.broadsign_player_id || '').trim();
+  const gfId = (d.grassfish_box_id || '').trim();
+  if (id) {
+    const row = assetInventory.find((r) => r.player_type === 'Broadsign' && String(r.player_box_id || '').trim() === id);
+    if (row) return { source: 'Broadsign', row };
+  }
+  if (gfId) {
+    const row = assetInventory.find((r) => r.player_type === 'Grassfish' && String(r.player_box_id || '').trim().toLowerCase() === gfId.toLowerCase());
+    if (row) return { source: 'Grassfish', row };
+  }
+  return null;
+}
+
+function matchedScreenHtml(matched) {
+  if (!matched) return '<span class="small muted">-</span>';
+  const { source, row } = matched;
+  return `<span class="small">${esc(source)}: <b>${esc(row.name)}</b>${row.venue ? ` @ ${esc(row.venue)}` : ''}</span>`;
+}
+
+function deviceRow(d, editOk, deleteOk, assetInventory) {
   const online = isOnline(d);
   const problemCount = (d.problems || []).length;
   return `<tr>
@@ -74,6 +104,7 @@ function deviceRow(d, editOk, deleteOk) {
     <td class="small">${esc(d.location || '-')}</td>
     <td class="small">${esc(d.ip_address || '-')}</td>
     <td>${remoteAccessCell(d)}</td>
+    <td>${matchedScreenHtml(matchedScreenFor(d, assetInventory))}</td>
     <td class="small">${esc(d.os_name || '-')}${d.os_version ? ` <span class="muted">${esc(d.os_version)}</span>` : ''}</td>
     <td class="small">${esc(d.logged_in_user || '-')}</td>
     <td>${problemCount ? `<span class="badge b-red">${problemCount} issue${problemCount === 1 ? '' : 's'}</span>` : '<span class="badge b-blue">OK</span>'}</td>
@@ -112,9 +143,13 @@ function dataUsageTile(d, sim) {
 export function renderWorkspaceDirectory() {
   const devices = loadData('workspaceDevices', listWorkspaceDevices);
   const simCards = loadData('simCardsForDirectory', listSimCards);
-  if (devices === null || simCards === null) return loadingCard();
+  // Same cache key other pages (Settings, Gantt) already use for the full Asset Inventory table -
+  // reuses whatever's already fetched instead of pulling a second copy of a large table.
+  const assetInventory = loadData('assetInventory', listAssetInventory);
+  if (devices === null || simCards === null || assetInventory === null) return loadingCard();
   if (devices?.__error) return loadingCard(devices.__error);
   if (simCards?.__error) return loadingCard(simCards.__error);
+  if (assetInventory?.__error) return loadingCard(assetInventory.__error);
 
   if (!devices.length) {
     return `<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Digital Directory Agent) on a PC and it'll appear here within a few hours (it checks in every 6 hours).</div></div>`;
@@ -160,8 +195,8 @@ export function renderWorkspaceDirectory() {
 
   const editOk = canEdit('workspaceDirectory');
   const deleteOk = canDelete('workspaceDirectory');
-  const rows = sorted.map((d) => deviceRow(d, editOk, deleteOk)).join('')
-    || `<tr><td colspan="10"><div class="empty">No devices match "${esc(STATE.workspaceDirectorySearch || '')}".</div></td></tr>`;
+  const rows = sorted.map((d) => deviceRow(d, editOk, deleteOk, assetInventory)).join('')
+    || `<tr><td colspan="11"><div class="empty">No devices match "${esc(STATE.workspaceDirectorySearch || '')}".</div></td></tr>`;
 
   return `
     <div class="kpi-row" style="margin-bottom:14px;">
@@ -188,6 +223,7 @@ export function renderWorkspaceDirectory() {
             ${sortTh('workspaceDevices', 'location', 'Location', 12)}
             ${sortTh('workspaceDevices', 'ip', 'IP', 11)}
             <th>Remote Access</th>
+            <th>Matched Screen</th>
             ${sortTh('workspaceDevices', 'os', 'OS', 16)}
             ${sortTh('workspaceDevices', 'user', 'Logged-in User', 13)}
             ${sortTh('workspaceDevices', 'problems', 'Issues', 8)}
@@ -266,15 +302,16 @@ export async function removeWorkspaceDevice(id) {
 
 registerModal('workspaceLocation', (data) => {
   const devices = STATE.pageData.workspaceDevices?.data || [];
+  const assetInventory = STATE.pageData.assetInventory?.data || [];
   const list = devices.filter((d) => ((d.location || '').trim() || 'Unassigned') === data.location);
   const editOk = canEdit('workspaceDirectory');
   const deleteOk = canDelete('workspaceDirectory');
-  const rows = list.map((d) => deviceRow(d, editOk, deleteOk)).join('') || `<tr><td colspan="10"><div class="empty">No devices.</div></td></tr>`;
+  const rows = list.map((d) => deviceRow(d, editOk, deleteOk, assetInventory)).join('') || `<tr><td colspan="11"><div class="empty">No devices.</div></td></tr>`;
   return `
     <h3>${esc(data.location)} - ${list.length} device(s)</h3>
     <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr><th>Hostname</th><th>Location</th><th>IP</th><th>Remote Access</th><th>OS</th><th>Logged-in User</th><th>Issues</th><th>Status</th><th>Last Seen</th><th></th></tr></thead>
+        <thead><tr><th>Hostname</th><th>Location</th><th>IP</th><th>Remote Access</th><th>Matched Screen</th><th>OS</th><th>Logged-in User</th><th>Issues</th><th>Status</th><th>Last Seen</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -284,8 +321,10 @@ registerModal('workspaceLocation', (data) => {
 
 registerModal('workspaceDetails', (data) => {
   const devices = STATE.pageData.workspaceDevices?.data || [];
+  const assetInventory = STATE.pageData.assetInventory?.data || [];
   const d = devices.find((x) => x.id === data.deviceId);
   if (!d) return `<div class="empty">Device not found.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
+  const matched = matchedScreenFor(d, assetInventory);
 
   const volumes = d.volumes || [];
   const volumesHtml = volumes.length
@@ -318,7 +357,7 @@ registerModal('workspaceDetails', (data) => {
           <table><thead><tr><th>Name</th><th>Version</th></tr></thead><tbody>${software.map((s) => `<tr><td class="small">${esc(s.name)}</td><td class="small">${esc(s.version || '-')}</td></tr>`).join('')}</tbody></table>
         </div>
       </details>`
-    : '<div class="empty">No software reported.</div>';
+    : '<div class="empty small">Not collected - the agent is metadata-only by default. Add it back via the Data Collector Script in Settings if you need it.</div>';
 
   return `
     <h3>${esc(d.hostname)}</h3>
@@ -326,6 +365,11 @@ registerModal('workspaceDetails', (data) => {
 
     <div class="card-head" style="margin-top:4px;"><h3 style="font-size:13px;">Remote Access</h3></div>
     <div style="margin-bottom:12px;">${remoteAccessCell(d)}</div>
+
+    <div class="card-head"><h3 style="font-size:13px;">Matched Broadsign/Grassfish Screen</h3></div>
+    <div class="small" style="margin-bottom:12px;">
+      ${matched ? `${esc(matched.source)}: <b>${esc(matched.row.name)}</b>${matched.row.venue ? ` @ ${esc(matched.row.venue)}` : ''}` : `<span class="muted">No match${(d.broadsign_player_id || d.grassfish_box_id) ? ` (ID ${esc(d.broadsign_player_id || d.grassfish_box_id)} not found in Asset Inventory)` : ' - no Broadsign/Grassfish player detected on this PC'}</span>`}
+    </div>
 
     <div class="card-head"><h3 style="font-size:13px;">Problems</h3></div>
     <div style="margin-bottom:12px;">${problemsHtml}</div>
@@ -365,8 +409,15 @@ registerModal('workspaceEdit', (data) => {
         <div class="small muted" style="margin-top:4px;">Used to show data used vs. plan size on the Digital Directory's SIM Data Usage tiles.${device.sim_card_id ? ` <button type="button" class="link-btn" onclick="App.resetWorkspaceDataUsage('${device.id}')">Reset usage counter</button>` : ''}</div>
       </div>
       <div class="field"><label>Run Command (PowerShell, runs on this device's next check-in)</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+          <span class="small muted" style="align-self:center;">Install:</span>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id 7zip.7zip --silent --accept-package-agreements --accept-source-agreements')">7-Zip</button>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements')">Chrome</button>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id AnyDeskSoftwareGmbH.AnyDesk --silent --accept-package-agreements --accept-source-agreements')">AnyDesk</button>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id TeamViewer.TeamViewer --silent --accept-package-agreements --accept-source-agreements')">TeamViewer</button>
+        </div>
         <textarea id="wd-edit-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent">${esc(device.pending_command || '')}</textarea>
-        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. Covers both installing/updating software and pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
+        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. The presets above use <code>winget</code> (built into Windows 10 21H2+/11) - requires that PC to already have it. Covers installing/updating software or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>

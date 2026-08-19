@@ -3,6 +3,7 @@ import { loadingCard, registerModal } from '../modals.js';
 import { getSetting, saveSetting } from '../data/settings.js';
 import { listLocations } from '../data/locations.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
+import { listWorkspaceDevices } from '../data/workspaceDevices.js';
 import { hiddenMemberIds, resolveMembers, sourceStats, heatmapColor } from '../data/locationStats.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { listSyncLogs } from '../data/syncLogs.js';
@@ -657,10 +658,39 @@ export async function runNetworkSync(settingKey, functionName) {
   }
 }
 
+// Cross-references a Broadsign/Grassfish screen with the PC that drives it, via the same Player
+// Box ID both the sync functions AND the Digital Directory agent match on (see
+// defaultCollectorScript() in settings.js) - lets an offline-screen row here offer a direct
+// AnyDesk/TeamViewer connect option instead of a separate trip to the Digital Directory page.
+// Best-effort: returns an empty map (no chips shown) if the viewer can't see workspace_devices at
+// all, same as loadData() failing silently elsewhere - Digital Directory isn't guaranteed to be
+// configured/populated.
+function deviceByBoxId(source) {
+  const devices = loadData('workspaceDevicesForNetworkPanel', listWorkspaceDevices);
+  const map = new Map();
+  if (!Array.isArray(devices)) return map;
+  const field = source === 'broadsign' ? 'broadsign_player_id' : source === 'grassfish' ? 'grassfish_box_id' : null;
+  if (!field) return map;
+  devices.forEach((d) => {
+    const id = (d[field] || '').trim();
+    if (id) map.set(id, d);
+  });
+  return map;
+}
+
+function remoteAccessChipsHtml(device) {
+  if (!device) return '';
+  const chips = [];
+  if (device.anydesk_id) chips.push(`<a href="anydesk:${esc(device.anydesk_id)}" style="text-decoration:none;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 6px;margin-right:3px;white-space:nowrap;" title="Connect via AnyDesk"><b>AnyDesk</b> ${esc(device.anydesk_id)}</a>`);
+  if (device.teamviewer_id) chips.push(`<a href="teamviewer10:${esc(device.teamviewer_id)}" style="text-decoration:none;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 6px;white-space:nowrap;" title="Connect via TeamViewer"><b>TeamViewer</b> ${esc(device.teamviewer_id)}</a>`);
+  return chips.join('');
+}
+
 registerModal('offlineAssetsModal', (data) => {
   const allLocations = STATE.pageData.locationsForNetworkPanel?.data || [];
   const ticketAddOk = canAdd('tickets');
   const sourceLabel = data.source === 'broadsign' ? 'Broadsign Console' : data.source === 'grassfish' ? 'Grassfish Console' : '';
+  const boxIdMap = deviceByBoxId(data.source);
 
   let items = [];
   let displayName;
@@ -686,8 +716,9 @@ registerModal('offlineAssetsModal', (data) => {
       description: `${i.detail || 'Offline'}${sourceLabel ? ` (via ${sourceLabel})` : ''}`,
       type: 'Issue',
     };
-    return `<tr><td>${esc(i.location)}</td><td>${esc(i.name)}</td><td>${esc(i.detail || '')}</td><td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td></tr>`;
-  }).join('') || `<tr><td colspan="4"><div class="empty">Nothing offline here.</div></td></tr>`;
+    const device = i.boxId ? boxIdMap.get(i.boxId) : null;
+    return `<tr><td>${esc(i.location)}</td><td>${esc(i.name)}</td><td>${esc(i.detail || '')}</td><td>${remoteAccessChipsHtml(device)}</td><td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td></tr>`;
+  }).join('') || `<tr><td colspan="5"><div class="empty">Nothing offline here.</div></td></tr>`;
 
   // Bulk "ticket for all" only makes sense against a single real location - a chain tile spans
   // many locations, so there's no one place to prefill.
@@ -701,7 +732,7 @@ registerModal('offlineAssetsModal', (data) => {
   return `
     <h3>Offline - ${esc(displayName)}</h3>
     <table>
-      <thead><tr><th>Location</th><th>Name</th><th>Detail</th><th></th></tr></thead>
+      <thead><tr><th>Location</th><th>Name</th><th>Detail</th><th>Remote Access</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="modal-actions">

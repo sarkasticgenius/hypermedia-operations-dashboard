@@ -107,7 +107,13 @@ export function sourceStats(loc, allLocations, source, healthyField) {
       const label = sa.status_label || (source === 'broadsign' || source === 'grassfish' ? 'Offline' : null);
       const pollText = sa.poll_last_utc ? `Last poll: ${fmtRelativeTime(sa.poll_last_utc)}` : '';
       const detail = [label, pollText].filter(Boolean).join(' - ') || sa.notes || '';
-      offlineItems.push({ location: l.name, name: sa.name, detail, statusLabel: label, pollLastUtc: sa.poll_last_utc });
+      // broadsign-sync/grassfish-sync/iot-sync all stamp the vendor's own id into notes as
+      // "Broadsign ID: <id>" / "Grassfish Box ID: <id>" / "IoT Device ID: <id>" - parsed back out
+      // here (rather than a dedicated column) so the console pages can cross-reference this screen
+      // against a Digital Directory device reporting the same id, without a schema change.
+      const boxIdMatch = /(?:Broadsign ID|Grassfish Box ID|IoT Device ID):\s*(.+)$/.exec(sa.notes || '');
+      const boxId = boxIdMatch ? boxIdMatch[1].trim() : null;
+      offlineItems.push({ location: l.name, name: sa.name, detail, statusLabel: label, pollLastUtc: sa.poll_last_utc, boxId });
     }
     if (l[healthyField]) total += l[healthyField];
   }

@@ -555,7 +555,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
   const collectorScript = collector.script || defaultCollectorScript();
   return `
     <div class="card">
-      <div class="card-head"><h3>Digital Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, OS, logged-in user, installed software, disk volumes, hardware, antivirus status, detected problems) - feeds the Digital Directory page. Also installs "Jstar", a tray icon + status window (Check In Now / View Log / last result) so anyone at the PC can see the agent is active - it needs the .ps1 and .bat downloaded below in the SAME folder. Generate a secret, save, then run the .bat as Administrator on each PC (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files).</div></div>
+      <div class="card-head"><h3>Digital Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent - metadata only (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, detected problems), no installed-software inventory. The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Also installs "Jstar", a tray icon + status window (Check In Now / View Log / last result) so anyone at the PC can see the agent is active - it needs the .ps1 and .bat downloaded below in the SAME folder. Generate a secret, save, then run the .bat as Administrator on each PC (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files).</div></div>
       <form onsubmit="App.saveWorkspaceDirectoryAgentForm(event)">
         <div class="field"><label>Shared Agent Secret</label>
           <div style="display:flex;gap:8px;">
@@ -662,26 +662,45 @@ function Get-TeamViewerId {
 # software ID", since there's no single universal way to enumerate every possible tool.
 function Get-OtherRemoteIds { @() }
 
+# Same discovery approach Broadsign's own player leaves on disk (and the same fallback file/keyword
+# search the original NSOC agent used) - matched server-side against Asset Inventory's Player Box
+# ID (Player Type = Broadsign), the exact field broadsign-sync itself matches on, so this PC can be
+# cross-referenced with the screen it drives in the Broadsign Console.
+function Get-BroadsignPlayerId {
+    $sharePath = "C:\\ProgramData\\BroadSign\\bsp\\share\\bsp"
+    if (-not (Test-Path $sharePath)) { return $null }
+    $candidates = @("host_id.txt", "player_id.txt", "config.xml", "settings.json", "bsp.ini")
+    $keywords = @("host_id", "playerid", "player_id", "deviceid", "id")
+    foreach ($fileName in $candidates) {
+        $filePath = Join-Path $sharePath $fileName
+        if (-not (Test-Path $filePath)) { continue }
+        $content = Get-Content -Path $filePath -Raw -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($content)) { continue }
+        foreach ($keyword in $keywords) {
+            if ($content -match "\\b$keyword\\s*[:=]\\s*\`"?([a-zA-Z0-9\\-_.]+)\`"?") { return $matches[1] }
+        }
+        if ($fileName -eq "host_id.txt" -and $content.Trim() -match "^[a-zA-Z0-9\\-_.]+$") { return $content.Trim() }
+    }
+    return $null
+}
+
+# Grassfish players expose their own BoxId via a local REST endpoint - the same source
+# grassfish-sync matches by (Player Box ID, Player Type = Grassfish), so this PC can be
+# cross-referenced with the screen it drives in the Grassfish Console.
+function Get-GrassfishBoxId {
+    try {
+        $resp = Invoke-RestMethod -Uri "http://localhost:8080/REST/PlayerDetails/MasterDetails" -TimeoutSec 3 -ErrorAction Stop
+        if ($resp -and $resp.BoxId) { return [string]$resp.BoxId }
+    } catch {}
+    return $null
+}
+
 function Get-PrimaryIPv4 {
     try {
         return Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
             Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.InterfaceAlias -notmatch 'Loopback' } |
             Select-Object -First 1 -ExpandProperty IPAddress
     } catch { return $null }
-}
-
-function Get-InstalledSoftware {
-    $keys = @(
-        'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
-        'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
-        'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'
-    )
-    $items = foreach ($key in $keys) {
-        Get-ItemProperty -Path $key -ErrorAction SilentlyContinue |
-            Where-Object { $_.DisplayName } |
-            Select-Object @{n='name';e={$_.DisplayName}}, @{n='version';e={$_.DisplayVersion}}
-    }
-    $items | Sort-Object name -Unique
 }
 
 function Get-Volumes {
@@ -768,21 +787,22 @@ $__teamviewerId = Get-TeamViewerId
 $__os = Get-CimInstance Win32_OperatingSystem
 
 @{
-    hostname       = $env:COMPUTERNAME
-    ip             = Get-PrimaryIPv4
-    anydeskId      = $__anydeskId
-    teamviewerId   = $__teamviewerId
-    otherRemoteIds = @(Get-OtherRemoteIds)
-    os             = $__os.Caption
-    osVersion      = $__os.Version
-    loggedInUser   = (Get-CimInstance Win32_ComputerSystem).UserName
-    software       = @(Get-InstalledSoftware)
-    volumes        = $__volumes
-    components     = Get-Components
-    antivirus      = $__antivirus
-    problems       = @(Get-Problems $__volumes $__antivirus $__anydeskId $__teamviewerId)
+    hostname          = $env:COMPUTERNAME
+    ip                = Get-PrimaryIPv4
+    anydeskId         = $__anydeskId
+    teamviewerId      = $__teamviewerId
+    otherRemoteIds    = @(Get-OtherRemoteIds)
+    broadsignPlayerId = Get-BroadsignPlayerId
+    grassfishBoxId    = Get-GrassfishBoxId
+    os                = $__os.Caption
+    osVersion         = $__os.Version
+    loggedInUser      = (Get-CimInstance Win32_ComputerSystem).UserName
+    volumes           = $__volumes
+    components        = Get-Components
+    antivirus         = $__antivirus
+    problems          = @(Get-Problems $__volumes $__antivirus $__anydeskId $__teamviewerId)
     networkBytesTotal = Get-NetworkBytesTotal
-    agentVersion   = "2.0"
+    agentVersion      = "3.0"
 }`;
 }
 
