@@ -290,7 +290,9 @@ function wireWidget(root) {
     queue.push({
       id: queueIdCounter++,
       w, h, label,
-      fit: 'cover',
+      // Contain by default - shows the full source without cropping any of it, unlike Cover
+      // (which crops overflow to fill the target exactly). Switchable per-item in the dropdown.
+      fit: 'contain',
       bg: '#000000',
       blur: false,
       status: 'pending',
