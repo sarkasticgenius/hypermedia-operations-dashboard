@@ -121,8 +121,9 @@ function wireWidget(root) {
     naturalW: 0,
     naturalH: 0,
     duration: 0,
+    thumbURL: null,
   };
-  let queue = []; // {id, w, h, label, fit, bg, blur, status, resultBlob, resultURL, ext, progress}
+  let queue = []; // {id, w, h, label, fit, bg, blur, splitPoints, rowGap, status, resultBlob, resultURL, ext, progress}
   let queueIdCounter = 1;
   let ffmpegInstance = null;
   let ffmpegLoading = null;
@@ -203,20 +204,39 @@ function wireWidget(root) {
       img.onload = () => {
         state.naturalW = img.naturalWidth;
         state.naturalH = img.naturalHeight;
+        state.thumbURL = makeThumbnail(img, state.naturalW, state.naturalH);
         onFileReady();
       };
       img.src = state.srcURL;
     } else {
       const vid = document.createElement('video');
       vid.preload = 'metadata';
+      vid.muted = true;
       vid.onloadedmetadata = () => {
         state.naturalW = vid.videoWidth;
         state.naturalH = vid.videoHeight;
         state.duration = vid.duration;
-        onFileReady();
+        vid.currentTime = Math.min(0.1, (vid.duration || 0) / 2);
+        vid.onseeked = () => {
+          state.thumbURL = makeThumbnail(vid, state.naturalW, state.naturalH);
+          onFileReady();
+        };
       };
       vid.src = state.srcURL;
     }
+  }
+
+  // A small still frame used only to draw split-point guide lines over in the queue UI (see
+  // splitControlsHtml below) - grabbed once per source rather than re-seeking a live <video> per
+  // queue item.
+  function makeThumbnail(source, sw, sh) {
+    const maxDim = 480;
+    const scale = Math.min(1, maxDim / Math.max(sw, sh));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(sw * scale));
+    canvas.height = Math.max(1, Math.round(sh * scale));
+    canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.82);
   }
 
   function onFileReady() {
@@ -268,7 +288,7 @@ function wireWidget(root) {
 
   function resetAll() {
     if (state.srcURL) URL.revokeObjectURL(state.srcURL);
-    state = { file: null, type: null, srcURL: null, naturalW: 0, naturalH: 0, duration: 0 };
+    state = { file: null, type: null, srcURL: null, naturalW: 0, naturalH: 0, duration: 0, thumbURL: null };
     queue.forEach((j) => { if (j.resultURL) URL.revokeObjectURL(j.resultURL); });
     queue = [];
     fileInfo.classList.remove('show');
@@ -295,6 +315,9 @@ function wireWidget(root) {
       fit: 'contain',
       bg: '#000000',
       blur: false,
+      // Only used when fit === 'split' (Split & Stack) - see splitControlsHtml/drawSplitStack.
+      splitPoints: [50],
+      rowGap: 4,
       status: 'pending',
       progress: 0,
       resultBlob: null,
@@ -335,12 +358,14 @@ function wireWidget(root) {
             <option value="cover" ${job.fit === 'cover' ? 'selected' : ''}>Cover (crop to fill)</option>
             <option value="contain" ${job.fit === 'contain' ? 'selected' : ''}>Contain (fit + bars)</option>
             <option value="stretch" ${job.fit === 'stretch' ? 'selected' : ''}>Stretch (fill exactly)</option>
+            <option value="split" ${job.fit === 'split' ? 'selected' : ''}>Split &amp; Stack (reflow rows)</option>
           </select>
-          ${job.fit === 'contain' ? `
+          ${job.fit === 'contain' || job.fit === 'split' ? `
             <label class="cr-blur-lbl"><input type="checkbox" class="cr-blur-toggle" data-id="${job.id}" ${job.blur ? 'checked' : ''}/> Blur bg</label>
             ${!job.blur ? `<input type="color" class="cr-bg-color" data-id="${job.id}" value="${job.bg}"/>` : ''}
           ` : ''}
         </div>
+        ${job.fit === 'split' ? splitControlsHtml(job) : ''}
         <div class="cr-qi-status" id="cr-status-${job.id}">${statusText(job)}</div>
         <div class="cr-qi-bar"><div class="cr-qi-bar-fill" id="cr-bar-${job.id}" style="width:${job.progress}%;"></div></div>
       `;
@@ -362,6 +387,34 @@ function wireWidget(root) {
       job.blur = e.target.checked;
       renderQueueList();
     }));
+    queueList.querySelectorAll('.cr-split-points').forEach((s) => s.addEventListener('change', (e) => {
+      const job = queue.find((j) => j.id === parseInt(e.target.dataset.id, 10));
+      job.splitPoints = parseSplitPoints(e.target.value);
+      renderQueueList();
+    }));
+    queueList.querySelectorAll('.cr-row-gap').forEach((s) => s.addEventListener('change', (e) => {
+      const job = queue.find((j) => j.id === parseInt(e.target.dataset.id, 10));
+      job.rowGap = Math.max(0, Math.min(30, parseFloat(e.target.value) || 0));
+    }));
+  }
+
+  // Split & Stack controls for one queue item: which vertical cut points (as % of source width)
+  // divide the source into strips, a gap between the stacked rows, plus a live preview (the
+  // cached source thumbnail with dashed lines at each cut) so picking split points isn't blind
+  // guesswork - the source has no natural "rows" the tool could detect on its own.
+  function splitControlsHtml(job) {
+    const lines = job.splitPoints.map((p) => `<div class="cr-split-line" style="left:${p}%;"></div>`).join('');
+    return `
+      <div class="cr-split-preview" style="background-image:url('${state.thumbURL || ''}')">${lines}</div>
+      <div class="cr-split-row">
+        <label>Split at (%)</label>
+        <input type="text" class="cr-split-points" data-id="${job.id}" value="${job.splitPoints.join(', ')}" placeholder="e.g. 62"/>
+      </div>
+      <div class="cr-split-row">
+        <label>Row gap (%)</label>
+        <input type="number" class="cr-row-gap" data-id="${job.id}" value="${job.rowGap}" min="0" max="30" step="0.5"/>
+      </div>
+    `;
   }
 
   function statusText(job) {
@@ -437,7 +490,11 @@ function wireWidget(root) {
           canvas.width = job.w;
           canvas.height = job.h;
           const ctx = canvas.getContext('2d');
-          drawFitted(ctx, img, state.naturalW, state.naturalH, job.w, job.h, job.fit, job.bg, job.blur);
+          if (job.fit === 'split') {
+            drawSplitStack(ctx, img, state.naturalW, state.naturalH, job.w, job.h, job.splitPoints, job.rowGap, job.bg, job.blur);
+          } else {
+            drawFitted(ctx, img, state.naturalW, state.naturalH, job.w, job.h, job.fit, job.bg, job.blur);
+          }
 
           const isPng = /png/i.test(state.file.type) || /\.png$/i.test(state.file.name);
           const mime = isPng ? 'image/png' : 'image/jpeg';
@@ -483,6 +540,41 @@ function wireWidget(root) {
     const scale = Math.min(dw / sw, dh / sh);
     const rw = sw * scale; const rh = sh * scale;
     ctx.drawImage(img, (dw - rw) / 2, (dh - rh) / 2, rw, rh);
+  }
+
+  // Split & Stack: cuts the source into vertical strips at the given % points (left-to-right),
+  // scales each strip to fill the full target width on its own, and stacks them top-to-bottom
+  // with a gap between rows - turning an ultra-wide single-row source into a multi-row layout
+  // instead of squashing/cropping it as one rigid block. The stacked composite is then placed
+  // into the true target canvas via the same Contain logic as drawFitted() above (reused
+  // directly - the composite is just treated as if it were the "source image"), so leftover
+  // space (or overflow) is handled identically to a normal Contain job.
+  function drawSplitStack(ctx, img, sw, sh, dw, dh, splitPoints, rowGapPct, bgColor, blur) {
+    const bounds = [0, ...splitPoints.map((p) => p / 100), 1];
+    const gapPx = Math.round((rowGapPct / 100) * dh);
+    const segments = [];
+    let totalH = 0;
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const x0 = bounds[i] * sw;
+      const x1 = bounds[i + 1] * sw;
+      const segW = Math.max(1, x1 - x0);
+      const segH = Math.max(1, Math.round(sh * (dw / segW)));
+      segments.push({ x0, segW, segH });
+      totalH += segH;
+    }
+    totalH += gapPx * (segments.length - 1);
+
+    const stacked = document.createElement('canvas');
+    stacked.width = dw;
+    stacked.height = Math.max(1, totalH);
+    const sctx = stacked.getContext('2d');
+    let y = 0;
+    segments.forEach((seg, i) => {
+      sctx.drawImage(img, seg.x0, 0, seg.segW, sh, 0, y, dw, seg.segH);
+      y += seg.segH + (i < segments.length - 1 ? gapPx : 0);
+    });
+
+    drawFitted(ctx, stacked, dw, stacked.height, dw, dh, 'contain', bgColor, blur);
   }
 
   // ----- Video rendering (ffmpeg.wasm) -----
@@ -554,6 +646,61 @@ function wireWidget(root) {
     return `scale=${job.w}:${job.h}:force_original_aspect_ratio=decrease,pad=${job.w}:${job.h}:(ow-iw)/2:(oh-ih)/2:color=${hexToFFColor(job.bg)}`;
   }
 
+  // Video equivalent of drawSplitStack() above, built as an ffmpeg -filter_complex graph since it
+  // needs multiple crop/scale streams plus extra "gap" color inputs stacked together (a single
+  // -vf chain, as buildFilter() above produces, can only run one input through one linear chain).
+  // Strip heights are computed here in JS (not left to ffmpeg expressions) since the source's
+  // pixel dimensions are already known client-side, which keeps the filter graph itself simple.
+  function buildSplitStackVideoFilter(job, sw, sh, duration) {
+    const bounds = [0, ...job.splitPoints.map((p) => p / 100), 1];
+    const dw = job.w; const dh = job.h;
+    const gapPx = Math.max(0, Math.round((job.rowGap / 100) * dh));
+    const segments = [];
+    let totalH = 0;
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const x0 = Math.round(bounds[i] * sw);
+      const x1 = Math.round(bounds[i + 1] * sw);
+      const segW = Math.max(2, x1 - x0);
+      let segH = Math.round(sh * (dw / segW));
+      if (segH % 2 !== 0) segH += 1; // even dims required for yuv420p
+      segments.push({ x0, segW, segH });
+      totalH += segH;
+    }
+    totalH += gapPx * (segments.length - 1);
+
+    const parts = [];
+    segments.forEach((seg, i) => {
+      parts.push(`[0:v]crop=w=${seg.segW}:h=${sh}:x=${seg.x0}:y=0,scale=${dw}:${seg.segH}[seg${i}]`);
+    });
+
+    const extraInputs = [];
+    const stackLabels = [];
+    segments.forEach((seg, i) => {
+      stackLabels.push(`[seg${i}]`);
+      if (i < segments.length - 1 && gapPx > 0) {
+        const inputIndex = 1 + extraInputs.length / 4; // each extra input adds 4 argv entries below
+        extraInputs.push('-f', 'lavfi', '-i', `color=c=${hexToFFColor(job.bg)}:s=${dw}x${gapPx}:d=${Math.ceil(duration || 1) + 1}`);
+        stackLabels.push(`[${inputIndex}:v]`);
+      }
+    });
+    parts.push(`${stackLabels.join('')}vstack=inputs=${stackLabels.length}[stacked]`);
+
+    if (totalH <= dh) {
+      const padY = Math.floor((dh - totalH) / 2);
+      if (job.blur) {
+        parts.push('[stacked]split[stfg][stbg]');
+        parts.push(`[stbg]scale=${dw}:${dh}:force_original_aspect_ratio=increase,crop=${dw}:${dh},boxblur=20:5[stbgb]`);
+        parts.push(`[stbgb][stfg]overlay=0:${padY}[vout]`);
+      } else {
+        parts.push(`[stacked]pad=${dw}:${dh}:0:${padY}:color=${hexToFFColor(job.bg)}[vout]`);
+      }
+    } else {
+      parts.push(`[stacked]scale=${dw}:${dh}:force_original_aspect_ratio=decrease,pad=${dw}:${dh}:(ow-iw)/2:(oh-ih)/2:color=${hexToFFColor(job.bg)}[vout]`);
+    }
+
+    return { extraInputs, filterComplex: parts.join(';'), outputLabel: '[vout]' };
+  }
+
   // ----- Local native-ffmpeg helper (fast path) -----
   async function checkLocalEngine() {
     engineBadge.style.display = 'flex';
@@ -605,6 +752,8 @@ function wireWidget(root) {
         fit: job.fit,
         bg: job.bg,
         blur: job.blur,
+        splitPoints: job.splitPoints,
+        rowGap: job.rowGap,
       }),
     });
     if (!resp.ok) {
@@ -629,23 +778,18 @@ function wireWidget(root) {
 
     await ff.writeFile(inputName, await fetchFileBytes(state.file));
 
-    const args = [
-      '-i', inputName,
-      '-vf', buildFilter(job),
-      '-map', '0:v:0',
-      '-map', '0:a:0?',
-      '-c:v', 'libx264',
-      // 'ultrafast' only trades encoder compression efficiency for speed - it does not touch
-      // output pixel dimensions or the scale filter. The browser engine runs a single-threaded,
-      // software x264 encoder, so it's still markedly slower than the local native engine above.
-      '-preset', 'ultrafast',
-      '-crf', '20',
-      '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-movflags', '+faststart',
-      outputName,
-    ];
+    // 'ultrafast' only trades encoder compression efficiency for speed - it does not touch output
+    // pixel dimensions or the scale filter. The browser engine runs a single-threaded, software
+    // x264 encoder, so it's still markedly slower than the local native engine above.
+    const encodeArgs = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart'];
+
+    let args;
+    if (job.fit === 'split') {
+      const { extraInputs, filterComplex, outputLabel } = buildSplitStackVideoFilter(job, state.naturalW, state.naturalH, state.duration);
+      args = ['-i', inputName, ...extraInputs, '-filter_complex', filterComplex, '-map', outputLabel, '-map', '0:a:0?', ...encodeArgs, outputName];
+    } else {
+      args = ['-i', inputName, '-vf', buildFilter(job), '-map', '0:v:0', '-map', '0:a:0?', ...encodeArgs, outputName];
+    }
 
     await ff.exec(args);
     const data = await ff.readFile(outputName);
@@ -735,6 +879,18 @@ function wireWidget(root) {
   });
 }
 
+// Comma-separated cut points as text ("62" or "30, 70") -> sorted, deduped, clamped array of
+// percentages strictly between 0 and 100 (0/100 would create a zero-width strip). Falls back to a
+// single centered split if nothing valid was entered, so a job never ends up with zero strips.
+function parseSplitPoints(text) {
+  const nums = String(text || '')
+    .split(',')
+    .map((s) => Math.round(parseFloat(s.trim()) * 10) / 10)
+    .filter((n) => !Number.isNaN(n) && n > 0 && n < 100);
+  const uniqueSorted = [...new Set(nums)].sort((a, b) => a - b);
+  return uniqueSorted.length ? uniqueSorted : [50];
+}
+
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -821,6 +977,11 @@ const CSS = `
 .cr-workspace .cr-qi-controls select{background:var(--cr-panel-2);border:1px solid var(--cr-border);color:var(--cr-text);border-radius:6px;padding:5px 6px;font-size:11.5px;}
 .cr-workspace .cr-qi-controls input[type=color]{width:26px;height:26px;padding:0;border:1px solid var(--cr-border);border-radius:6px;background:none;cursor:pointer;}
 .cr-workspace .cr-blur-lbl{font-size:11px;color:var(--cr-text-dim);display:flex;align-items:center;gap:4px;}
+.cr-workspace .cr-split-preview{position:relative;height:56px;background-size:cover;background-position:center;background-color:#000;background-repeat:no-repeat;border:1px solid var(--cr-border);border-radius:6px;margin-top:8px;overflow:hidden;}
+.cr-workspace .cr-split-line{position:absolute;top:0;bottom:0;width:0;border-left:2px dashed #fff;box-shadow:0 0 0 1px rgba(0,0,0,.55);}
+.cr-workspace .cr-split-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;}
+.cr-workspace .cr-split-row label{font-size:11px;color:var(--cr-text-dim);white-space:nowrap;}
+.cr-workspace .cr-split-row input[type=text],.cr-workspace .cr-split-row input[type=number]{width:110px;background:var(--cr-panel-2);border:1px solid var(--cr-border);color:var(--cr-text);border-radius:6px;padding:5px 7px;font-size:11.5px;}
 .cr-workspace .cr-qi-status{margin-top:8px;font-size:11.5px;color:var(--cr-text-dim);}
 .cr-workspace .cr-qi-status.done{color:var(--cr-good);}
 .cr-workspace .cr-qi-status.error{color:var(--cr-bad);}
