@@ -56,6 +56,8 @@ async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string,
   return !!profile?.active;
 }
 
+// deleted_at is null excludes soft-deleted (Recycle Bin) rows - see the matching note in
+// broadsign-sync/index.ts, same bug/fix, same "removed" screen resurrecting forever otherwise.
 async function fetchAllInventory(adminClient: any, playerType: string) {
   const all: any[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
@@ -64,6 +66,7 @@ async function fetchAllInventory(adminClient: any, playerType: string) {
       .select('id, name, venue, player_box_id, faces')
       .eq('player_type', playerType)
       .not('player_box_id', 'is', null)
+      .is('deleted_at', null)
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;

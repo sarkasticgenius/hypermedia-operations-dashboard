@@ -74,6 +74,12 @@ async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string,
   return !!profile?.active;
 }
 
+// deleted_at is null excludes soft-deleted (Recycle Bin) rows - without it, a screen removed from
+// Asset Inventory still had its box id matched against Broadsign's live API on every 15-minute
+// sync, and if Broadsign kept reporting it missing/offline, the sync recreated its
+// location_sub_assets row every single run, making a "removed" screen reappear in the Broadsign
+// Console heatmap forever (confirmed live: a soft-deleted Dragon Mart-1 screen still showing
+// "Missing in Action" with its original, months-stale poll_last_utc).
 async function fetchAllInventory(adminClient: any, playerType: string) {
   const all: any[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
@@ -82,6 +88,7 @@ async function fetchAllInventory(adminClient: any, playerType: string) {
       .select('id, name, venue, player_box_id, faces')
       .eq('player_type', playerType)
       .not('player_box_id', 'is', null)
+      .is('deleted_at', null)
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
