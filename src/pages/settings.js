@@ -1152,7 +1152,6 @@ if (-not $Once) {
         } else {
             Register-ScheduledTask -TaskName $TrayTaskName -Action $TrayAction -Trigger $TrayTrigger -Principal $TrayPrincipal -Description "Jstar - shows a tray icon confirming the Digital Directory Agent is active." | Out-Null
         }
-        Write-Host "Jstar tray icon installed (appears at next logon)." -ForegroundColor Green
         Start-Process powershell.exe -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$TrayScriptPath\`"" -ErrorAction SilentlyContinue
     } catch {
         Write-Warning "Could not install the Jstar tray icon: $($_.Exception.Message)"
