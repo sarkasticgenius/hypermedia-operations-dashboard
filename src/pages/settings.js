@@ -1370,8 +1370,10 @@ export function downloadWorkspaceDirectoryAgentScript() {
 // Plain double-clickable launcher, same idea as the reference NSOC agent's own .cmd wrapper -
 // double-clicking a .ps1 directly just opens it in Notepad (Windows' safety default), so this is
 // the intended way to actually run the install. Requests elevation itself (the .ps1 also
-// self-elevates, but starting elevated avoids two separate UAC prompts) and pauses at the end so
-// any error is visible instead of the window closing immediately.
+// self-elevates, but starting elevated avoids two separate UAC prompts). Closes itself
+// automatically on success - the Jstar tray icon that appears afterward is the visible
+// confirmation - and only pauses if the install itself failed, so an error stays visible instead
+// of the window vanishing before anyone can read it.
 function buildAgentBatchLauncher() {
   return `@echo off
 setlocal
@@ -1386,11 +1388,12 @@ ECHO Launching Digital Directory Agent installation...
 ECHO.
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-DigitalDirectoryAgent.ps1"
-
-ECHO.
-ECHO Script execution complete.
-ECHO Please press any key to close this window...
-pause
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO.
+    ECHO Installation failed - see the error above.
+    ECHO Please press any key to close this window...
+    pause >NUL
+)
 
 GOTO :EOF
 
