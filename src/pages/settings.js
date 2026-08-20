@@ -565,10 +565,15 @@ function renderWorkspaceDirectoryAgentCard(settings) {
           </div>
           <div class="small muted" style="margin-top:4px;">Every agent sends this in an x-agent-secret header instead of signing in as a user. Rotating it means re-downloading and re-installing on every PC.</div>
         </div>
+        <div class="field"><label>Client Uninstall Password</label>
+          <input id="int-wda-uninstall-password" type="password" autocomplete="new-password" placeholder="${cfg.uninstallPasswordHash ? 'Set - leave blank to keep it' : 'Not set yet - required before a PC can be uninstalled'}">
+          <div class="small muted" style="margin-top:4px;">Whoever runs the Uninstall Launcher on a PC has to enter this to actually remove the agent - stops a store/office employee from just deleting it themselves. Only its hash is saved and baked into the installed agent, never the password itself, so save it somewhere you can read it back later (a password manager, not this field) - there's no way to recover it from here once saved.${cfg.uninstallPasswordHash ? '' : ' Set one, Save, then Publish Latest Agent Version so already-installed PCs pick it up too.'}</div>
+        </div>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <button class="btn btn-orange" type="submit">Save</button>
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentScript()">Download Install Script (.ps1)</button>
           <button type="button" class="btn-outline btn-sm" onclick="App.downloadWorkspaceDirectoryAgentBatch()">Download Launcher (.bat)</button>
+          <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentUninstallBatch()">Download Uninstall Launcher (.bat)</button>
         </div>
       </form>
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
@@ -595,12 +600,25 @@ export function generateWorkspaceDirectorySecret() {
   if (el) el.value = crypto.randomUUID().replace(/-/g, '');
 }
 
+// Only the hash is ever persisted/embedded in the installed script - the plaintext password
+// itself never leaves this form (not saved to app_settings, not sent anywhere but through
+// SubtleCrypto locally), so there's deliberately no way to display or recover it later from here.
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export async function saveWorkspaceDirectoryAgentForm(event) {
   event.preventDefault();
   const secret = document.getElementById('int-wda-secret').value.trim();
   if (!secret) { toast('Generate or enter a secret first', 'error'); return; }
+  const uninstallPasswordInput = document.getElementById('int-wda-uninstall-password').value.trim();
+  const settings = STATE.pageData.settings?.data || {};
+  const uninstallPasswordHash = uninstallPasswordInput
+    ? await sha256Hex(uninstallPasswordInput)
+    : (settings.workspaceDirectoryAgent?.uninstallPasswordHash || null);
   try {
-    await saveSetting('workspaceDirectoryAgent', { secret });
+    await saveSetting('workspaceDirectoryAgent', { secret, uninstallPasswordHash });
     await logAudit('Save integration settings', 'workspaceDirectoryAgent');
     invalidate('settings');
     toast('Settings saved');
@@ -637,7 +655,7 @@ export async function publishWorkspaceDirectoryAgentShell() {
   const settings = STATE.pageData.settings?.data || {};
   const secret = settings.workspaceDirectoryAgent?.secret;
   if (!secret) { toast('Save a secret first', 'error'); return; }
-  const script = buildWorkspaceDirectoryAgentScript(secret);
+  const script = buildWorkspaceDirectoryAgentScript(secret, settings.workspaceDirectoryAgent?.uninstallPasswordHash);
   const version = (settings.workspaceDirectoryAgentShell?.version || 0) + 1;
   try {
     await saveSetting('workspaceDirectoryAgentShell', { script, version, publishedAt: new Date().toISOString() });
@@ -1082,12 +1100,13 @@ $forceTimer.Start()
 // computed server-side only about once a day regardless (see workspace-directory-checkin) - a few KB
 // per call either way is negligible next to a typical SIM data plan; the self-update check below
 // adds one more GET of the same order.
-function buildWorkspaceDirectoryAgentScript(secret) {
+function buildWorkspaceDirectoryAgentScript(secret, uninstallPasswordHash) {
   const checkinUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-checkin`;
   const collectorUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-collector`;
   const agentShellUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-agent-shell`;
   const forceStatusUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-force-status`;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const uninstallHash = (uninstallPasswordHash || '').toLowerCase();
   const indented = defaultCollectorScript().split('\n').map((l) => `    ${l}`).join('\n');
   // Base64, not inlined as PowerShell-inside-a-PowerShell-string, so nothing in the tray script's
   // own quotes/backticks/$variables needs escaping for this outer template - the install script
@@ -1102,7 +1121,7 @@ function buildWorkspaceDirectoryAgentScript(secret) {
 # itself never needs to change or be re-installed to pick up a new field. Re-run this script any
 # time to update the install (e.g. after rotating the secret).
 
-param([switch]$Once)
+param([switch]$Once, [switch]$Uninstall)
 
 $CheckinUrl = "${checkinUrl}"
 $CollectorUrl = "${collectorUrl}"
@@ -1119,12 +1138,48 @@ $AgentCopyPath = Join-Path $StateDir "agent.ps1"
 $TrayScriptPath = Join-Path $StateDir "tray.ps1"
 $DuScrapeStateFile = Join-Path $StateDir "du-scrape-last.txt"
 $TrayScriptB64 = "${trayScriptB64}"
+$UninstallPasswordHash = "${uninstallHash}"
 
-# Self-elevate if not already running as Administrator (needed to register the SYSTEM-level task).
+# Self-elevate if not already running as Administrator (needed to register/unregister the
+# SYSTEM-level task either way, install OR uninstall).
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $Once -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`"" -Verb RunAs
+    $reElevateArgs = "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`""
+    if ($Uninstall) { $reElevateArgs += " -Uninstall" }
+    Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs
     exit
+}
+
+# Gated behind the password set in Settings > Integrations > Digital Directory Agent > Client
+# Uninstall Password (stored/baked in as a SHA-256 hash only, never the plaintext) - so removing
+# the agent from a kiosk/back-office PC needs someone who actually has that password, not just
+# physical/admin access to the machine. Runs before self-update or anything network-related since
+# a PC being uninstalled shouldn't matter what version it's currently on.
+if ($Uninstall) {
+    if (-not $UninstallPasswordHash) {
+        Write-Warning "No uninstall password has been set yet (Settings > Integrations > Digital Directory Agent > Client Uninstall Password on the dashboard). Set one there, Save, then Publish Latest Agent Version before this PC can be uninstalled."
+        exit 1
+    }
+    $securePwd = Read-Host "Enter the Digital Directory client uninstall password" -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePwd)
+    $plainPwd = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $enteredHash = ([BitConverter]::ToString($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($plainPwd))) -replace '-', '').ToLower()
+    if ($enteredHash -ne $UninstallPasswordHash) {
+        Write-Warning "Incorrect password. Uninstall cancelled."
+        exit 1
+    }
+    Write-Host "Password confirmed - removing the Digital Directory Agent from this PC..." -ForegroundColor Yellow
+    Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    Get-ScheduledTask -TaskName $TrayTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($TrayScriptPath) } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Remove-Item -Path $StateDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "Digital Directory Agent uninstalled from this PC (scheduled tasks removed, tray closed, local state deleted)." -ForegroundColor Green
+    Write-Host "Note: this PC's row on the dashboard is left as-is (last known state) - remove it there separately if needed."
+    exit 0
 }
 
 # Appends one line per attempt (capped to the last 200) and refreshes status.json - both purely so
@@ -1224,11 +1279,11 @@ function Get-DuDataUsage {
         $html = & $browser @dumpArgs 2>$null | Out-String
         if ([string]::IsNullOrWhiteSpace($html)) { return $null }
 
-        // Breaks the DOM into one "line" per block-level element (rather than one flattened blob)
-        // before matching - a label and its value are almost always in the same or an adjacent
-        // block (same table row/cell pair, or a label div followed by a value div), and matching
-        // per-line avoids a keyword accidentally pairing with some UNRELATED number that just
-        // happens to appear within N characters of it in a flattened string.
+        # Breaks the DOM into one "line" per block-level element (rather than one flattened blob)
+        # before matching - a label and its value are almost always in the same or an adjacent
+        # block (same table row/cell pair, or a label div followed by a value div), and matching
+        # per-line avoids a keyword accidentally pairing with some UNRELATED number that just
+        # happens to appear within N characters of it in a flattened string.
         $lineBreak = $html -replace '(?is)<script.*?</script>', ' ' -replace '(?is)<style.*?</style>', ' ' -replace '(?i)</(div|p|li|td|tr|span|h1|h2|h3|h4|h5|h6)>', "\`n" -replace '(?i)<br\\s*/?>', "\`n" -replace '<[^>]+>', ' '
         $lines = $lineBreak -split "\`n" | ForEach-Object { ([System.Net.WebUtility]::HtmlDecode($_) -replace '\\s+', ' ').Trim() } | Where-Object { $_ }
         if (-not $lines) { return $null }
@@ -1336,18 +1391,44 @@ if (-not $Once) {
     # range", confirmed live) - Task Scheduler's own convention for "repeat indefinitely" is an
     # EMPTY Duration, not the largest representable one, so that's set directly on the trigger
     # object instead of passed as a constructor value.
-    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
-    $Trigger.Repetition.Duration = ""
+    $RepeatTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
+    $RepeatTrigger.Repetition.Duration = ""
+    # Also fire once right after boot (a couple minutes' random delay so a fleet of PCs rebooting
+    # together - e.g. after a power cut at a venue - doesn't all hit the checkin endpoint in the
+    # same instant), on TOP of the every-6-hours repeat above, not instead of it - a task's trigger
+    # list can hold both and each fires independently. Without this, a PC that reboots mid-cycle
+    # (or was off across its next scheduled time) sits "stale" until the following 6-hour mark
+    # instead of checking in - and reporting back in - as soon as it's back up.
+    $StartupTrigger = New-ScheduledTaskTrigger -AtStartup -RandomDelay (New-TimeSpan -Minutes 2)
     $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
     try {
         if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-            Set-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal | Out-Null
+            Set-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($RepeatTrigger, $StartupTrigger) -Principal $Principal | Out-Null
         } else {
-            Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Description "Reports this PC's inventory to the Hypermedia Operations Dashboard." | Out-Null
+            Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($RepeatTrigger, $StartupTrigger) -Principal $Principal -Description "Reports this PC's inventory to the Hypermedia Operations Dashboard." | Out-Null
         }
-        Write-Host "Scheduled task '$TaskName' installed (runs every 6 hours)." -ForegroundColor Green
+        Write-Host "Scheduled task '$TaskName' installed (runs on startup and every 6 hours)." -ForegroundColor Green
     } catch {
         Write-Warning "Could not register the scheduled task: $($_.Exception.Message)"
+    }
+
+    # Chocolatey is bootstrapped at install time (not on every 6-hourly -Once run) so a Run Command
+    # queued from the dashboard - or a future bulk deployment - can always reach for "choco install
+    # -y <pkg>" and expect it to work, without depending on winget/App Installer already being
+    # present (it isn't on every Windows 10 build these back-office/kiosk PCs run, whereas
+    # Chocolatey's own bootstrapper is just this one self-contained script). Skipped entirely if
+    # choco.exe is already on PATH, so a re-run of the installer (e.g. after a secret rotation)
+    # doesn't reinstall it every time.
+    if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
+        try {
+            Write-Host "Installing Chocolatey (package manager used by queued Run Commands)..."
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+            Write-Host "Chocolatey installed." -ForegroundColor Green
+        } catch {
+            Write-Warning "Could not install Chocolatey - choco-based Run Commands won't work on this PC until it's installed manually: $($_.Exception.Message)"
+        }
     }
 
     # Jstar (the tray status icon) needs a real interactive desktop, unlike the headless SYSTEM
@@ -1393,7 +1474,7 @@ export function downloadWorkspaceDirectoryAgentScript() {
   const settings = STATE.pageData.settings?.data || {};
   const secret = settings.workspaceDirectoryAgent?.secret;
   if (!secret) { toast('Save a secret first', 'error'); return; }
-  downloadTextFile(buildWorkspaceDirectoryAgentScript(secret), 'Install-DigitalDirectoryAgent.ps1');
+  downloadTextFile(buildWorkspaceDirectoryAgentScript(secret, settings.workspaceDirectoryAgent?.uninstallPasswordHash), 'Install-DigitalDirectoryAgent.ps1');
 }
 
 // Plain double-clickable launcher, same idea as the reference NSOC agent's own .cmd wrapper -
@@ -1437,6 +1518,49 @@ GOTO :EOF
 
 export function downloadWorkspaceDirectoryAgentBatch() {
   downloadTextFile(buildAgentBatchLauncher(), 'Install-DigitalDirectoryAgent.bat');
+}
+
+// Runs the SAME installed Install-DigitalDirectoryAgent.ps1 (must already be in this folder from
+// the install above) with -Uninstall instead of a separate script - the .ps1 itself prompts for
+// the Client Uninstall Password and does the actual removal (see the $Uninstall block in
+// buildWorkspaceDirectoryAgentScript above); this .bat is just the same double-clickable/elevated
+// entry point as the installer, pointed at the other switch. Stays open on failure (wrong
+// password, none set yet) same as the install launcher, so the reason is visible.
+function buildAgentUninstallBatchLauncher() {
+  return `@echo off
+setlocal
+
+NET SESSION >NUL 2>&1
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Requesting Administrator privileges...
+    GOTO :ADMIN_ELEVATION
+)
+
+ECHO Uninstalling the Digital Directory Agent from this PC...
+ECHO You will be asked for the Client Uninstall Password.
+ECHO.
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-DigitalDirectoryAgent.ps1" -Uninstall
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO.
+    ECHO Uninstall failed or was cancelled - see the error above.
+)
+ECHO Please press any key to close this window...
+pause >NUL
+
+GOTO :EOF
+
+:ADMIN_ELEVATION
+    set "batchPath=%~dp0%~nx0"
+    ECHO Set UAC = CreateObject^("Shell.Application"^) > "%TEMP%\\elevate.vbs"
+    ECHO UAC.ShellExecute "%batchPath%", "", "","runas", 1 >> "%TEMP%\\elevate.vbs"
+    "%TEMP%\\elevate.vbs"
+    exit /b
+`;
+}
+
+export function downloadWorkspaceDirectoryAgentUninstallBatch() {
+  downloadTextFile(buildAgentUninstallBatchLauncher(), 'Uninstall-DigitalDirectoryAgent.bat');
 }
 
 function renderAssetInventoryApiCard(settings) {

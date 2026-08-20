@@ -662,18 +662,20 @@ export async function runNetworkSync(settingKey, functionName) {
 // Box ID both the sync functions AND the Digital Directory agent match on (see
 // defaultCollectorScript() in settings.js) - lets an offline-screen row here offer a direct
 // AnyDesk/TeamViewer connect option instead of a separate trip to the Digital Directory page.
-// Best-effort: returns an empty map (no chips shown) if the viewer can't see workspace_devices at
-// all, same as loadData() failing silently elsewhere - Digital Directory isn't guaranteed to be
-// configured/populated.
-function deviceByBoxId(source) {
+// Matches against EITHER id field regardless of which console the row came from - a PC's Digital
+// Directory entry isn't guaranteed to have its id recorded under the field matching this specific
+// page's source, so checking both catches it either way. Best-effort: returns an empty map (no
+// chips shown) if the viewer can't see workspace_devices at all, same as loadData() failing
+// silently elsewhere - Digital Directory isn't guaranteed to be configured/populated.
+function deviceByBoxId() {
   const devices = loadData('workspaceDevicesForNetworkPanel', listWorkspaceDevices);
   const map = new Map();
   if (!Array.isArray(devices)) return map;
-  const field = source === 'broadsign' ? 'broadsign_player_id' : source === 'grassfish' ? 'grassfish_box_id' : null;
-  if (!field) return map;
   devices.forEach((d) => {
-    const id = (d[field] || '').trim();
-    if (id) map.set(id, d);
+    const bId = (d.broadsign_player_id || '').trim();
+    const gId = (d.grassfish_box_id || '').trim();
+    if (bId) map.set(bId, d);
+    if (gId) map.set(gId, d);
   });
   return map;
 }
@@ -690,7 +692,7 @@ registerModal('offlineAssetsModal', (data) => {
   const allLocations = STATE.pageData.locationsForNetworkPanel?.data || [];
   const ticketAddOk = canAdd('tickets');
   const sourceLabel = data.source === 'broadsign' ? 'Broadsign Console' : data.source === 'grassfish' ? 'Grassfish Console' : '';
-  const boxIdMap = deviceByBoxId(data.source);
+  const boxIdMap = deviceByBoxId();
 
   let items = [];
   let displayName;

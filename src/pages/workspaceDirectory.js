@@ -69,25 +69,84 @@ export function copyWorkspaceId(event, id) {
   navigator.clipboard?.writeText(id).then(() => toast('Copied')).catch(() => {});
 }
 
-export function fillWorkspaceCommand(command) {
-  const el = document.getElementById('wd-edit-command');
+// Both the per-device Edit modal and the bulk-deploy-to-selected-devices modal share this exact
+// same set of preset buttons (winget/choco install/uninstall by ID, diagnostics) - targetId lets
+// each modal point the same preset logic at its own textarea/input pair instead of duplicating
+// every button.
+export function fillWorkspaceCommand(command, targetId) {
+  const el = document.getElementById(targetId || 'wd-edit-command');
   if (el) el.value = command;
 }
 
-function workspacePackageId() {
-  const id = document.getElementById('wd-edit-pkgid')?.value.trim();
+function workspacePackageId(inputId) {
+  const id = document.getElementById(inputId || 'wd-edit-pkgid')?.value.trim();
   if (!id) toast('Enter a winget Package ID first', 'error');
   return id || null;
 }
 
-export function fillWorkspaceInstallById() {
-  const id = workspacePackageId();
-  if (id) fillWorkspaceCommand(`winget install -e --id ${id} --silent --accept-package-agreements --accept-source-agreements`);
+export function fillWorkspaceInstallById(inputId, targetId) {
+  const id = workspacePackageId(inputId);
+  if (id) fillWorkspaceCommand(`winget install -e --id ${id} --silent --accept-package-agreements --accept-source-agreements`, targetId);
 }
 
-export function fillWorkspaceUninstallById() {
-  const id = workspacePackageId();
-  if (id) fillWorkspaceCommand(`winget uninstall -e --id ${id} --silent`);
+export function fillWorkspaceUninstallById(inputId, targetId) {
+  const id = workspacePackageId(inputId);
+  if (id) fillWorkspaceCommand(`winget uninstall -e --id ${id} --silent`, targetId);
+}
+
+function workspaceChocoPackageId(inputId) {
+  const id = document.getElementById(inputId || 'wd-edit-chocoid')?.value.trim();
+  if (!id) toast('Enter a Chocolatey package ID first', 'error');
+  return id || null;
+}
+
+export function fillWorkspaceChocoInstallById(inputId, targetId) {
+  const id = workspaceChocoPackageId(inputId);
+  if (id) fillWorkspaceCommand(`choco install ${id} -y`, targetId);
+}
+
+export function fillWorkspaceChocoUninstallById(inputId, targetId) {
+  const id = workspaceChocoPackageId(inputId);
+  if (id) fillWorkspaceCommand(`choco uninstall ${id} -y`, targetId);
+}
+
+// Renders the shared preset-button rows (winget/choco install-by-ID, diagnostics) used by both the
+// per-device Edit modal and the bulk-deploy modal, pointed at whichever textarea/input pair belongs
+// to that modal.
+function commandPresetsHtml(pkgInputId, chocoInputId, targetId) {
+  return `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+      <span class="small muted" style="align-self:center;">Install:</span>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id 7zip.7zip --silent --accept-package-agreements --accept-source-agreements', '${targetId}')">7-Zip</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements', '${targetId}')">Chrome</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id AnyDeskSoftwareGmbH.AnyDesk --silent --accept-package-agreements --accept-source-agreements', '${targetId}')">AnyDesk</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id TeamViewer.TeamViewer --silent --accept-package-agreements --accept-source-agreements', '${targetId}')">TeamViewer</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+      <span class="small muted" style="align-self:center;">Uninstall:</span>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id 7zip.7zip --silent', '${targetId}')">7-Zip</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id Google.Chrome --silent', '${targetId}')">Chrome</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id AnyDeskSoftwareGmbH.AnyDesk --silent', '${targetId}')">AnyDesk</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id TeamViewer.TeamViewer --silent', '${targetId}')">TeamViewer</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center;">
+      <span class="small muted">Any winget package:</span>
+      <input id="${pkgInputId}" placeholder="Package ID, e.g. VideoLAN.VLC" style="flex:1;min-width:160px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceInstallById('${pkgInputId}', '${targetId}')">Install</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceUninstallById('${pkgInputId}', '${targetId}')">Uninstall</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center;">
+      <span class="small muted">Any Chocolatey package:</span>
+      <input id="${chocoInputId}" placeholder="Package ID, e.g. vlc" style="flex:1;min-width:160px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceChocoInstallById('${chocoInputId}', '${targetId}')">Install</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceChocoUninstallById('${chocoInputId}', '${targetId}')">Uninstall</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+      <span class="small muted" style="align-self:center;">Diagnostics:</span>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('Get-DuDataUsage | ConvertTo-Json', '${targetId}')">Test DU Scrape</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget list', '${targetId}')">List Installed (winget)</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('choco list --local-only', '${targetId}')">List Installed (choco)</button>
+    </div>`;
 }
 
 // Cross-references this PC with the screen it drives in the Broadsign/Grassfish Console, by the
@@ -134,19 +193,39 @@ function statusDotHtml(online, labelled) {
   return `<span style="display:inline-flex;align-items:center;gap:6px;">${dot}<span class="small" style="color:${color};font-weight:600;">${online ? 'Online' : 'Offline'}</span></span>`;
 }
 
-function deviceRow(d, editOk, deleteOk, assetInventory) {
+// Same striped-bar treatment as the Details modal's Volumes table (see registerModal
+// 'workspaceDetails' below) but collapsed to the single worst-off drive, so the main table gives an
+// at-a-glance disk-space warning without needing to open Details first.
+function volumeCellHtml(d) {
+  const volumes = d.volumes || [];
+  if (!volumes.length) return '<span class="small muted">-</span>';
+  const worst = volumes.reduce((a, b) => {
+    const aPct = a.sizeGb > 0 ? a.freeGb / a.sizeGb : 1;
+    const bPct = b.sizeGb > 0 ? b.freeGb / b.sizeGb : 1;
+    return bPct < aPct ? b : a;
+  });
+  const freePct = worst.sizeGb > 0 ? (worst.freeGb / worst.sizeGb) * 100 : 0;
+  const color = freePct <= 10 ? '#c0392b' : freePct <= 25 ? '#e07a2c' : '#1f9d55';
+  return `<div style="display:flex;align-items:center;gap:6px;" title="${esc(worst.drive)} - ${worst.freeGb} of ${worst.sizeGb} GB free">
+    <span class="small muted">${esc(worst.drive)}</span>${stripedBarHtml(freePct, color)}
+  </div>`;
+}
+
+function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds) {
   const online = isOnline(d);
   const problemCount = (d.problems || []).length;
   return `<tr>
+    ${editOk ? `<td style="width:24px;"><input type="checkbox" ${(selectedIds || new Set()).has(d.id) ? 'checked' : ''} onchange="App.toggleWorkspaceSelection('${d.id}', this.checked)"></td>` : ''}
     <td><b>${esc(d.hostname)}</b></td>
     <td class="small">${esc(d.location || '-')}</td>
     <td class="small">${esc(d.ip_address || '-')}</td>
     <td>${remoteAccessCell(d)}</td>
+    <td>${volumeCellHtml(d)}</td>
+    <td>${statusDotHtml(online, true)}</td>
     <td>${matchedScreenHtml(matchedScreenFor(d, assetInventory))}</td>
     <td class="small">${esc(d.os_name || '-')}${d.os_version ? ` <span class="muted">${esc(d.os_version)}</span>` : ''}</td>
     <td class="small">${esc(d.logged_in_user || '-')}</td>
     <td>${problemCount ? `<span class="badge b-red">${problemCount} issue${problemCount === 1 ? '' : 's'}</span>` : '<span class="badge b-blue">OK</span>'}</td>
-    <td>${statusDotHtml(online, true)}</td>
     <td class="small">${d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : 'never'}${d.force_checkin_requested ? ' <span class="small muted">(pull requested)</span>' : ''}</td>
     <td style="white-space:nowrap;">
       <button class="btn-sm" onclick="App.openWorkspaceDetailsModal('${d.id}')">Details</button>
@@ -244,8 +323,12 @@ export function renderWorkspaceDirectory() {
 
   const editOk = canEdit('workspaceDirectory');
   const deleteOk = canDelete('workspaceDirectory');
-  const rows = sorted.map((d) => deviceRow(d, editOk, deleteOk, assetInventory)).join('')
-    || `<tr><td colspan="11"><div class="empty">No devices match "${esc(STATE.workspaceDirectorySearch || '')}".</div></td></tr>`;
+  const selectedIds = new Set(STATE.workspaceDirectorySelectedIds || []);
+  const sortedIds = sorted.map((d) => d.id);
+  const allSelected = sortedIds.length > 0 && sortedIds.every((id) => selectedIds.has(id));
+  const colCount = editOk ? 13 : 12;
+  const rows = sorted.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds)).join('')
+    || `<tr><td colspan="${colCount}"><div class="empty">No devices match "${esc(STATE.workspaceDirectorySearch || '')}".</div></td></tr>`;
 
   return `
     <div class="kpi-row" style="margin-bottom:14px;">
@@ -260,23 +343,35 @@ export function renderWorkspaceDirectory() {
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>
     </div>
     ${dataTilesHtml}
+    ${editOk && selectedIds.size > 0 ? `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <span><b>${selectedIds.size}</b> device${selectedIds.size === 1 ? '' : 's'} selected</span>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-sm" onclick="App.openWorkspaceBulkDeployModal()">Deploy to Selected</button>
+        <button class="btn-sm" onclick="App.clearWorkspaceSelection()">Clear Selection</button>
+      </div>
+    </div>` : ''}
     <div class="card">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES / 60}+ hours (the agent checks in every 6 hours).</div></div>
-        <input placeholder="Search hostname, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES / 60}+ hours (the agent checks in every 6 hours).${editOk ? ' Tick devices below to deploy a command (install/uninstall software, etc.) to several at once.' : ''}</div></div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <input placeholder="Search hostname, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+          <button class="btn-sm" title="Reload this page's data without refreshing the whole app" onclick="App.refreshWorkspaceDirectory()">&#8635; Refresh</button>
+        </div>
       </div>
       <div style="max-height:520px;overflow-y:auto;overflow-x:auto;">
         <table style="${FIXED_TABLE_STYLE}">
           <thead><tr>
+            ${editOk ? `<th style="width:24px;"><input type="checkbox" ${allSelected ? 'checked' : ''} onchange='App.toggleWorkspaceSelectAll(this.checked, ${jsonAttr(sortedIds)})' title="Select all shown"></th>` : ''}
             ${sortTh('workspaceDevices', 'hostname', 'Hostname', 14)}
             ${sortTh('workspaceDevices', 'location', 'Location', 12)}
             ${sortTh('workspaceDevices', 'ip', 'IP', 11)}
             <th>Remote Access</th>
+            <th style="width:14ch;">Volume</th>
+            <th style="width:8ch;">Status</th>
             <th>Matched Screen</th>
             ${sortTh('workspaceDevices', 'os', 'OS', 16)}
             ${sortTh('workspaceDevices', 'user', 'Logged-in User', 13)}
             ${sortTh('workspaceDevices', 'problems', 'Issues', 8)}
-            <th style="width:8ch;">Status</th>
             ${sortTh('workspaceDevices', 'lastSeen', 'Last Seen', 12)}
             <th style="width:18ch;"></th>
           </tr></thead>
@@ -287,7 +382,54 @@ export function renderWorkspaceDirectory() {
   `;
 }
 
+// Re-fetches just this page's own cached data (devices, SIM cards, asset inventory) instead of a
+// full app reload - loadData()'s cache is keyed per data-source, so invalidating only these three
+// keys leaves every other page's cache (and the user's current view) untouched.
+export function refreshWorkspaceDirectory() {
+  invalidate('workspaceDevices');
+  invalidate('simCardsForDirectory');
+  invalidate('assetInventory');
+  setState({});
+  toast('Refreshed');
+}
+
 export function setWorkspaceDirectorySearch(value) { setState({ workspaceDirectorySearch: value }); }
+
+export function toggleWorkspaceSelection(id, checked) {
+  const cur = new Set(STATE.workspaceDirectorySelectedIds || []);
+  if (checked) cur.add(id); else cur.delete(id);
+  setState({ workspaceDirectorySelectedIds: [...cur] });
+}
+
+export function toggleWorkspaceSelectAll(checked, ids) {
+  setState({ workspaceDirectorySelectedIds: checked ? ids : [] });
+}
+
+export function clearWorkspaceSelection() { setState({ workspaceDirectorySelectedIds: [] }); }
+
+export function openWorkspaceBulkDeployModal() {
+  if (!(STATE.workspaceDirectorySelectedIds || []).length) { toast('Select at least one device first', 'error'); return; }
+  openModal('workspaceBulkDeploy', {});
+}
+
+// Queues the SAME command (pending_command) on every selected device at once, rather than opening
+// the per-device Edit modal one at a time - each device still only runs it on its own next
+// check-in, exactly like a single Run Command, just fanned out over N devices in parallel.
+export async function saveWorkspaceBulkDeploy(event) {
+  event.preventDefault();
+  const ids = STATE.workspaceDirectorySelectedIds || [];
+  const command = document.getElementById('wd-bulk-command').value.trim();
+  if (!ids.length) { toast('No devices selected', 'error'); return; }
+  if (!command) { toast('Enter a command first', 'error'); return; }
+  try {
+    await Promise.all(ids.map((id) => updateWorkspaceDevice(id, { pending_command: command })));
+    await logAudit('Bulk queue Digital Directory command', `${ids.length} device(s): ${command}`);
+    invalidate('workspaceDevices');
+    closeModal();
+    setState({ workspaceDirectorySelectedIds: [] });
+    toast(`Queued on ${ids.length} device(s) - each runs it on its own next check-in.`);
+  } catch (e) { toast(e.message || 'Failed to queue command', 'error'); }
+}
 
 export function openWorkspaceLocationModal(location) {
   openModal('workspaceLocation', { location });
@@ -370,12 +512,13 @@ registerModal('workspaceLocation', (data) => {
   const list = devices.filter((d) => ((d.location || '').trim() || 'Unassigned') === data.location);
   const editOk = canEdit('workspaceDirectory');
   const deleteOk = canDelete('workspaceDirectory');
-  const rows = list.map((d) => deviceRow(d, editOk, deleteOk, assetInventory)).join('') || `<tr><td colspan="11"><div class="empty">No devices.</div></td></tr>`;
+  const selectedIds = new Set(STATE.workspaceDirectorySelectedIds || []);
+  const rows = list.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds)).join('') || `<tr><td colspan="${editOk ? 13 : 12}"><div class="empty">No devices.</div></td></tr>`;
   return `
     <h3>${esc(data.location)} - ${list.length} device(s)</h3>
     <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr><th>Hostname</th><th>Location</th><th>IP</th><th>Remote Access</th><th>Matched Screen</th><th>OS</th><th>Logged-in User</th><th>Issues</th><th>Status</th><th>Last Seen</th><th></th></tr></thead>
+        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th>Hostname</th><th>Location</th><th>IP</th><th>Remote Access</th><th>Volume</th><th>Status</th><th>Matched Screen</th><th>OS</th><th>Logged-in User</th><th>Issues</th><th>Last Seen</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -478,37 +621,34 @@ registerModal('workspaceEdit', (data) => {
         <div class="small muted" style="margin-top:4px;">Used to show data used vs. plan size on the Digital Directory's SIM Data Usage tiles.${device.sim_card_id ? ` <button type="button" class="link-btn" onclick="App.resetWorkspaceDataUsage('${device.id}')">Reset usage counter</button>` : ''}</div>
       </div>
       <div class="field"><label>Run Command (PowerShell, runs on this device's next check-in)</label>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
-          <span class="small muted" style="align-self:center;">Install:</span>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id 7zip.7zip --silent --accept-package-agreements --accept-source-agreements')">7-Zip</button>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements')">Chrome</button>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id AnyDeskSoftwareGmbH.AnyDesk --silent --accept-package-agreements --accept-source-agreements')">AnyDesk</button>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget install -e --id TeamViewer.TeamViewer --silent --accept-package-agreements --accept-source-agreements')">TeamViewer</button>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
-          <span class="small muted" style="align-self:center;">Uninstall:</span>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id 7zip.7zip --silent')">7-Zip</button>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id Google.Chrome --silent')">Chrome</button>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id AnyDeskSoftwareGmbH.AnyDesk --silent')">AnyDesk</button>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id TeamViewer.TeamViewer --silent')">TeamViewer</button>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center;">
-          <span class="small muted">Any winget package:</span>
-          <input id="wd-edit-pkgid" placeholder="Package ID, e.g. VideoLAN.VLC" style="flex:1;min-width:160px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceInstallById()">Install</button>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceUninstallById()">Uninstall</button>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
-          <span class="small muted" style="align-self:center;">Diagnostics:</span>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('Get-DuDataUsage | ConvertTo-Json')">Test DU Scrape</button>
-          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget list')">List Installed (winget)</button>
-        </div>
+        ${commandPresetsHtml('wd-edit-pkgid', 'wd-edit-chocoid', 'wd-edit-command')}
         <textarea id="wd-edit-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent">${esc(device.pending_command || '')}</textarea>
-        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. The presets above use <code>winget</code> (built into Windows 10 21H2+/11) - requires that PC to already have it. Don't know the exact ID? Queue <code>winget search &lt;name&gt;</code> as a command first - its results show up in Details after the next check-in - or use the per-item Uninstall button in Details &gt; Software, which queues that program's own registered uninstall command directly. Covers installing/updating/removing software or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
+        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. The winget presets need that PC to already have it (built into Windows 10 21H2+/11); Chocolatey is bootstrapped automatically by the install script on every PC, so those presets work everywhere. Don't know the exact ID? Search <a href="https://community.chocolatey.org/packages" target="_blank" rel="noopener">community.chocolatey.org/packages</a>, or queue <code>winget search &lt;name&gt;</code> as a command first - its results show up in Details after the next check-in - or use the per-item Uninstall button in Details &gt; Software, which queues that program's own registered uninstall command directly. Covers installing/updating/removing software or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
         <button type="submit" class="btn btn-orange">Save</button>
+      </div>
+    </form>
+  `;
+});
+
+registerModal('workspaceBulkDeploy', () => {
+  const ids = STATE.workspaceDirectorySelectedIds || [];
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const names = ids.map((id) => devices.find((d) => d.id === id)?.hostname).filter(Boolean);
+  return `
+    <h3>Deploy to ${ids.length} device(s)</h3>
+    <div class="small muted" style="margin-bottom:10px;">${esc(names.join(', ')) || `${ids.length} device(s)`}</div>
+    <form onsubmit="App.saveWorkspaceBulkDeploy(event)">
+      <div class="field"><label>Run Command (PowerShell, runs on each selected device's next check-in)</label>
+        ${commandPresetsHtml('wd-bulk-pkgid', 'wd-bulk-chocoid', 'wd-bulk-command')}
+        <textarea id="wd-bulk-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent"></textarea>
+        <div class="small muted" style="margin-top:4px;">Queues the exact same command on all ${ids.length} selected device(s) at once - each one still only runs it on its OWN next check-in (not simultaneously), same as a single-device Run Command. Overwrites any pending command already queued individually on these devices.</div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-orange">Queue on ${ids.length} device(s)</button>
       </div>
     </form>
   `;
