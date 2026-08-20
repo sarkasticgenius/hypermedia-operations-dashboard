@@ -1120,8 +1120,21 @@ function Get-DuDataUsage {
         $lines = $lineBreak -split "\`n" | ForEach-Object { ([System.Net.WebUtility]::HtmlDecode($_) -replace '\\s+', ' ').Trim() } | Where-Object { $_ }
         if (-not $lines) { return $null }
 
+        $joined = $lines -join ' | '
         $phone = $null
-        if (($lines -join ' | ') -match '(?:\\+?971|0)5\\d{8}') { $phone = $matches[0] }
+        if ($joined -match '(?:\\+?971|0)5\\d{8}') { $phone = $matches[0] }
+
+        # The real mydata.du.ae "Your Data usage" row renders as a single "X GB / Y GB" (used/total)
+        # value, not separate used/left/total labels - confirmed against a live account page. Tried
+        # first since it's an exact match for the real markup; the keyword-proximity scan below is
+        # kept only as a fallback for account states that might render differently (e.g. a different
+        # plan type), so a layout change degrades gracefully instead of returning nothing.
+        $used = $null
+        $total = $null
+        if ($joined -match '(\\d+(?:\\.\\d+)?)\\s*GB\\s*/\\s*(\\d+(?:\\.\\d+)?)\\s*GB') {
+            $used = [double]$matches[1]
+            $total = [double]$matches[2]
+        }
 
         function Find-GbNear($lines, $keywords) {
             for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -1134,9 +1147,12 @@ function Get-DuDataUsage {
             }
             return $null
         }
-        $used = Find-GbNear $lines @('used', 'consumed')
         $left = Find-GbNear $lines @('left', 'remaining', 'balance')
-        $total = Find-GbNear $lines @('total', 'allocat', 'plan', 'bundle')
+        if (-not $used) { $used = Find-GbNear $lines @('used', 'consumed') }
+        if (-not $total) { $total = Find-GbNear $lines @('total', 'allocat', 'plan', 'bundle') }
+        # "Data available" (what's left to use) isn't shown on the real page at all - only used and
+        # total are - so it's always computed from those two rather than scraped directly.
+        if (-not $left -and $used -and $total) { $left = [math]::Round($total - $used, 2) }
         if (-not $total -and $used -and $left) { $total = [math]::Round($used + $left, 2) }
 
         [ordered]@{
@@ -1144,7 +1160,7 @@ function Get-DuDataUsage {
             dataUsedGb  = $used
             dataLeftGb  = $left
             dataTotalGb = $total
-            rawSnippet  = if (-not $phone -and -not $used -and -not $left -and -not $total) { ($lines -join ' | ').Substring(0, [Math]::Min(1500, ($lines -join ' | ').Length)) } else { $null }
+            rawSnippet  = if (-not $phone -and -not $used -and -not $left -and -not $total) { $joined.Substring(0, [Math]::Min(1500, $joined.Length)) } else { $null }
         }
     } catch {
         return $null
@@ -1265,30 +1281,30 @@ if (-not $Once) {
         }
     }
 
-    # Runs -PollOnce every 2 minutes, entirely headless as SYSTEM (no tray icon, no window, no
+    # Runs -PollOnce every 20 minutes, entirely headless as SYSTEM (no tray icon, no window, no
     # notification - these PCs drive signage screens, so nothing may ever pop up on top of the
     # content) - the ONLY way a dashboard "Force Inventory Pull" click can reach a specific PC
     # sooner than its next scheduled cycle, since these PCs are on metered SIMs behind NAT/cellular
     # routers with no inbound reachability; the dashboard can never push to them, only they can poll
-    # out. A couple of minutes' latency and a tiny request are an easy trade for "the button on the
+    # out. Up to ~20 minutes' latency and a tiny request are an easy trade for "the button on the
     # dashboard actually does something soon" instead of waiting up to 6 hours.
     try {
         $PollAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -PollOnce"
-        $PollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)
+        $PollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 20)
         $PollTrigger.Repetition.Duration = ""
         if (Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue) {
             Set-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal | Out-Null
         } else {
-            Register-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Description "Checks every 2 minutes for a Force Inventory Pull request from the dashboard - runs fully hidden, no UI." | Out-Null
+            Register-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Description "Checks every 20 minutes for a Force Inventory Pull request from the dashboard - runs fully hidden, no UI." | Out-Null
         }
-        Write-Host "Scheduled task '$PollTaskName' installed (checks every 2 minutes, no UI)." -ForegroundColor Green
+        Write-Host "Scheduled task '$PollTaskName' installed (checks every 20 minutes, no UI)." -ForegroundColor Green
     } catch {
         Write-Warning "Could not register the poll task: $($_.Exception.Message)"
     }
 }
 
 # A lightweight, silent check for a queued Force Inventory Pull - NOT a full check-in by itself,
-# so a PC sitting idle isn't hitting the checkin endpoint every 2 minutes for no reason.
+# so a PC sitting idle isn't hitting the checkin endpoint every 20 minutes for no reason.
 if ($PollOnce) {
     try {
         $resp = Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10

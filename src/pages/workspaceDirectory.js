@@ -250,7 +250,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds) {
     ${editOk ? `<td style="width:24px;"><input type="checkbox" ${(selectedIds || new Set()).has(d.id) ? 'checked' : ''} onchange="App.toggleWorkspaceSelection('${d.id}', this.checked)"></td>` : ''}
     <td><b>${esc(d.hostname)}</b></td>
     <td class="small">${esc(d.location || '-')}</td>
-    <td class="small">${esc(d.ip_address || '-')}</td>
+    <td class="small" style="white-space:nowrap;">${esc(d.ip_address || '-')}</td>
     <td>${remoteAccessCell(d)}</td>
     <td>${volumeCellHtml(d)}</td>
     <td>${statusDotHtml(online)}</td>
@@ -262,7 +262,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds) {
     <td style="white-space:nowrap;">
       <button class="btn-sm" onclick="App.openWorkspaceDetailsModal('${d.id}')">Details</button>
       ${editOk ? `<button class="btn-sm" onclick="App.openWorkspaceEditModal('${d.id}')">Edit</button>` : ''}
-      ${editOk && !d.force_checkin_requested ? `<button class="btn-sm" title="Ask this PC to check in within ~2 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force Pull</button>` : ''}
+      ${editOk && !d.force_checkin_requested ? `<button class="btn-sm" title="Ask this PC to check in within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force Pull</button>` : ''}
       ${deleteOk ? `<button class="btn-sm" onclick="App.removeWorkspaceDevice('${d.id}')">Delete</button>` : ''}
     </td>
   </tr>`;
@@ -396,7 +396,7 @@ export function renderWorkspaceDirectory() {
             ${editOk ? `<th style="width:24px;"><input type="checkbox" ${allSelected ? 'checked' : ''} onchange='App.toggleWorkspaceSelectAll(this.checked, ${jsonAttr(sortedIds)})' title="Select all shown"></th>` : ''}
             ${sortTh('workspaceDevices', 'hostname', 'Hostname', 14)}
             ${sortTh('workspaceDevices', 'location', 'Location', 12)}
-            ${sortTh('workspaceDevices', 'ip', 'IP', 11)}
+            ${sortTh('workspaceDevices', 'ip', 'IP', 15)}
             <th style="width:26ch;">Remote Access</th>
             <th style="width:14ch;">Volume</th>
             <th style="width:8ch;">Status</th>
@@ -503,16 +503,17 @@ export async function clearWorkspacePendingCommand(deviceId) {
 }
 
 // The dashboard can never reach OUT to these PCs directly - they're on metered SIMs behind
-// NAT/cellular routers with no inbound reachability - so "force" just sets a flag that Jstar polls
-// for every ~2 minutes and acts on locally. A few minutes' latency, not instant, but far faster
-// than waiting for the next scheduled 6-hourly check-in. Requires Jstar to actually be running
-// (a signed-in desktop session) - a fully headless/logged-out PC still only gets it on schedule.
+// NAT/cellular routers with no inbound reachability - so "force" just sets a flag that the agent's
+// own hidden poll task (WorkspaceDirectoryAgentPoll, runs as SYSTEM every 20 minutes, no UI) picks
+// up and acts on locally. Up to ~20 minutes' latency, not instant, but far faster than waiting for
+// the next scheduled 6-hourly check-in - and runs regardless of whether anyone's signed into that
+// PC, since it's a SYSTEM task rather than a signed-in-user one.
 export async function forceWorkspaceInventoryPull(deviceId) {
   try {
     await updateWorkspaceDevice(deviceId, { force_checkin_requested: true });
     await logAudit('Force Digital Directory inventory pull', deviceId);
     invalidate('workspaceDevices');
-    toast('Requested - picked up within ~2 minutes if Jstar is running on that PC.');
+    toast('Requested - picked up within ~20 minutes.');
     setState({});
   } catch (e) { toast(e.message || 'Failed to request pull', 'error'); }
 }
@@ -552,7 +553,7 @@ registerModal('workspaceLocation', (data) => {
     <h3>${esc(data.location)} - ${list.length} device(s)</h3>
     <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:11ch;">IP</th><th style="width:26ch;">Remote Access</th><th style="width:14ch;">Volume</th><th style="width:8ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
+        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:26ch;">Remote Access</th><th style="width:14ch;">Volume</th><th style="width:8ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>

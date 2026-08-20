@@ -680,12 +680,47 @@ function deviceByBoxId() {
   return map;
 }
 
-function remoteAccessChipsHtml(device) {
-  if (!device) return '';
-  const chips = [];
-  if (device.anydesk_id) chips.push(`<a href="anydesk:${esc(device.anydesk_id)}" style="text-decoration:none;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 6px;margin-right:3px;white-space:nowrap;" title="Connect via AnyDesk"><b>AnyDesk</b> ${esc(device.anydesk_id)}</a>`);
-  if (device.teamviewer_id) chips.push(`<a href="teamviewer10:${esc(device.teamviewer_id)}" style="text-decoration:none;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 6px;white-space:nowrap;" title="Connect via TeamViewer"><b>TeamViewer</b> ${esc(device.teamviewer_id)}</a>`);
-  return chips.join('');
+// One compact "Remote Access" button (same size/style as the "+ Ticket" button beside it) instead
+// of a separate AnyDesk/TeamViewer chip per row - keeps this column from growing with every extra
+// remote-access tool a PC happens to have (see Get-AllAnyDeskIds), same idea as collapsing a long
+// menu behind one button rather than listing every option inline. Clicking it opens a small picker
+// to choose which tool to connect with.
+function remoteAccessOptionsFor(device) {
+  if (!device) return [];
+  const tools = [];
+  if (device.anydesk_id) tools.push({ tool: 'AnyDesk', id: device.anydesk_id, protocol: 'anydesk' });
+  if (device.teamviewer_id) tools.push({ tool: 'TeamViewer', id: device.teamviewer_id, protocol: 'teamviewer10' });
+  (device.other_remote_ids || []).forEach((r) => {
+    const protocol = /^AnyDesk/i.test(r.tool) ? 'anydesk' : /^TeamViewer/i.test(r.tool) ? 'teamviewer10' : '';
+    if (protocol) tools.push({ tool: r.tool, id: r.id, protocol });
+  });
+  return tools;
+}
+
+function remoteAccessButtonHtml(device, label) {
+  const tools = remoteAccessOptionsFor(device);
+  if (!tools.length) return '<span class="small muted">-</span>';
+  return `<button class="btn-sm" onclick='App.openRemoteAccessPicker(${jsonAttr({ tools, label: label || '' })})'>Remote Access</button>`;
+}
+
+registerModal('remoteAccessPicker', (data) => {
+  const tools = data.tools || [];
+  const rows = tools.map((t) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
+    <span><b>${esc(t.tool)}</b> <span style="font-family:monospace;" class="small muted">${esc(t.id)}</span></span>
+    <span style="display:flex;gap:6px;">
+      <a class="btn-sm" style="text-decoration:none;" href="${t.protocol}:${esc(t.id)}" title="Connect via ${esc(t.tool)}" onclick="App.closeModal()">Connect</a>
+      <button type="button" class="btn-sm" title="Copy ID" onclick="App.copyWorkspaceId(event,'${esc(t.id)}')">Copy</button>
+    </span>
+  </div>`).join('');
+  return `
+    <h3>Remote Access${data.label ? ` - ${esc(data.label)}` : ''}</h3>
+    <div>${rows || '<div class="empty">No remote access tool detected.</div>'}</div>
+    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
+  `;
+});
+
+export function openRemoteAccessPicker(data) {
+  openModal('remoteAccessPicker', data);
 }
 
 registerModal('offlineAssetsModal', (data) => {
@@ -719,7 +754,7 @@ registerModal('offlineAssetsModal', (data) => {
       type: 'Issue',
     };
     const device = i.boxId ? boxIdMap.get(i.boxId) : null;
-    return `<tr><td>${esc(i.location)}</td><td>${esc(i.name)}</td><td>${esc(i.detail || '')}</td><td>${remoteAccessChipsHtml(device)}</td><td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td></tr>`;
+    return `<tr><td>${esc(i.location)}</td><td>${esc(i.name)}</td><td>${esc(i.detail || '')}</td><td>${remoteAccessButtonHtml(device, i.name)}</td><td>${ticketAddOk ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(prefill)})'>+ Ticket</button>` : ''}</td></tr>`;
   }).join('') || `<tr><td colspan="5"><div class="empty">Nothing offline here.</div></td></tr>`;
 
   // Bulk "ticket for all" only makes sense against a single real location - a chain tile spans
