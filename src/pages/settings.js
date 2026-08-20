@@ -556,7 +556,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
   const shell = settings.workspaceDirectoryAgentShell || {};
   return `
     <div class="card">
-      <div class="card-head"><h3>Digital Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, installed software, detected problems). The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Also installs "Jstar", a tray icon + status window (Check In Now / View Log / last result) so anyone at the PC can see the agent is active - it needs the .ps1 and .bat downloaded below in the SAME folder. Generate a secret, save, then run the .bat as Administrator on each PC once (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files). After that one install, every agent self-updates from Published Agent Version below - PCs in remote locations never need a physical reinstall again for anything except a secret rotation.</div></div>
+      <div class="card-head"><h3>Digital Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, installed software, detected problems). The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Fully headless by design - no tray icon, window, or notification ever appears, since these PCs drive signage screens. Generate a secret, save, then run the .bat as Administrator on each PC once (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files). After that one install, every agent self-updates from Published Agent Version below - PCs in remote locations never need a physical reinstall again for anything except a secret rotation.</div></div>
       <form onsubmit="App.saveWorkspaceDirectoryAgentForm(event)">
         <div class="field"><label>Shared Agent Secret</label>
           <div style="display:flex;gap:8px;">
@@ -579,7 +579,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
       <div class="field">
         <label>Published Agent Version</label>
-        <div class="small muted" style="margin-bottom:6px;">The install script (scheduled task setup, remote-command runner, tray icon, self-update logic itself) - unlike the Data Collector Script below, this normally requires re-running the installer to change. Publishing pushes the CURRENT version of that logic here; every already-installed agent compares itself against it on each check-in and silently updates itself if different, no physical reinstall needed. Requires PCs already running an agent built after this self-update feature shipped (that batch needs the one-time reinstall above).${shell.version ? ` Currently published: v${shell.version}${shell.publishedAt ? ` (${new Date(shell.publishedAt).toLocaleString()})` : ''}.` : ' Nothing published yet.'}</div>
+        <div class="small muted" style="margin-bottom:6px;">The install script (scheduled task setup, remote-command runner, self-update logic itself) - unlike the Data Collector Script below, this normally requires re-running the installer to change. Publishing pushes the CURRENT version of that logic here; every already-installed agent compares itself against it on each check-in and silently updates itself if different, no physical reinstall needed. Requires PCs already running an agent built after this self-update feature shipped (that batch needs the one-time reinstall above).${shell.version ? ` Currently published: v${shell.version}${shell.publishedAt ? ` (${new Date(shell.publishedAt).toLocaleString()})` : ''}.` : ' Nothing published yet.'}</div>
         <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.publishWorkspaceDirectoryAgentShell()">Publish Latest Agent Version</button>
       </div>
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
@@ -879,215 +879,6 @@ $__os = Get-CimInstance Win32_OperatingSystem
 }`;
 }
 
-// A small tray app (System.Windows.Forms) that mirrors the reference GLPI Agent Monitor's own
-// tray icon + status window - written to $StateDir\tray.ps1 by the outer install script (embedded
-// below as base64 so nothing here needs escaping for PowerShell-inside-PowerShell) and run via its
-// own "at any user's logon" scheduled task, since a tray icon needs a real interactive desktop
-// session - the 6-hourly check-in task runs headless as SYSTEM and can't show one itself. Reads
-// $StateDir\status.json (written by Invoke-Checkin after every attempt) so the window always
-// reflects the real last result, and its "Check In Now" button runs the same agent.ps1 the
-// scheduled task does, so a manual check from the tray behaves identically to an automatic one.
-// Also polls workspace-directory-force-status every ~2 minutes for a "Force Inventory Pull"
-// request from the dashboard, and runs the same check-in automatically if one's waiting - this is
-// the ONLY way a dashboard click can reach a specific PC sooner than its next scheduled cycle,
-// since these PCs are on metered SIMs behind NAT/cellular routers with no inbound reachability;
-// the dashboard can never push to them, only they can poll out. Needs its own copy of the secret
-// (passed in here) since it's a separate always-resident process from the scheduled check-in task.
-function buildTrayScript(secret, anonKey, forceStatusUrl) {
-  return `# Jstar - the Digital Directory Agent's tray status monitor
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-
-$StateDir = "$env:ProgramData\\WorkspaceDirectoryAgent"
-$StatusFile = Join-Path $StateDir "status.json"
-$LogFile = Join-Path $StateDir "agent.log"
-$AgentScript = Join-Path $StateDir "agent.ps1"
-$DashboardUrl = "https://sarkasticgenius.github.io/hypermedia-operations-dashboard/"
-$AgentSecret = "${secret}"
-$AnonKey = "${anonKey}"
-$ForceStatusUrl = "${forceStatusUrl}"
-
-# A filled-circle "J" (Jstar) bitmap stands in for a real .ico asset - gives the tray a
-# distinctive, branded look without shipping/loading a separate image file.
-function New-TrayIcon {
-    $bmp = New-Object System.Drawing.Bitmap 32, 32
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $g.Clear([System.Drawing.Color]::Transparent)
-    $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 8, 145, 178))
-    $g.FillEllipse($brush, 0, 0, 32, 32)
-    $font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
-    $format = New-Object System.Drawing.StringFormat
-    $format.Alignment = [System.Drawing.StringAlignment]::Center
-    $format.LineAlignment = [System.Drawing.StringAlignment]::Center
-    $g.DrawString("J", $font, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF(0, 0, 32, 32)), $format)
-    $g.Dispose()
-    return [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
-}
-
-function Get-AgentStatus {
-    if (Test-Path $StatusFile) {
-        try { return Get-Content $StatusFile -Raw | ConvertFrom-Json } catch { return $null }
-    }
-    return $null
-}
-
-function Format-AgentStatusSummary {
-    $s = Get-AgentStatus
-    if (-not $s) { return "No check-in yet" }
-    $when = [datetime]$s.lastCheckin
-    $mins = [math]::Round(((Get-Date) - $when).TotalMinutes)
-    $ago = if ($mins -lt 60) { "$mins min ago" } else { "$([math]::Round($mins / 60, 1)) h ago" }
-    $word = if ($s.success) { "OK" } else { "FAILED" }
-    return "Last check-in: $ago ($word)"
-}
-
-$trayIcon = New-Object System.Windows.Forms.NotifyIcon
-$trayIcon.Icon = New-TrayIcon
-$trayIcon.Visible = $true
-$trayIcon.Text = "Jstar"
-
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "Jstar"
-$form.Size = New-Object System.Drawing.Size(340, 420)
-$form.StartPosition = "CenterScreen"
-$form.FormBorderStyle = "FixedDialog"
-$form.MaximizeBox = $false
-$form.MinimizeBox = $false
-
-$titleLabel = New-Object System.Windows.Forms.Label
-$titleLabel.Text = "Jstar"
-$titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
-$titleLabel.AutoSize = $true
-$titleLabel.Location = New-Object System.Drawing.Point(20, 20)
-$form.Controls.Add($titleLabel)
-
-$subtitleLabel = New-Object System.Windows.Forms.Label
-$subtitleLabel.Text = "Digital Directory Agent"
-$subtitleLabel.ForeColor = [System.Drawing.Color]::Gray
-$subtitleLabel.AutoSize = $true
-$subtitleLabel.Location = New-Object System.Drawing.Point(20, 47)
-$form.Controls.Add($subtitleLabel)
-
-$taskStatusLabel = New-Object System.Windows.Forms.Label
-$taskStatusLabel.AutoSize = $true
-$taskStatusLabel.Location = New-Object System.Drawing.Point(20, 78)
-$form.Controls.Add($taskStatusLabel)
-
-$checkinStatusLabel = New-Object System.Windows.Forms.Label
-$checkinStatusLabel.AutoSize = $true
-$checkinStatusLabel.Location = New-Object System.Drawing.Point(20, 103)
-$form.Controls.Add($checkinStatusLabel)
-
-$agentStatusLabel = New-Object System.Windows.Forms.Label
-$agentStatusLabel.Text = "Agent status: idle"
-$agentStatusLabel.AutoSize = $true
-$agentStatusLabel.Location = New-Object System.Drawing.Point(20, 133)
-$form.Controls.Add($agentStatusLabel)
-
-$checkInBtn = New-Object System.Windows.Forms.Button
-$checkInBtn.Text = "Check In Now"
-$checkInBtn.Location = New-Object System.Drawing.Point(20, 173)
-$checkInBtn.Size = New-Object System.Drawing.Size(140, 32)
-$form.Controls.Add($checkInBtn)
-
-$logBtn = New-Object System.Windows.Forms.Button
-$logBtn.Text = "View Agent Log"
-$logBtn.Location = New-Object System.Drawing.Point(170, 173)
-$logBtn.Size = New-Object System.Drawing.Size(140, 32)
-$form.Controls.Add($logBtn)
-
-$openBtn = New-Object System.Windows.Forms.Button
-$openBtn.Text = "Open Digital Directory"
-$openBtn.Location = New-Object System.Drawing.Point(20, 215)
-$openBtn.Size = New-Object System.Drawing.Size(290, 32)
-$form.Controls.Add($openBtn)
-
-$hintLabel = New-Object System.Windows.Forms.Label
-$hintLabel.Text = "To install/uninstall software here, queue it from this PC's Edit screen in Digital Directory (above), then Check In Now."
-$hintLabel.ForeColor = [System.Drawing.Color]::Gray
-$hintLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-$hintLabel.Size = New-Object System.Drawing.Size(290, 45)
-$hintLabel.Location = New-Object System.Drawing.Point(20, 255)
-$form.Controls.Add($hintLabel)
-
-$closeBtn = New-Object System.Windows.Forms.Button
-$closeBtn.Text = "Close"
-$closeBtn.Location = New-Object System.Drawing.Point(20, 308)
-$closeBtn.Size = New-Object System.Drawing.Size(290, 32)
-$form.Controls.Add($closeBtn)
-
-function Update-FormStatus {
-    $task = Get-ScheduledTask -TaskName "WorkspaceDirectoryAgent" -ErrorAction SilentlyContinue
-    $taskWord = if ($task) { $task.State } else { "not installed" }
-    $taskStatusLabel.Text = "Check-in task: $taskWord"
-    $checkinStatusLabel.Text = Format-AgentStatusSummary
-}
-
-# Shared by the button and the force-pull timer below, so a dashboard-triggered check-in behaves
-# identically to a manually-clicked one (same UI feedback, same status.json update afterward).
-function Invoke-TrayCheckin {
-    $agentStatusLabel.Text = "Agent status: checking in..."
-    $form.Refresh()
-    $checkInBtn.Enabled = $false
-    if (Test-Path $AgentScript) {
-        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File \`"$AgentScript\`" -Once" -WindowStyle Hidden -Wait
-    }
-    $checkInBtn.Enabled = $true
-    $agentStatusLabel.Text = "Agent status: idle"
-    Update-FormStatus
-    $trayIcon.Text = ("Jstar\`n" + (Format-AgentStatusSummary))
-}
-
-$checkInBtn.Add_Click({ Invoke-TrayCheckin })
-$logBtn.Add_Click({
-    if (Test-Path $LogFile) { Start-Process notepad.exe $LogFile } else { [System.Windows.Forms.MessageBox]::Show("No log yet.", "Jstar") | Out-Null }
-})
-$openBtn.Add_Click({ Start-Process $DashboardUrl })
-$closeBtn.Add_Click({ $form.Hide() })
-$form.Add_FormClosing({
-    param($eventSender, $e)
-    if ($e.CloseReason -eq [System.Windows.Forms.CloseReason]::UserClosing) { $e.Cancel = $true; $form.Hide() }
-})
-$form.Add_Shown({ Update-FormStatus })
-
-$trayIcon.Add_MouseClick({
-    param($eventSender, $e)
-    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-        Update-FormStatus
-        $form.Show()
-        $form.Activate()
-    }
-})
-
-$menu = New-Object System.Windows.Forms.ContextMenuStrip
-$openMenuItem = $menu.Items.Add("Open Status Window")
-$exitMenuItem = $menu.Items.Add("Exit")
-$trayIcon.ContextMenuStrip = $menu
-$openMenuItem.Add_Click({ Update-FormStatus; $form.Show(); $form.Activate() })
-$exitMenuItem.Add_Click({ $trayIcon.Visible = $false; [System.Windows.Forms.Application]::Exit() })
-
-$trayIcon.ShowBalloonTip(4000, "Jstar", "Digital Directory Agent is active on this PC.", [System.Windows.Forms.ToolTipIcon]::Info)
-
-# Polls for a "Force Inventory Pull" click from the dashboard - the only channel that can exist
-# given these PCs have no inbound reachability (metered SIM behind NAT/cellular router), so the
-# dashboard can never push to them. A couple of minutes' latency and a tiny request are an easy
-# trade for "the button on the dashboard actually does something soon" instead of waiting up to 6
-# hours for the next scheduled cycle.
-$forceTimer = New-Object System.Windows.Forms.Timer
-$forceTimer.Interval = 120000
-$forceTimer.Add_Tick({
-    try {
-        $resp = Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10
-        if ($resp -and $resp.force) { Invoke-TrayCheckin }
-    } catch {}
-})
-$forceTimer.Start()
-
-[System.Windows.Forms.Application]::Run()
-`;
-}
-
 // The fixed outer shell: self-elevate, self-update (see Invoke-SelfUpdate below), register the
 // 6-hourly scheduled task, then on every run try the remote collector first (Data Collector
 // Script above) and fall back to the identical logic baked in here as Invoke-DefaultCollector if
@@ -1108,10 +899,6 @@ function buildWorkspaceDirectoryAgentScript(secret, uninstallPasswordHash) {
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
   const uninstallHash = (uninstallPasswordHash || '').toLowerCase();
   const indented = defaultCollectorScript().split('\n').map((l) => `    ${l}`).join('\n');
-  // Base64, not inlined as PowerShell-inside-a-PowerShell-string, so nothing in the tray script's
-  // own quotes/backticks/$variables needs escaping for this outer template - the install script
-  // just writes the decoded bytes straight to tray.ps1 at install time.
-  const trayScriptB64 = btoa(unescape(encodeURIComponent(buildTrayScript(secret, anonKey, forceStatusUrl))));
   return `# Digital Directory Agent
 # Collects PC inventory and checks in with the Hypermedia Operations Dashboard every 6 hours via a
 # scheduled task (the SIM-data-usage figure itself is only recomputed about once a day regardless -
@@ -1120,30 +907,37 @@ function buildWorkspaceDirectoryAgentScript(secret, uninstallPasswordHash) {
 # (Settings > Integrations > Digital Directory Agent > Data Collector Script) - this outer shell
 # itself never needs to change or be re-installed to pick up a new field. Re-run this script any
 # time to update the install (e.g. after rotating the secret).
+#
+# Fully headless by design - these PCs drive signage screens, so nothing here may ever show a
+# window, tray icon, or notification (an earlier version had a "Jstar" tray status app; removed
+# since any visible UI on a signage PC would show up over the content on screen). The only way to
+# reach a specific PC sooner than its next 6-hourly cycle is -PollOnce below, which checks in
+# completely silently.
 
-param([switch]$Once, [switch]$Uninstall)
+param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce)
 
 $CheckinUrl = "${checkinUrl}"
 $CollectorUrl = "${collectorUrl}"
 $AgentShellUrl = "${agentShellUrl}"
+$ForceStatusUrl = "${forceStatusUrl}"
 $AgentSecret = "${secret}"
 $AnonKey = "${anonKey}"
 $TaskName = "WorkspaceDirectoryAgent"
-$TrayTaskName = "WorkspaceDirectoryAgentTray"
+$PollTaskName = "WorkspaceDirectoryAgentPoll"
 $StateDir = "$env:ProgramData\\WorkspaceDirectoryAgent"
 $PendingResultFile = Join-Path $StateDir "pending-command-result.json"
 $StatusFile = Join-Path $StateDir "status.json"
 $LogFile = Join-Path $StateDir "agent.log"
-$AgentCopyPath = Join-Path $StateDir "agent.ps1"
-$TrayScriptPath = Join-Path $StateDir "tray.ps1"
+$PendingBatchFile = Join-Path $StateDir "pending-command.bat"
 $DuScrapeStateFile = Join-Path $StateDir "du-scrape-last.txt"
-$TrayScriptB64 = "${trayScriptB64}"
 $UninstallPasswordHash = "${uninstallHash}"
 
 # Self-elevate if not already running as Administrator (needed to register/unregister the
-# SYSTEM-level task either way, install OR uninstall).
+# SYSTEM-level task either way, install OR uninstall). Skipped for -Once/-PollOnce - both only ever
+# run FROM an already-SYSTEM-elevated scheduled task, so re-elevating would pop a UAC prompt on a
+# signage screen for no reason (there's no interactive user to click through it anyway).
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $Once -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+if (-not $Once -and -not $PollOnce -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $reElevateArgs = "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`""
     if ($Uninstall) { $reElevateArgs += " -Uninstall" }
     Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs
@@ -1172,19 +966,16 @@ if ($Uninstall) {
     }
     Write-Host "Password confirmed - removing the Digital Directory Agent from this PC..." -ForegroundColor Yellow
     Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
-    Get-ScheduledTask -TaskName $TrayTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
-    Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($TrayScriptPath) } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Item -Path $StateDir -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "Digital Directory Agent uninstalled from this PC (scheduled tasks removed, tray closed, local state deleted)." -ForegroundColor Green
+    Write-Host "Digital Directory Agent uninstalled from this PC (scheduled tasks removed, local state deleted)." -ForegroundColor Green
     Write-Host "Note: this PC's row on the dashboard is left as-is (last known state) - remove it there separately if needed."
     exit 0
 }
 
-# Appends one line per attempt (capped to the last 200) and refreshes status.json - both purely so
-# the tray status window (tray.ps1, run separately since it needs a real desktop) has something
-# real to show; this task itself never reads them back.
+# Appends one line per attempt (capped to the last 200) and refreshes status.json - a plain text/
+# JSON trail on disk for remote troubleshooting (queue "Get-Content $env:ProgramData\WorkspaceDirectoryAgent\agent.log"
+# as a Run Command to read it back) since there's no on-screen status window on these signage PCs.
 function Write-AgentLog($message) {
     New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
     $line = "$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) - $message"
@@ -1202,7 +993,7 @@ function Write-AgentStatus($success, $message) {
 # Centralized-deployment half of the agent: compares this running script's own file content against
 # whatever's currently Published in Settings > Integrations > Digital Directory Agent, and if they
 # differ, overwrites itself and re-execs the NEW version immediately (so the rest of this run - task
-# registration, tray install, check-in - already uses the updated logic), then exits so the stale
+# registration, poll registration, check-in - already uses the updated logic), then exits so the stale
 # in-memory copy never continues. Runs before anything else so a PC in a remote location never needs
 # a physical reinstall for a shell-level change again - only the Data Collector Script above already
 # worked this way; this is what extends the same idea to the shell itself. Line-ending differences
@@ -1242,10 +1033,25 @@ function Get-RemoteCollectorScript {
 }
 
 # Runs an admin-queued command locally and caches its output to report on the NEXT check-in,
-# rather than opening a second connection just to report it now.
+# rather than opening a second connection just to report it now. A command whose first line is
+# exactly "::BATCH" (a real, valid no-op line in a .bat file, so it doubles as the marker with no
+# extra field/column needed) is everything AFTER that line, written out to a temp .bat and run via
+# cmd.exe /c instead of Invoke-Expression - lets the dashboard deploy a full batch script, not just
+# a single PowerShell one-liner. Runs invisibly either way: this whole task already executes as
+# SYSTEM in a non-interactive session (no signage-screen popups), so cmd.exe here never gets a
+# window to show even without an explicit -WindowStyle.
 function Invoke-PendingCommand($command) {
+    $isBatch = $command -match '^\s*::BATCH\r?\n'
     try {
-        $output = Invoke-Expression $command 2>&1 | Out-String
+        if ($isBatch) {
+            $batchBody = $command -replace '^\s*::BATCH\r?\n', ''
+            New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-Content -Path $PendingBatchFile -Value $batchBody -Encoding ascii
+            $output = & cmd.exe /c "\`"$PendingBatchFile\`"" 2>&1 | Out-String
+            Remove-Item -Path $PendingBatchFile -Force -ErrorAction SilentlyContinue
+        } else {
+            $output = Invoke-Expression $command 2>&1 | Out-String
+        }
     } catch {
         $output = "ERROR: $($_.Exception.Message)"
     }
@@ -1274,8 +1080,14 @@ function Get-DuDataUsage {
     $browser = $browserPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $browser) { return $null }
 
+    # A fresh --user-data-dir every run, on top of --incognito, so there's no way a cookie/session
+    # from a previous scrape (or a different SIM that used to be in this PC) lingers and causes
+    # mydata.du.ae to show stale or wrong-account data - --incognito alone is normally enough, but a
+    # brand-new profile directory removes any doubt, and it's deleted again right after since
+    # nothing here needs to persist between runs anyway.
+    $tempProfile = Join-Path $env:TEMP ("du-scrape-" + [guid]::NewGuid().ToString("N"))
     try {
-        $dumpArgs = @("--headless=new", "--disable-gpu", "--incognito", "--no-first-run", "--disable-extensions", "--virtual-time-budget=10000", "--dump-dom", "https://mydata.du.ae")
+        $dumpArgs = @("--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=$tempProfile", "--no-first-run", "--disable-extensions", "--virtual-time-budget=10000", "--dump-dom", "http://mydata.du.ae/")
         $html = & $browser @dumpArgs 2>$null | Out-String
         if ([string]::IsNullOrWhiteSpace($html)) { return $null }
 
@@ -1316,6 +1128,8 @@ function Get-DuDataUsage {
         }
     } catch {
         return $null
+    } finally {
+        Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1431,27 +1245,36 @@ if (-not $Once) {
         }
     }
 
-    # Jstar (the tray status icon) needs a real interactive desktop, unlike the headless SYSTEM
-    # check-in task above - so it's a separate "run at any user's logon" task, unelevated, mirroring
-    # how the reference GLPI Agent Monitor tray app runs in the signed-in user's own session.
+    # Runs -PollOnce every 2 minutes, entirely headless as SYSTEM (no tray icon, no window, no
+    # notification - these PCs drive signage screens, so nothing may ever pop up on top of the
+    # content) - the ONLY way a dashboard "Force Inventory Pull" click can reach a specific PC
+    # sooner than its next scheduled cycle, since these PCs are on metered SIMs behind NAT/cellular
+    # routers with no inbound reachability; the dashboard can never push to them, only they can poll
+    # out. A couple of minutes' latency and a tiny request are an easy trade for "the button on the
+    # dashboard actually does something soon" instead of waiting up to 6 hours.
     try {
-        New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
-        if ($PSCommandPath) { Copy-Item -Path $PSCommandPath -Destination $AgentCopyPath -Force -ErrorAction SilentlyContinue }
-        $trayBytes = [Convert]::FromBase64String($TrayScriptB64)
-        [System.IO.File]::WriteAllText($TrayScriptPath, [System.Text.Encoding]::UTF8.GetString($trayBytes))
-
-        $TrayAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$TrayScriptPath\`""
-        $TrayTrigger = New-ScheduledTaskTrigger -AtLogOn
-        $TrayPrincipal = New-ScheduledTaskPrincipal -GroupId "BUILTIN\\Users" -RunLevel Limited
-        if (Get-ScheduledTask -TaskName $TrayTaskName -ErrorAction SilentlyContinue) {
-            Set-ScheduledTask -TaskName $TrayTaskName -Action $TrayAction -Trigger $TrayTrigger -Principal $TrayPrincipal | Out-Null
+        $PollAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -PollOnce"
+        $PollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)
+        $PollTrigger.Repetition.Duration = ""
+        if (Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue) {
+            Set-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal | Out-Null
         } else {
-            Register-ScheduledTask -TaskName $TrayTaskName -Action $TrayAction -Trigger $TrayTrigger -Principal $TrayPrincipal -Description "Jstar - shows a tray icon confirming the Digital Directory Agent is active." | Out-Null
+            Register-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Description "Checks every 2 minutes for a Force Inventory Pull request from the dashboard - runs fully hidden, no UI." | Out-Null
         }
-        Start-Process powershell.exe -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$TrayScriptPath\`"" -ErrorAction SilentlyContinue
+        Write-Host "Scheduled task '$PollTaskName' installed (checks every 2 minutes, no UI)." -ForegroundColor Green
     } catch {
-        Write-Warning "Could not install the Jstar tray icon: $($_.Exception.Message)"
+        Write-Warning "Could not register the poll task: $($_.Exception.Message)"
     }
+}
+
+# A lightweight, silent check for a queued Force Inventory Pull - NOT a full check-in by itself,
+# so a PC sitting idle isn't hitting the checkin endpoint every 2 minutes for no reason.
+if ($PollOnce) {
+    try {
+        $resp = Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10
+        if ($resp -and $resp.force) { Invoke-Checkin }
+    } catch {}
+    exit
 }
 
 Invoke-Checkin
@@ -1481,8 +1304,8 @@ export function downloadWorkspaceDirectoryAgentScript() {
 // double-clicking a .ps1 directly just opens it in Notepad (Windows' safety default), so this is
 // the intended way to actually run the install. Requests elevation itself (the .ps1 also
 // self-elevates, but starting elevated avoids two separate UAC prompts). Closes itself
-// automatically on success - the Jstar tray icon that appears afterward is the visible
-// confirmation - and only pauses if the install itself failed, so an error stays visible instead
+// automatically on success - the install is fully silent otherwise (no tray icon or confirmation
+// UI, by design) - and only pauses if the install itself failed, so an error stays visible instead
 // of the window vanishing before anyone can read it.
 function buildAgentBatchLauncher() {
   return `@echo off

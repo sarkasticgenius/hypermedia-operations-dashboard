@@ -110,6 +110,29 @@ export function fillWorkspaceChocoUninstallById(inputId, targetId) {
   if (id) fillWorkspaceCommand(`choco uninstall ${id} -y`, targetId);
 }
 
+// Lets a queued Run Command be a full .bat script instead of just a single PowerShell line - the
+// agent tells the two apart by an "::BATCH" marker line (a real, valid batch no-op, so no extra
+// pending_command_type column is needed) prepended before saving; see Invoke-PendingCommand in the
+// installed shell for the executing side. batchType defaults to 'powershell' when not passed (a
+// brand new device/blank textarea).
+function commandTypeRadiosHtml(targetId, batchType) {
+  const name = `${targetId}-type`;
+  return `<div class="small" style="display:flex;gap:14px;margin:6px 0;">
+    <label style="display:flex;align-items:center;gap:5px;font-weight:400;"><input type="radio" name="${name}" value="powershell" ${batchType === 'batch' ? '' : 'checked'} style="width:auto;"> PowerShell command</label>
+    <label style="display:flex;align-items:center;gap:5px;font-weight:400;"><input type="radio" name="${name}" value="batch" ${batchType === 'batch' ? 'checked' : ''} style="width:auto;"> Batch script (.bat)</label>
+  </div>`;
+}
+
+function commandTypeFor(targetId) {
+  return document.querySelector(`input[name="${targetId}-type"]:checked`)?.value || 'powershell';
+}
+
+// Strips the leading marker (if present) so the textarea shows the admin's actual script back to
+// them, not the internal marker line - paired with commandTypeRadiosHtml pre-selecting Batch.
+function stripBatchMarker(command) {
+  return (command || '').replace(/^\s*::BATCH\r?\n/, '');
+}
+
 // Renders the shared preset-button rows (winget/choco install-by-ID, diagnostics) used by both the
 // per-device Edit modal and the bulk-deploy modal, pointed at whichever textarea/input pair belongs
 // to that modal.
@@ -188,7 +211,7 @@ function stripedBarHtml(pct, color) {
 // each place inventing its own Online/Offline treatment.
 function statusDotHtml(online, labelled) {
   const color = online ? '#1f9d55' : '#c0392b';
-  const dot = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};box-shadow:0 0 0 3px ${online ? 'rgba(31,157,85,.2)' : 'rgba(192,57,43,.2)'};flex:none;"></span>`;
+  const dot = `<span title="${online ? 'Online' : 'Offline'}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};box-shadow:0 0 0 3px ${online ? 'rgba(31,157,85,.2)' : 'rgba(192,57,43,.2)'};flex:none;"></span>`;
   if (!labelled) return dot;
   return `<span style="display:inline-flex;align-items:center;gap:6px;">${dot}<span class="small" style="color:${color};font-weight:600;">${online ? 'Online' : 'Offline'}</span></span>`;
 }
@@ -221,12 +244,12 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds) {
     <td class="small">${esc(d.ip_address || '-')}</td>
     <td>${remoteAccessCell(d)}</td>
     <td>${volumeCellHtml(d)}</td>
-    <td>${statusDotHtml(online, true)}</td>
+    <td>${statusDotHtml(online)}</td>
     <td>${matchedScreenHtml(matchedScreenFor(d, assetInventory))}</td>
     <td class="small">${esc(d.os_name || '-')}${d.os_version ? ` <span class="muted">${esc(d.os_version)}</span>` : ''}</td>
     <td class="small">${esc(d.logged_in_user || '-')}</td>
     <td>${problemCount ? `<span class="badge b-red">${problemCount} issue${problemCount === 1 ? '' : 's'}</span>` : '<span class="badge b-blue">OK</span>'}</td>
-    <td class="small">${d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : 'never'}${d.force_checkin_requested ? ' <span class="small muted">(pull requested)</span>' : ''}</td>
+    <td class="small">${d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : 'never'}${d.force_checkin_requested ? '<div class="small muted">(pull requested)</div>' : ''}</td>
     <td style="white-space:nowrap;">
       <button class="btn-sm" onclick="App.openWorkspaceDetailsModal('${d.id}')">Details</button>
       ${editOk ? `<button class="btn-sm" onclick="App.openWorkspaceEditModal('${d.id}')">Edit</button>` : ''}
@@ -372,7 +395,7 @@ export function renderWorkspaceDirectory() {
             ${sortTh('workspaceDevices', 'os', 'OS', 16)}
             ${sortTh('workspaceDevices', 'user', 'Logged-in User', 13)}
             ${sortTh('workspaceDevices', 'problems', 'Issues', 8)}
-            ${sortTh('workspaceDevices', 'lastSeen', 'Last Seen', 12)}
+            ${sortTh('workspaceDevices', 'lastSeen', 'Last Seen', 27)}
             <th style="width:18ch;"></th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -421,8 +444,9 @@ export async function saveWorkspaceBulkDeploy(event) {
   const command = document.getElementById('wd-bulk-command').value.trim();
   if (!ids.length) { toast('No devices selected', 'error'); return; }
   if (!command) { toast('Enter a command first', 'error'); return; }
+  const stored = commandTypeFor('wd-bulk-command') === 'batch' ? `::BATCH\n${command}` : command;
   try {
-    await Promise.all(ids.map((id) => updateWorkspaceDevice(id, { pending_command: command })));
+    await Promise.all(ids.map((id) => updateWorkspaceDevice(id, { pending_command: stored })));
     await logAudit('Bulk queue Digital Directory command', `${ids.length} device(s): ${command}`);
     invalidate('workspaceDevices');
     closeModal();
@@ -449,8 +473,9 @@ export async function saveWorkspaceEditForm(event, deviceId) {
   const notes = document.getElementById('wd-edit-notes').value.trim();
   const simCardId = document.getElementById('wd-edit-sim').value || null;
   const pendingCommand = document.getElementById('wd-edit-command').value.trim();
+  const storedCommand = pendingCommand && commandTypeFor('wd-edit-command') === 'batch' ? `::BATCH\n${pendingCommand}` : pendingCommand;
   try {
-    await updateWorkspaceDevice(deviceId, { location: location || null, notes: notes || null, sim_card_id: simCardId, pending_command: pendingCommand || null });
+    await updateWorkspaceDevice(deviceId, { location: location || null, notes: notes || null, sim_card_id: simCardId, pending_command: storedCommand || null });
     await logAudit('Edit workspace device', deviceId);
     invalidate('workspaceDevices');
     closeModal();
@@ -598,7 +623,7 @@ registerModal('workspaceDetails', (data) => {
     <div class="card-head"><h3 style="font-size:13px;">Software</h3></div>
     <div style="margin-bottom:12px;">${softwareHtml}</div>
 
-    ${d.pending_command ? `<div class="card-head"><h3 style="font-size:13px;">Pending Command</h3></div><div class="small" style="margin-bottom:12px;"><code>${esc(d.pending_command)}</code> - runs on the next check-in.</div>` : ''}
+    ${d.pending_command ? `<div class="card-head"><h3 style="font-size:13px;">Pending Command${/^\s*::BATCH\r?\n/.test(d.pending_command) ? ' (Batch script)' : ''}</h3></div><div class="small" style="margin-bottom:12px;"><code style="white-space:pre-wrap;">${esc(stripBatchMarker(d.pending_command))}</code> - runs on the next check-in.</div>` : ''}
     ${d.last_command_output ? `<div class="card-head"><h3 style="font-size:13px;">Last Command Output</h3></div><div class="small muted" style="margin-bottom:4px;">${d.last_command_at ? esc(fmtRelativeTime(d.last_command_at)) : ''}</div><pre style="max-height:200px;overflow-y:auto;background:var(--bg);padding:8px;border-radius:6px;white-space:pre-wrap;font-size:11.5px;">${esc(d.last_command_output)}</pre>` : ''}
 
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
@@ -611,6 +636,7 @@ registerModal('workspaceEdit', (data) => {
   if (!device) return `<div class="empty">Device not found.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
   const simCards = STATE.pageData.simCardsForDirectory?.data || [];
   const simOptions = simCards.map((s) => `<option value="${s.id}" ${device.sim_card_id === s.id ? 'selected' : ''}>${esc(s.sim_number || s.iccid || s.id)}${s.data_allocation_gb ? ` (${s.data_allocation_gb}GB)` : ''}</option>`).join('');
+  const pendingIsBatch = /^\s*::BATCH\r?\n/.test(device.pending_command || '');
   return `
     <h3>Edit - ${esc(device.hostname)}</h3>
     <form onsubmit="App.saveWorkspaceEditForm(event, '${device.id}')">
@@ -620,10 +646,11 @@ registerModal('workspaceEdit', (data) => {
         <select id="wd-edit-sim"><option value="">None</option>${simOptions}</select>
         <div class="small muted" style="margin-top:4px;">Used to show data used vs. plan size on the Digital Directory's SIM Data Usage tiles.${device.sim_card_id ? ` <button type="button" class="link-btn" onclick="App.resetWorkspaceDataUsage('${device.id}')">Reset usage counter</button>` : ''}</div>
       </div>
-      <div class="field"><label>Run Command (PowerShell, runs on this device's next check-in)</label>
+      <div class="field"><label>Run Command (runs on this device's next check-in)</label>
         ${commandPresetsHtml('wd-edit-pkgid', 'wd-edit-chocoid', 'wd-edit-command')}
-        <textarea id="wd-edit-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent">${esc(device.pending_command || '')}</textarea>
-        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. The winget presets need that PC to already have it (built into Windows 10 21H2+/11); Chocolatey is bootstrapped automatically by the install script on every PC, so those presets work everywhere. Don't know the exact ID? Search <a href="https://community.chocolatey.org/packages" target="_blank" rel="noopener">community.chocolatey.org/packages</a>, or queue <code>winget search &lt;name&gt;</code> as a command first - its results show up in Details after the next check-in - or use the per-item Uninstall button in Details &gt; Software, which queues that program's own registered uninstall command directly. Covers installing/updating/removing software or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
+        ${commandTypeRadiosHtml('wd-edit-command', pendingIsBatch ? 'batch' : 'powershell')}
+        <textarea id="wd-edit-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent">${esc(stripBatchMarker(device.pending_command))}</textarea>
+        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges, fully hidden (no window/popup on the signage screen). The winget presets need that PC to already have it (built into Windows 10 21H2+/11); Chocolatey is bootstrapped automatically by the install script on every PC, so those presets work everywhere. Don't know the exact ID? Search <a href="https://community.chocolatey.org/packages" target="_blank" rel="noopener">community.chocolatey.org/packages</a>, or queue <code>winget search &lt;name&gt;</code> as a command first - its results show up in Details after the next check-in - or use the per-item Uninstall button in Details &gt; Software, which queues that program's own registered uninstall command directly. Covers installing/updating/removing software, running a full .bat script, or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
@@ -643,8 +670,9 @@ registerModal('workspaceBulkDeploy', () => {
     <form onsubmit="App.saveWorkspaceBulkDeploy(event)">
       <div class="field"><label>Run Command (PowerShell, runs on each selected device's next check-in)</label>
         ${commandPresetsHtml('wd-bulk-pkgid', 'wd-bulk-chocoid', 'wd-bulk-command')}
+        ${commandTypeRadiosHtml('wd-bulk-command', 'powershell')}
         <textarea id="wd-bulk-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent"></textarea>
-        <div class="small muted" style="margin-top:4px;">Queues the exact same command on all ${ids.length} selected device(s) at once - each one still only runs it on its OWN next check-in (not simultaneously), same as a single-device Run Command. Overwrites any pending command already queued individually on these devices.</div>
+        <div class="small muted" style="margin-top:4px;">Queues the exact same command (or full .bat script) on all ${ids.length} selected device(s) at once - each one still only runs it on its OWN next check-in (not simultaneously), same as a single-device Run Command. Overwrites any pending command already queued individually on these devices.</div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
