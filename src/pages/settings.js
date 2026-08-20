@@ -869,7 +869,13 @@ $__os = Get-CimInstance Win32_OperatingSystem
 // $StateDir\status.json (written by Invoke-Checkin after every attempt) so the window always
 // reflects the real last result, and its "Check In Now" button runs the same agent.ps1 the
 // scheduled task does, so a manual check from the tray behaves identically to an automatic one.
-function buildTrayScript() {
+// Also polls workspace-directory-force-status every ~2 minutes for a "Force Inventory Pull"
+// request from the dashboard, and runs the same check-in automatically if one's waiting - this is
+// the ONLY way a dashboard click can reach a specific PC sooner than its next scheduled cycle,
+// since these PCs are on metered SIMs behind NAT/cellular routers with no inbound reachability;
+// the dashboard can never push to them, only they can poll out. Needs its own copy of the secret
+// (passed in here) since it's a separate always-resident process from the scheduled check-in task.
+function buildTrayScript(secret, anonKey, forceStatusUrl) {
   return `# Jstar - the Digital Directory Agent's tray status monitor
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -879,6 +885,9 @@ $StatusFile = Join-Path $StateDir "status.json"
 $LogFile = Join-Path $StateDir "agent.log"
 $AgentScript = Join-Path $StateDir "agent.ps1"
 $DashboardUrl = "https://sarkasticgenius.github.io/hypermedia-operations-dashboard/"
+$AgentSecret = "${secret}"
+$AnonKey = "${anonKey}"
+$ForceStatusUrl = "${forceStatusUrl}"
 
 # A filled-circle "J" (Jstar) bitmap stands in for a real .ico asset - gives the tray a
 # distinctive, branded look without shipping/loading a separate image file.
@@ -997,7 +1006,9 @@ function Update-FormStatus {
     $checkinStatusLabel.Text = Format-AgentStatusSummary
 }
 
-$checkInBtn.Add_Click({
+# Shared by the button and the force-pull timer below, so a dashboard-triggered check-in behaves
+# identically to a manually-clicked one (same UI feedback, same status.json update afterward).
+function Invoke-TrayCheckin {
     $agentStatusLabel.Text = "Agent status: checking in..."
     $form.Refresh()
     $checkInBtn.Enabled = $false
@@ -1008,7 +1019,9 @@ $checkInBtn.Add_Click({
     $agentStatusLabel.Text = "Agent status: idle"
     Update-FormStatus
     $trayIcon.Text = ("Jstar\`n" + (Format-AgentStatusSummary))
-})
+}
+
+$checkInBtn.Add_Click({ Invoke-TrayCheckin })
 $logBtn.Add_Click({
     if (Test-Path $LogFile) { Start-Process notepad.exe $LogFile } else { [System.Windows.Forms.MessageBox]::Show("No log yet.", "Jstar") | Out-Null }
 })
@@ -1038,6 +1051,21 @@ $exitMenuItem.Add_Click({ $trayIcon.Visible = $false; [System.Windows.Forms.Appl
 
 $trayIcon.ShowBalloonTip(4000, "Jstar", "Digital Directory Agent is active on this PC.", [System.Windows.Forms.ToolTipIcon]::Info)
 
+# Polls for a "Force Inventory Pull" click from the dashboard - the only channel that can exist
+# given these PCs have no inbound reachability (metered SIM behind NAT/cellular router), so the
+# dashboard can never push to them. A couple of minutes' latency and a tiny request are an easy
+# trade for "the button on the dashboard actually does something soon" instead of waiting up to 6
+# hours for the next scheduled cycle.
+$forceTimer = New-Object System.Windows.Forms.Timer
+$forceTimer.Interval = 120000
+$forceTimer.Add_Tick({
+    try {
+        $resp = Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10
+        if ($resp -and $resp.force) { Invoke-TrayCheckin }
+    } catch {}
+})
+$forceTimer.Start()
+
 [System.Windows.Forms.Application]::Run()
 `;
 }
@@ -1058,12 +1086,13 @@ function buildWorkspaceDirectoryAgentScript(secret) {
   const checkinUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-checkin`;
   const collectorUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-collector`;
   const agentShellUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-agent-shell`;
+  const forceStatusUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-force-status`;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
   const indented = defaultCollectorScript().split('\n').map((l) => `    ${l}`).join('\n');
   // Base64, not inlined as PowerShell-inside-a-PowerShell-string, so nothing in the tray script's
   // own quotes/backticks/$variables needs escaping for this outer template - the install script
   // just writes the decoded bytes straight to tray.ps1 at install time.
-  const trayScriptB64 = btoa(unescape(encodeURIComponent(buildTrayScript())));
+  const trayScriptB64 = btoa(unescape(encodeURIComponent(buildTrayScript(secret, anonKey, forceStatusUrl))));
   return `# Digital Directory Agent
 # Collects PC inventory and checks in with the Hypermedia Operations Dashboard every 6 hours via a
 # scheduled task (the SIM-data-usage figure itself is only recomputed about once a day regardless -

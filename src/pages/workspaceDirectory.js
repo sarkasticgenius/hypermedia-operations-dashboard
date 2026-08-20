@@ -114,6 +114,26 @@ function matchedScreenHtml(matched) {
   return `<span class="small">${esc(source)}: <b>${esc(row.name)}</b>${row.venue ? ` @ ${esc(row.venue)}` : ''}</span>`;
 }
 
+// A diagonally-striped fill with the percentage centered inside the bar itself, rather than as
+// separate text next to a plain fill - used everywhere a single at-a-glance percentage matters
+// (a volume's free space, data used vs. plan) so Volumes/Data Usage/Status read consistently.
+function stripedBarHtml(pct, color) {
+  const clamped = Math.max(0, Math.min(100, pct));
+  return `<div style="position:relative;height:20px;border-radius:5px;overflow:hidden;background:var(--bg);border:1px solid var(--border);min-width:90px;">
+    <div style="width:${clamped.toFixed(1)}%;height:100%;background-color:${color};background-image:repeating-linear-gradient(45deg, rgba(255,255,255,.28) 0, rgba(255,255,255,.28) 5px, transparent 5px, transparent 10px);"></div>
+    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.55);">${clamped.toFixed(0)}%</div>
+  </div>`;
+}
+
+// Same green/red-dot-plus-word convention everywhere a device's reachability is shown, instead of
+// each place inventing its own Online/Offline treatment.
+function statusDotHtml(online, labelled) {
+  const color = online ? '#1f9d55' : '#c0392b';
+  const dot = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};box-shadow:0 0 0 3px ${online ? 'rgba(31,157,85,.2)' : 'rgba(192,57,43,.2)'};flex:none;"></span>`;
+  if (!labelled) return dot;
+  return `<span style="display:inline-flex;align-items:center;gap:6px;">${dot}<span class="small" style="color:${color};font-weight:600;">${online ? 'Online' : 'Offline'}</span></span>`;
+}
+
 function deviceRow(d, editOk, deleteOk, assetInventory) {
   const online = isOnline(d);
   const problemCount = (d.problems || []).length;
@@ -126,11 +146,12 @@ function deviceRow(d, editOk, deleteOk, assetInventory) {
     <td class="small">${esc(d.os_name || '-')}${d.os_version ? ` <span class="muted">${esc(d.os_version)}</span>` : ''}</td>
     <td class="small">${esc(d.logged_in_user || '-')}</td>
     <td>${problemCount ? `<span class="badge b-red">${problemCount} issue${problemCount === 1 ? '' : 's'}</span>` : '<span class="badge b-blue">OK</span>'}</td>
-    <td>${online ? '<span class="badge b-blue">Online</span>' : '<span class="badge b-red">Offline</span>'}</td>
-    <td class="small">${d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : 'never'}</td>
+    <td>${statusDotHtml(online, true)}</td>
+    <td class="small">${d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : 'never'}${d.force_checkin_requested ? ' <span class="small muted">(pull requested)</span>' : ''}</td>
     <td style="white-space:nowrap;">
       <button class="btn-sm" onclick="App.openWorkspaceDetailsModal('${d.id}')">Details</button>
       ${editOk ? `<button class="btn-sm" onclick="App.openWorkspaceEditModal('${d.id}')">Edit</button>` : ''}
+      ${editOk && !d.force_checkin_requested ? `<button class="btn-sm" title="Ask this PC to check in within ~2 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force Pull</button>` : ''}
       ${deleteOk ? `<button class="btn-sm" onclick="App.removeWorkspaceDevice('${d.id}')">Delete</button>` : ''}
     </td>
   </tr>`;
@@ -149,18 +170,18 @@ function dataUsageTile(d, sim) {
   const color = pct >= 90 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
   const phone = d.du_phone_number || sim?.sim_number || sim?.iccid || '';
   return `<div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;">
-    <div>
-      <div style="font-size:12.5px;font-weight:700;">${esc(d.hostname)}</div>
-      <div class="small muted">${esc(d.location || 'Unassigned')}${phone ? ` &middot; ${esc(phone)}` : ''}${haveDu ? ' &middot; <span style="color:#1f9d55;">DU</span>' : ''}</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <div>
+        <div style="font-size:12.5px;font-weight:700;">${esc(d.hostname)}</div>
+        <div class="small muted">${esc(d.location || 'Unassigned')}${phone ? ` &middot; ${esc(phone)}` : ''}${haveDu ? ' &middot; <span style="color:#1f9d55;">DU</span>' : ''}</div>
+      </div>
+      ${statusDotHtml(isOnline(d))}
     </div>
-    <div style="height:7px;border-radius:4px;overflow:hidden;background:var(--bg);">
-      <div style="width:${pct.toFixed(1)}%;height:100%;background:${color};"></div>
-    </div>
+    ${allocGb ? stripedBarHtml(pct, color) : '<div class="small muted">No plan size set - link a SIM Card or wait for a DU scrape.</div>'}
     <div class="small" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;">
       <span class="muted">Total Data</span><span style="text-align:right;">${allocGb ? `${allocGb} GB` : '&mdash;'}</span>
       <span class="muted">Data Used</span><span style="text-align:right;">${usedGb.toFixed(2)} GB</span>
       <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? `${leftGb.toFixed(2)} GB` : '&mdash;'}</span>
-      <span class="muted">Percentage</span><span style="text-align:right;color:${color};">${allocGb ? `${pct.toFixed(1)}%` : '&mdash;'}</span>
       <span class="muted">Last 24h</span><span style="text-align:right;">${last24hGb.toFixed(2)} GB</span>
       <span class="muted">${haveDu ? 'DU Last Update' : 'Last Update'}</span><span style="text-align:right;">${haveDu ? fmtRelativeTime(d.du_scraped_at) : (d.last_seen ? fmtRelativeTime(d.last_seen) : '&mdash;')}</span>
     </div>
@@ -305,6 +326,21 @@ export async function clearWorkspacePendingCommand(deviceId) {
   } catch (e) { toast(e.message || 'Failed to clear command', 'error'); }
 }
 
+// The dashboard can never reach OUT to these PCs directly - they're on metered SIMs behind
+// NAT/cellular routers with no inbound reachability - so "force" just sets a flag that Jstar polls
+// for every ~2 minutes and acts on locally. A few minutes' latency, not instant, but far faster
+// than waiting for the next scheduled 6-hourly check-in. Requires Jstar to actually be running
+// (a signed-in desktop session) - a fully headless/logged-out PC still only gets it on schedule.
+export async function forceWorkspaceInventoryPull(deviceId) {
+  try {
+    await updateWorkspaceDevice(deviceId, { force_checkin_requested: true });
+    await logAudit('Force Digital Directory inventory pull', deviceId);
+    invalidate('workspaceDevices');
+    toast('Requested - picked up within ~2 minutes if Jstar is running on that PC.');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to request pull', 'error'); }
+}
+
 export async function resetWorkspaceDataUsage(deviceId) {
   if (!confirm('Reset this device\'s tracked data usage back to zero?')) return;
   try {
@@ -357,7 +393,11 @@ registerModal('workspaceDetails', (data) => {
 
   const volumes = d.volumes || [];
   const volumesHtml = volumes.length
-    ? `<table><thead><tr><th>Drive</th><th>Label</th><th>Size</th><th>Free</th></tr></thead><tbody>${volumes.map((v) => `<tr><td>${esc(v.drive)}</td><td class="small">${esc(v.label || '-')}</td><td class="small">${v.sizeGb} GB</td><td class="small">${v.freeGb} GB</td></tr>`).join('')}</tbody></table>`
+    ? `<table><thead><tr><th>Drive</th><th>Label</th><th>Free</th><th>Free %</th></tr></thead><tbody>${volumes.map((v) => {
+        const freePct = v.sizeGb > 0 ? (v.freeGb / v.sizeGb) * 100 : 0;
+        const color = freePct <= 10 ? '#c0392b' : freePct <= 25 ? '#e07a2c' : '#1f9d55';
+        return `<tr><td>${esc(v.drive)}</td><td class="small">${esc(v.label || '-')}</td><td class="small" style="white-space:nowrap;">${v.freeGb} of ${v.sizeGb} GB</td><td>${stripedBarHtml(freePct, color)}</td></tr>`;
+      }).join('')}</tbody></table>`
     : '<div class="empty">No volume data reported.</div>';
 
   const c = d.components || {};

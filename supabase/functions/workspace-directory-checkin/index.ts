@@ -117,6 +117,11 @@ Deno.serve(async (req) => {
       problems,
       agent_version: body.agentVersion ? String(body.agentVersion).slice(0, 50) : null,
       last_seen: new Date().toISOString(),
+      // Whatever asked for this check-in to happen right now (a "Force Inventory Pull" click
+      // picked up by Jstar's polling, or just its normal schedule) is satisfied by the fact this
+      // check-in is happening at all - cleared unconditionally rather than only when it was true,
+      // since a stray still-true flag would otherwise force every future check-in.
+      force_checkin_requested: false,
     };
 
     const newCounter = Number.isFinite(Number(body.networkBytesTotal)) ? Number(body.networkBytesTotal) : null;
