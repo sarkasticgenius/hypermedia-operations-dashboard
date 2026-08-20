@@ -55,11 +55,20 @@ function remoteIdChip(tool, id, protocol) {
   </span>`;
 }
 
+// A second/third AnyDesk id (a PC with more than one AnyDesk install - see Get-AllAnyDeskIds)
+// still needs a working Connect link, not just a bare id - inferred from the tool name since
+// other_remote_ids itself only carries {tool, id}, no protocol.
+function protocolForTool(tool) {
+  if (/^AnyDesk/i.test(tool)) return 'anydesk';
+  if (/^TeamViewer/i.test(tool)) return 'teamviewer10';
+  return '';
+}
+
 function remoteAccessCell(d) {
   const chips = [
     remoteIdChip('AnyDesk', d.anydesk_id, 'anydesk'),
     remoteIdChip('TeamViewer', d.teamviewer_id, 'teamviewer10'),
-    ...(d.other_remote_ids || []).map((r) => remoteIdChip(r.tool, r.id, '')),
+    ...(d.other_remote_ids || []).map((r) => remoteIdChip(r.tool, r.id, protocolForTool(r.tool))),
   ].filter(Boolean).join('');
   return chips || '<span class="small muted">-</span>';
 }
@@ -388,13 +397,13 @@ export function renderWorkspaceDirectory() {
             ${sortTh('workspaceDevices', 'hostname', 'Hostname', 14)}
             ${sortTh('workspaceDevices', 'location', 'Location', 12)}
             ${sortTh('workspaceDevices', 'ip', 'IP', 11)}
-            <th>Remote Access</th>
+            <th style="width:26ch;">Remote Access</th>
             <th style="width:14ch;">Volume</th>
             <th style="width:8ch;">Status</th>
-            <th>Matched Screen</th>
+            <th style="width:20ch;">Matched Screen</th>
             ${sortTh('workspaceDevices', 'os', 'OS', 16)}
-            ${sortTh('workspaceDevices', 'user', 'Logged-in User', 13)}
-            ${sortTh('workspaceDevices', 'problems', 'Issues', 8)}
+            ${sortTh('workspaceDevices', 'user', 'Logged-in User', 19)}
+            ${sortTh('workspaceDevices', 'problems', 'Issues', 10)}
             ${sortTh('workspaceDevices', 'lastSeen', 'Last Seen', 27)}
             <th style="width:18ch;"></th>
           </tr></thead>
@@ -543,7 +552,7 @@ registerModal('workspaceLocation', (data) => {
     <h3>${esc(data.location)} - ${list.length} device(s)</h3>
     <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th>Hostname</th><th>Location</th><th>IP</th><th>Remote Access</th><th>Volume</th><th>Status</th><th>Matched Screen</th><th>OS</th><th>Logged-in User</th><th>Issues</th><th>Last Seen</th><th></th></tr></thead>
+        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:11ch;">IP</th><th style="width:26ch;">Remote Access</th><th style="width:14ch;">Volume</th><th style="width:8ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>

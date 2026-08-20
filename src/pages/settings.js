@@ -671,20 +671,31 @@ export async function publishWorkspaceDirectoryAgentShell() {
 // installs (and any run where fetching the remote version fails) still work. Ends with a single
 // hashtable literal - its shape is exactly the workspace-directory-checkin request body.
 function defaultCollectorScript() {
-  return `function Get-AnyDeskId {
-    $paths = @(
-        "$env:ProgramData\\AnyDesk\\service.conf",
-        "$env:ProgramData\\AnyDesk\\system.conf",
-        "$env:APPDATA\\AnyDesk\\user.conf"
-    )
-    foreach ($path in $paths) {
-        if (Test-Path $path) {
-            $content = Get-Content -Path $path -ErrorAction SilentlyContinue
-            $match = $content | Select-String -Pattern "ad.anynet.id=(\\d+)"
-            if ($match) { return $match.Matches[0].Groups[1].Value }
+  return `# Some PCs end up with AnyDesk installed twice under different profiles - a standard install
+# AND a separately-branded custom MSI build in its own "ad_*_msi" subfolder (each gets its own
+# service/system.conf and its own distinct ID) - so this scans every known conf path instead of
+# stopping at the first match, and returns every DISTINCT id found rather than just one, so none of
+# them silently go missing from the directory.
+function Get-AllAnyDeskIds {
+    $paths = [System.Collections.Generic.List[string]]::new()
+    $paths.Add("$env:ProgramData\\AnyDesk\\service.conf")
+    $paths.Add("$env:ProgramData\\AnyDesk\\system.conf")
+    $paths.Add("$env:APPDATA\\AnyDesk\\user.conf")
+    $msiConfs = Get-ChildItem -Path "$env:ProgramData\\AnyDesk" -Filter "system.conf" -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.Directory.Name -like "ad_*_msi" }
+    foreach ($f in $msiConfs) { $paths.Add($f.FullName) }
+
+    $ids = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in ($paths | Get-Unique)) {
+        if (-not (Test-Path $path)) { continue }
+        $content = Get-Content -Path $path -ErrorAction SilentlyContinue
+        $match = $content | Select-String -Pattern "ad.anynet.id=(\\d+)"
+        if ($match) {
+            $id = $match.Matches[0].Groups[1].Value
+            if ($ids -notcontains $id) { $ids.Add($id) }
         }
     }
-    return $null
+    return $ids
 }
 
 function Get-TeamViewerId {
@@ -703,10 +714,18 @@ function Get-TeamViewerId {
     return $null
 }
 
-# Extend this to detect more remote-access tools (Chrome Remote Desktop, LogMeIn, etc.) as
-# @{ tool = 'ToolName'; id = '...' } entries - the intended extension point for "any remote
-# software ID", since there's no single universal way to enumerate every possible tool.
-function Get-OtherRemoteIds { @() }
+# Extra remote-access ids beyond the primary AnyDesk/TeamViewer ones shown in their own columns -
+# takes every AnyDesk id after the first (see Get-AllAnyDeskIds - a second install genuinely means
+# a second connect option, not a duplicate) plus an extension point for detecting more tools
+# (Chrome Remote Desktop, LogMeIn, etc.) as further @{ tool = 'ToolName'; id = '...' } entries,
+# since there's no single universal way to enumerate every possible remote-access tool.
+function Get-OtherRemoteIds($anydeskIds) {
+    $extra = @()
+    for ($i = 1; $i -lt $anydeskIds.Count; $i++) {
+        $extra += @{ tool = "AnyDesk ($($i + 1))"; id = $anydeskIds[$i] }
+    }
+    return $extra
+}
 
 # Same discovery approach Broadsign's own player leaves on disk (and the same fallback file/keyword
 # search the original NSOC agent used) - matched server-side against Asset Inventory's Player Box
@@ -854,7 +873,8 @@ function Get-Problems($volumes, $antivirus, $anydeskId, $teamviewerId) {
 
 $__volumes = @(Get-Volumes)
 $__antivirus = @(Get-AntivirusStatus)
-$__anydeskId = Get-AnyDeskId
+$__anydeskIds = @(Get-AllAnyDeskIds)
+$__anydeskId = if ($__anydeskIds.Count -gt 0) { $__anydeskIds[0] } else { $null }
 $__teamviewerId = Get-TeamViewerId
 $__os = Get-CimInstance Win32_OperatingSystem
 
@@ -863,7 +883,7 @@ $__os = Get-CimInstance Win32_OperatingSystem
     ip                = Get-PrimaryIPv4
     anydeskId         = $__anydeskId
     teamviewerId      = $__teamviewerId
-    otherRemoteIds    = @(Get-OtherRemoteIds)
+    otherRemoteIds    = @(Get-OtherRemoteIds $__anydeskIds)
     broadsignPlayerId = Get-BroadsignPlayerId
     grassfishBoxId    = Get-GrassfishBoxId
     os                = $__os.Caption
