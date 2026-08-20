@@ -137,17 +137,21 @@ function deviceRow(d, editOk, deleteOk, assetInventory) {
 }
 
 function dataUsageTile(d, sim) {
-  const allocGb = Number(sim?.data_allocation_gb) || 0;
-  const usedGb = (d.data_used_mb_period || 0) / 1024;
-  const leftGb = Math.max(0, allocGb - usedGb);
+  // The agent's own once-a-day scrape of mydata.du.ae (Get-DuDataUsage) is the carrier's own
+  // reported figures - preferred over the network-adapter-counter estimate whenever it's present,
+  // since that estimate is only ever an approximation of real billed usage.
+  const haveDu = !!d.du_scraped_at;
+  const allocGb = haveDu && d.du_data_total_gb != null ? Number(d.du_data_total_gb) : (Number(sim?.data_allocation_gb) || 0);
+  const usedGb = haveDu && d.du_data_used_gb != null ? Number(d.du_data_used_gb) : (d.data_used_mb_period || 0) / 1024;
+  const leftGb = haveDu && d.du_data_left_gb != null ? Number(d.du_data_left_gb) : Math.max(0, allocGb - usedGb);
   const last24hGb = (d.data_used_mb_last_24h || 0) / 1024;
   const pct = allocGb ? Math.min(100, (usedGb / allocGb) * 100) : 0;
   const color = pct >= 90 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
-  const phone = sim?.sim_number || sim?.iccid || '';
+  const phone = d.du_phone_number || sim?.sim_number || sim?.iccid || '';
   return `<div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;">
     <div>
       <div style="font-size:12.5px;font-weight:700;">${esc(d.hostname)}</div>
-      <div class="small muted">${esc(d.location || 'Unassigned')}${phone ? ` &middot; ${esc(phone)}` : ''}</div>
+      <div class="small muted">${esc(d.location || 'Unassigned')}${phone ? ` &middot; ${esc(phone)}` : ''}${haveDu ? ' &middot; <span style="color:#1f9d55;">DU</span>' : ''}</div>
     </div>
     <div style="height:7px;border-radius:4px;overflow:hidden;background:var(--bg);">
       <div style="width:${pct.toFixed(1)}%;height:100%;background:${color};"></div>
@@ -158,7 +162,7 @@ function dataUsageTile(d, sim) {
       <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? `${leftGb.toFixed(2)} GB` : '&mdash;'}</span>
       <span class="muted">Percentage</span><span style="text-align:right;color:${color};">${allocGb ? `${pct.toFixed(1)}%` : '&mdash;'}</span>
       <span class="muted">Last 24h</span><span style="text-align:right;">${last24hGb.toFixed(2)} GB</span>
-      <span class="muted">Last Update</span><span style="text-align:right;">${d.last_seen ? fmtRelativeTime(d.last_seen) : '&mdash;'}</span>
+      <span class="muted">${haveDu ? 'DU Last Update' : 'Last Update'}</span><span style="text-align:right;">${haveDu ? fmtRelativeTime(d.du_scraped_at) : (d.last_seen ? fmtRelativeTime(d.last_seen) : '&mdash;')}</span>
     </div>
     ${d.notes ? `<div class="small muted" style="border-top:1px solid var(--border);padding-top:6px;white-space:pre-wrap;">${esc(d.notes)}</div>` : ''}
   </div>`;
@@ -193,10 +197,10 @@ export function renderWorkspaceDirectory() {
   const locations = [...byLocation.keys()].sort((a, b) => (a === 'Unassigned' ? 1 : b === 'Unassigned' ? -1 : a.localeCompare(b)));
   const tiles = locations.map((loc) => locationTile(loc, byLocation.get(loc))).join('');
 
-  const dataDevices = devices.filter((d) => d.sim_card_id);
+  const dataDevices = devices.filter((d) => d.sim_card_id || d.du_scraped_at);
   const dataTilesHtml = dataDevices.length
     ? `<div class="card">
-        <div class="card-head"><h3>SIM Data Usage</h3><div class="desc">Devices linked to a SIM Card record (Edit &gt; Linked SIM Card). Data Used/Left/Percentage are a running total since tracking started/was last reset here; Last 24h is recomputed about once a day even though the agent itself checks in every 6 hours. Figures are computed from the PC's own network adapter counters, not a carrier-billed figure. Comments shown below a tile come from that device's Notes (Edit).</div></div>
+        <div class="card-head"><h3>SIM Data Usage</h3><div class="desc">Devices linked to a SIM Card record (Edit &gt; Linked SIM Card), or that have their own DU scrape. A tile marked <span style="color:#1f9d55;">DU</span> is showing du's own carrier-reported figures (scraped from mydata.du.ae once a day, no login - works when that PC's internet actually goes out over the SIM); otherwise Total/Used/Left fall back to an estimate from the PC's network adapter counters against the linked SIM Card's plan size. Last 24h is always the counter-based estimate, recomputed about once a day even though the agent itself checks in every 6 hours. Comments shown below a tile come from that device's Notes (Edit).</div></div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;">
           ${dataDevices.map((d) => dataUsageTile(d, simById.get(d.sim_card_id))).join('')}
         </div>
@@ -453,6 +457,11 @@ registerModal('workspaceEdit', (data) => {
           <input id="wd-edit-pkgid" placeholder="Package ID, e.g. VideoLAN.VLC" style="flex:1;min-width:160px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
           <button type="button" class="btn-sm" onclick="App.fillWorkspaceInstallById()">Install</button>
           <button type="button" class="btn-sm" onclick="App.fillWorkspaceUninstallById()">Uninstall</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+          <span class="small muted" style="align-self:center;">Diagnostics:</span>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('Get-DuDataUsage | ConvertTo-Json')">Test DU Scrape</button>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget list')">List Installed (winget)</button>
         </div>
         <textarea id="wd-edit-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent">${esc(device.pending_command || '')}</textarea>
         <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. The presets above use <code>winget</code> (built into Windows 10 21H2+/11) - requires that PC to already have it. Don't know the exact ID? Queue <code>winget search &lt;name&gt;</code> as a command first - its results show up in Details after the next check-in - or use the per-item Uninstall button in Details &gt; Software, which queues that program's own registered uninstall command directly. Covers installing/updating/removing software or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>

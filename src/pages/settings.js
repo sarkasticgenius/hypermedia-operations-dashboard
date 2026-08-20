@@ -922,7 +922,7 @@ $trayIcon.Text = "Jstar"
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Jstar"
-$form.Size = New-Object System.Drawing.Size(340, 375)
+$form.Size = New-Object System.Drawing.Size(340, 420)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
@@ -976,9 +976,17 @@ $openBtn.Location = New-Object System.Drawing.Point(20, 215)
 $openBtn.Size = New-Object System.Drawing.Size(290, 32)
 $form.Controls.Add($openBtn)
 
+$hintLabel = New-Object System.Windows.Forms.Label
+$hintLabel.Text = "To install/uninstall software here, queue it from this PC's Edit screen in Digital Directory (above), then Check In Now."
+$hintLabel.ForeColor = [System.Drawing.Color]::Gray
+$hintLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$hintLabel.Size = New-Object System.Drawing.Size(290, 45)
+$hintLabel.Location = New-Object System.Drawing.Point(20, 255)
+$form.Controls.Add($hintLabel)
+
 $closeBtn = New-Object System.Windows.Forms.Button
 $closeBtn.Text = "Close"
-$closeBtn.Location = New-Object System.Drawing.Point(20, 263)
+$closeBtn.Location = New-Object System.Drawing.Point(20, 308)
 $closeBtn.Size = New-Object System.Drawing.Size(290, 32)
 $form.Controls.Add($closeBtn)
 
@@ -1080,6 +1088,7 @@ $StatusFile = Join-Path $StateDir "status.json"
 $LogFile = Join-Path $StateDir "agent.log"
 $AgentCopyPath = Join-Path $StateDir "agent.ps1"
 $TrayScriptPath = Join-Path $StateDir "tray.ps1"
+$DuScrapeStateFile = Join-Path $StateDir "du-scrape-last.txt"
 $TrayScriptB64 = "${trayScriptB64}"
 
 # Self-elevate if not already running as Administrator (needed to register the SYSTEM-level task).
@@ -1161,6 +1170,71 @@ function Invoke-PendingCommand($command) {
         ConvertTo-Json | Set-Content -Path $PendingResultFile -Encoding utf8
 }
 
+# Scrapes mydata.du.ae once a day for this SIM's own carrier-reported number/usage, as an
+# alternative to the network-adapter-counter estimate above. No login is needed: browsing to that
+# page over the SIM's OWN mobile-data connection auto-identifies the subscriber (the whole reason
+# this works without ever touching a password/OTP) - so this only produces useful data on a PC
+# whose internet actually egresses through that SIM, not over Wi-Fi/office LAN. Uses headless
+# Edge/Chrome's own --dump-dom flag rather than Selenium/WebDriver - no extra tooling to install.
+# The exact page layout isn't something we have visibility into ahead of time, so parsing is
+# keyword-proximity based (looks for a number near "used"/"left"/"total" etc) rather than a fixed
+# selector - queue "Get-DuDataUsage | ConvertTo-Json" as a Run Command from the dashboard to see
+# the raw parsed result (or the raw page text if nothing could be parsed) for tuning.
+function Get-DuDataUsage {
+    $browserPaths = @(
+        "$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe",
+        "\${env:ProgramFiles(x86)}\\Microsoft\\Edge\\Application\\msedge.exe",
+        "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe",
+        "\${env:ProgramFiles(x86)}\\Google\\Chrome\\Application\\chrome.exe"
+    )
+    $browser = $browserPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $browser) { return $null }
+
+    try {
+        $dumpArgs = @("--headless=new", "--disable-gpu", "--incognito", "--no-first-run", "--disable-extensions", "--virtual-time-budget=10000", "--dump-dom", "https://mydata.du.ae")
+        $html = & $browser @dumpArgs 2>$null | Out-String
+        if ([string]::IsNullOrWhiteSpace($html)) { return $null }
+
+        // Breaks the DOM into one "line" per block-level element (rather than one flattened blob)
+        // before matching - a label and its value are almost always in the same or an adjacent
+        // block (same table row/cell pair, or a label div followed by a value div), and matching
+        // per-line avoids a keyword accidentally pairing with some UNRELATED number that just
+        // happens to appear within N characters of it in a flattened string.
+        $lineBreak = $html -replace '(?is)<script.*?</script>', ' ' -replace '(?is)<style.*?</style>', ' ' -replace '(?i)</(div|p|li|td|tr|span|h1|h2|h3|h4|h5|h6)>', "\`n" -replace '(?i)<br\\s*/?>', "\`n" -replace '<[^>]+>', ' '
+        $lines = $lineBreak -split "\`n" | ForEach-Object { ([System.Net.WebUtility]::HtmlDecode($_) -replace '\\s+', ' ').Trim() } | Where-Object { $_ }
+        if (-not $lines) { return $null }
+
+        $phone = $null
+        if (($lines -join ' | ') -match '(?:\\+?971|0)5\\d{8}') { $phone = $matches[0] }
+
+        function Find-GbNear($lines, $keywords) {
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                $isLabel = $false
+                foreach ($kw in $keywords) { if ($lines[$i] -match "(?i)$kw") { $isLabel = $true; break } }
+                if (-not $isLabel) { continue }
+                foreach ($idx in @($i, ($i + 1), ($i - 1))) {
+                    if ($idx -ge 0 -and $idx -lt $lines.Count -and $lines[$idx] -match '(\\d+(?:\\.\\d+)?)\\s*GB') { return [double]$matches[1] }
+                }
+            }
+            return $null
+        }
+        $used = Find-GbNear $lines @('used', 'consumed')
+        $left = Find-GbNear $lines @('left', 'remaining', 'balance')
+        $total = Find-GbNear $lines @('total', 'allocat', 'plan', 'bundle')
+        if (-not $total -and $used -and $left) { $total = [math]::Round($used + $left, 2) }
+
+        [ordered]@{
+            phoneNumber = $phone
+            dataUsedGb  = $used
+            dataLeftGb  = $left
+            dataTotalGb = $total
+            rawSnippet  = if (-not $phone -and -not $used -and -not $left -and -not $total) { ($lines -join ' | ').Substring(0, [Math]::Min(1500, ($lines -join ' | ').Length)) } else { $null }
+        }
+    } catch {
+        return $null
+    }
+}
+
 function Invoke-Checkin {
     $remoteScript = Get-RemoteCollectorScript
     $data = $null
@@ -1181,6 +1255,30 @@ function Invoke-Checkin {
             if ($cached.output) { $data.commandOutput = $cached.output }
             Remove-Item -Path $PendingResultFile -Force -ErrorAction SilentlyContinue
         } catch { Write-Warning "Could not read cached command result: $($_.Exception.Message)" }
+    }
+
+    # Launching a browser is slow, so this is gated to about once a day (independent of the
+    # 6-hourly check-in cadence) via a local timestamp file, same idea as the server-side gate on
+    # the network-counter usage figure. The gate advances on every ATTEMPT, not just success, so a
+    # temporarily-unreachable page retries tomorrow rather than every 6 hours.
+    $duDue = (-not (Test-Path $DuScrapeStateFile)) -or (((Get-Date) - [datetime](Get-Content -Path $DuScrapeStateFile -Raw -ErrorAction SilentlyContinue)).TotalHours -ge 20)
+    if ($duDue) {
+        New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-Content -Path $DuScrapeStateFile -Value (Get-Date).ToString("o") -Encoding utf8
+        try {
+            $du = Get-DuDataUsage
+            if ($du) {
+                if ($du.phoneNumber) { $data.duPhoneNumber = $du.phoneNumber }
+                if ($null -ne $du.dataUsedGb) { $data.duDataUsedGb = $du.dataUsedGb }
+                if ($null -ne $du.dataLeftGb) { $data.duDataLeftGb = $du.dataLeftGb }
+                if ($null -ne $du.dataTotalGb) { $data.duDataTotalGb = $du.dataTotalGb }
+                Write-AgentLog "DU data-usage scrape: phone=$($du.phoneNumber) used=$($du.dataUsedGb) left=$($du.dataLeftGb) total=$($du.dataTotalGb)"
+            } else {
+                Write-AgentLog "DU data-usage scrape found no browser or returned nothing."
+            }
+        } catch {
+            Write-AgentLog "DU data-usage scrape failed: $($_.Exception.Message)"
+        }
     }
 
     $payload = $data | ConvertTo-Json -Depth 6 -Compress

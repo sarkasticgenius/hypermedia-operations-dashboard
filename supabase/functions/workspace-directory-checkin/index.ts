@@ -30,6 +30,10 @@
 //    the agent's *next* check-in (cached locally by the agent meanwhile), clearing pending_command
 //    once recorded. So a command takes up to one extra cycle to report back, in exchange for
 //    never needing a second network round-trip.
+// A separate, agent-side-gated once-a-day scrape of mydata.du.ae (see Get-DuDataUsage in the agent
+// script) reports du_phone_number/du_data_used_gb/du_data_left_gb/du_data_total_gb only on the
+// check-ins it actually ran on - written here as a plain field-presence check rather than a
+// time-based gate, since the agent itself already decided whether it was due.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
@@ -135,6 +139,16 @@ Deno.serve(async (req) => {
       row.last_command_output = body.commandOutput.slice(0, 8000);
       row.last_command_at = new Date().toISOString();
       row.pending_command = null;
+    }
+
+    // The agent's own once-a-day (locally gated) scrape of mydata.du.ae - only present on days it
+    // actually ran, so these are only written when sent rather than nulled out on every check-in.
+    if (body.duPhoneNumber) row.du_phone_number = String(body.duPhoneNumber).slice(0, 30);
+    if (Number.isFinite(Number(body.duDataUsedGb))) row.du_data_used_gb = Number(body.duDataUsedGb);
+    if (Number.isFinite(Number(body.duDataLeftGb))) row.du_data_left_gb = Number(body.duDataLeftGb);
+    if (Number.isFinite(Number(body.duDataTotalGb))) row.du_data_total_gb = Number(body.duDataTotalGb);
+    if (row.du_phone_number || row.du_data_used_gb !== undefined || row.du_data_left_gb !== undefined || row.du_data_total_gb !== undefined) {
+      row.du_scraped_at = new Date().toISOString();
     }
 
     const { data: saved, error } = await adminClient.from('workspace_devices')
