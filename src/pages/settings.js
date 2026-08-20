@@ -553,9 +553,10 @@ function renderWorkspaceDirectoryAgentCard(settings) {
   const cfg = settings.workspaceDirectoryAgent || {};
   const collector = settings.workspaceDirectoryCollector || {};
   const collectorScript = collector.script || defaultCollectorScript();
+  const shell = settings.workspaceDirectoryAgentShell || {};
   return `
     <div class="card">
-      <div class="card-head"><h3>Digital Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent - metadata only (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, detected problems), no installed-software inventory. The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Also installs "Jstar", a tray icon + status window (Check In Now / View Log / last result) so anyone at the PC can see the agent is active - it needs the .ps1 and .bat downloaded below in the SAME folder. Generate a secret, save, then run the .bat as Administrator on each PC (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files).</div></div>
+      <div class="card-head"><h3>Digital Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, installed software, detected problems). The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Also installs "Jstar", a tray icon + status window (Check In Now / View Log / last result) so anyone at the PC can see the agent is active - it needs the .ps1 and .bat downloaded below in the SAME folder. Generate a secret, save, then run the .bat as Administrator on each PC once (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files). After that one install, every agent self-updates from Published Agent Version below - PCs in remote locations never need a physical reinstall again for anything except a secret rotation.</div></div>
       <form onsubmit="App.saveWorkspaceDirectoryAgentForm(event)">
         <div class="field"><label>Shared Agent Secret</label>
           <div style="display:flex;gap:8px;">
@@ -571,10 +572,16 @@ function renderWorkspaceDirectoryAgentCard(settings) {
         </div>
       </form>
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
+      <div class="field">
+        <label>Published Agent Version</label>
+        <div class="small muted" style="margin-bottom:6px;">The install script (scheduled task setup, remote-command runner, tray icon, self-update logic itself) - unlike the Data Collector Script below, this normally requires re-running the installer to change. Publishing pushes the CURRENT version of that logic here; every already-installed agent compares itself against it on each check-in and silently updates itself if different, no physical reinstall needed. Requires PCs already running an agent built after this self-update feature shipped (that batch needs the one-time reinstall above).${shell.version ? ` Currently published: v${shell.version}${shell.publishedAt ? ` (${new Date(shell.publishedAt).toLocaleString()})` : ''}.` : ' Nothing published yet.'}</div>
+        <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.publishWorkspaceDirectoryAgentShell()">Publish Latest Agent Version</button>
+      </div>
+      <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
       <form onsubmit="App.saveWorkspaceDirectoryCollectorForm(event)">
         <div class="field"><label>Data Collector Script (PowerShell)</label>
           <textarea id="int-wda-collector" rows="14" style="min-height:280px;font-family:monospace;font-size:12px;">${esc(collectorScript)}</textarea>
-          <div class="small muted" style="margin-top:4px;">Runs on every PC on every check-in (once a day), fetched fresh - no re-install needed to roll out a change. Must end with a single hashtable as its last expression (the fields the Digital Directory page reads); see the built-in default above for the exact shape. If this fails to fetch or throws, each agent falls back to the same default logic baked into the installed script, so a bad edit here degrades gracefully rather than breaking check-ins.${collector.version ? ` Current version: ${collector.version}.` : ''}</div>
+          <div class="small muted" style="margin-top:4px;">Runs on every PC on every check-in (every 6 hours), fetched fresh - no re-install needed to roll out a change. Must end with a single hashtable as its last expression (the fields the Digital Directory page reads); see the built-in default above for the exact shape. If this fails to fetch or throws, each agent falls back to the same default logic baked into the installed script, so a bad edit here degrades gracefully rather than breaking check-ins.${collector.version ? ` Current version: ${collector.version}.` : ''}</div>
         </div>
         <button class="btn btn-orange" type="submit">Save Collector Script</button>
         <button type="button" class="btn-outline btn-sm" onclick="App.resetWorkspaceDirectoryCollector()">Reset to Default</button>
@@ -618,6 +625,27 @@ export async function saveWorkspaceDirectoryCollectorForm(event) {
 export function resetWorkspaceDirectoryCollector() {
   const el = document.getElementById('int-wda-collector');
   if (el) el.value = defaultCollectorScript();
+}
+
+// Publishes the CURRENTLY-DEPLOYED outer shell (this build's buildWorkspaceDirectoryAgentScript
+// output) to app_settings, keyed by hostname-agnostic content since the shell is identical for
+// every PC using the current secret. Every already-installed agent fetches this on its own next
+// check-in and self-updates if different (see Invoke-SelfUpdate in the shell template) - this is
+// the "centralized deployment" half of the feature; the Data Collector Script above is the other
+// half and already worked this way from day one.
+export async function publishWorkspaceDirectoryAgentShell() {
+  const settings = STATE.pageData.settings?.data || {};
+  const secret = settings.workspaceDirectoryAgent?.secret;
+  if (!secret) { toast('Save a secret first', 'error'); return; }
+  const script = buildWorkspaceDirectoryAgentScript(secret);
+  const version = (settings.workspaceDirectoryAgentShell?.version || 0) + 1;
+  try {
+    await saveSetting('workspaceDirectoryAgentShell', { script, version, publishedAt: new Date().toISOString() });
+    await logAudit('Publish Digital Directory agent version', `v${version}`);
+    invalidate('settings');
+    toast(`Agent v${version} published - every PC self-updates on its next check-in.`);
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 // The default/fallback collector, used both as (a) the pre-filled Data Collector Script textarea
@@ -729,6 +757,32 @@ function Get-Components {
     }
 }
 
+# Reads the registry Uninstall keys directly (32/64-bit + per-user) rather than Win32_Product,
+# which silently triggers an MSI repair/consistency check on every single package - slow and
+# occasionally disruptive on a kiosk PC. uninstallString prefers the silent/quiet variant
+# (QuietUninstallString) when the installer registered one, so the Digital Directory's per-item
+# Uninstall action can queue it directly without needing to guess a winget package ID.
+function Get-InstalledSoftware {
+    $paths = @(
+        'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+        'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+        'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'
+    )
+    $seen = @{}
+    Get-ItemProperty -Path $paths -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -and -not $_.SystemComponent } |
+        ForEach-Object {
+            if ($seen.ContainsKey($_.DisplayName)) { return }
+            $seen[$_.DisplayName] = $true
+            [ordered]@{
+                name            = $_.DisplayName
+                version         = $_.DisplayVersion
+                publisher       = $_.Publisher
+                uninstallString = if ($_.QuietUninstallString) { $_.QuietUninstallString } else { $_.UninstallString }
+            }
+        }
+}
+
 function Get-AntivirusStatus {
     try {
         Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntivirusProduct -ErrorAction Stop | ForEach-Object {
@@ -800,6 +854,7 @@ $__os = Get-CimInstance Win32_OperatingSystem
     volumes           = $__volumes
     components        = Get-Components
     antivirus         = $__antivirus
+    software          = @(Get-InstalledSoftware)
     problems          = @(Get-Problems $__volumes $__antivirus $__anydeskId $__teamviewerId)
     networkBytesTotal = Get-NetworkBytesTotal
     agentVersion      = "3.0"
@@ -810,7 +865,7 @@ $__os = Get-CimInstance Win32_OperatingSystem
 // tray icon + status window - written to $StateDir\tray.ps1 by the outer install script (embedded
 // below as base64 so nothing here needs escaping for PowerShell-inside-PowerShell) and run via its
 // own "at any user's logon" scheduled task, since a tray icon needs a real interactive desktop
-// session - the once-daily check-in task runs headless as SYSTEM and can't show one itself. Reads
+// session - the 6-hourly check-in task runs headless as SYSTEM and can't show one itself. Reads
 // $StateDir\status.json (written by Invoke-Checkin after every attempt) so the window always
 // reflects the real last result, and its "Check In Now" button runs the same agent.ps1 the
 // scheduled task does, so a manual check from the tray behaves identically to an automatic one.
@@ -979,19 +1034,22 @@ $trayIcon.ShowBalloonTip(4000, "Jstar", "Digital Directory Agent is active on th
 `;
 }
 
-// The fixed outer shell: self-elevate, register the once-daily scheduled task, then on every run try
-// the remote collector first (Data Collector Script above) and fall back to the identical logic
-// baked in here as Invoke-DefaultCollector if the fetch fails, the response is empty, or the
-// remote script itself throws - so a bad edit in Settings degrades a PC back to default behavior
-// instead of breaking its check-ins. Also handles the single-slot remote command: runs whatever
-// pendingCommand comes back in the check-in response immediately (no extra request), but only
-// REPORTS the output on the *next* cycle (cached in a small local JSON file meanwhile) - so a
-// command never costs a second network round-trip, matching the same "minimize data usage" goal
-// the once-daily interval itself exists for. One JSON POST/GET pair per PC per day is on the
-// order of a few KB each way - negligible next to a typical SIM data plan even at the low end.
+// The fixed outer shell: self-elevate, self-update (see Invoke-SelfUpdate below), register the
+// 6-hourly scheduled task, then on every run try the remote collector first (Data Collector
+// Script above) and fall back to the identical logic baked in here as Invoke-DefaultCollector if
+// the fetch fails, the response is empty, or the remote script itself throws - so a bad edit in
+// Settings degrades a PC back to default behavior instead of breaking its check-ins. Also handles
+// the single-slot remote command: runs whatever pendingCommand comes back in the check-in response
+// immediately (no extra request), but only REPORTS the output on the *next* cycle (cached in a
+// small local JSON file meanwhile) - so a command never costs a second network round-trip. Check-ins
+// run every 6 hours (frequent Online/Offline status), but the SIM-data-usage figure specifically is
+// computed server-side only about once a day regardless (see workspace-directory-checkin) - a few KB
+// per call either way is negligible next to a typical SIM data plan; the self-update check below
+// adds one more GET of the same order.
 function buildWorkspaceDirectoryAgentScript(secret) {
   const checkinUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-checkin`;
   const collectorUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-collector`;
+  const agentShellUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-agent-shell`;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
   const indented = defaultCollectorScript().split('\n').map((l) => `    ${l}`).join('\n');
   // Base64, not inlined as PowerShell-inside-a-PowerShell-string, so nothing in the tray script's
@@ -999,9 +1057,10 @@ function buildWorkspaceDirectoryAgentScript(secret) {
   // just writes the decoded bytes straight to tray.ps1 at install time.
   const trayScriptB64 = btoa(unescape(encodeURIComponent(buildTrayScript())));
   return `# Digital Directory Agent
-# Collects PC inventory and checks in with the Hypermedia Operations Dashboard once a day via a
-# scheduled task - deliberately infrequent, since several of these PCs run on metered cellular SIM
-# data rather than broadband. What gets collected is fetched fresh from the dashboard on every run
+# Collects PC inventory and checks in with the Hypermedia Operations Dashboard every 6 hours via a
+# scheduled task (the SIM-data-usage figure itself is only recomputed about once a day regardless -
+# see workspace-directory-checkin), since several of these PCs run on metered cellular SIM data
+# rather than broadband. What gets collected is fetched fresh from the dashboard on every run
 # (Settings > Integrations > Digital Directory Agent > Data Collector Script) - this outer shell
 # itself never needs to change or be re-installed to pick up a new field. Re-run this script any
 # time to update the install (e.g. after rotating the secret).
@@ -1010,6 +1069,7 @@ param([switch]$Once)
 
 $CheckinUrl = "${checkinUrl}"
 $CollectorUrl = "${collectorUrl}"
+$AgentShellUrl = "${agentShellUrl}"
 $AgentSecret = "${secret}"
 $AnonKey = "${anonKey}"
 $TaskName = "WorkspaceDirectoryAgent"
@@ -1029,10 +1089,6 @@ if (-not $Once -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsB
     exit
 }
 
-function Invoke-DefaultCollector {
-${indented}
-}
-
 # Appends one line per attempt (capped to the last 200) and refreshes status.json - both purely so
 # the tray status window (tray.ps1, run separately since it needs a real desktop) has something
 # real to show; this task itself never reads them back.
@@ -1048,6 +1104,38 @@ function Write-AgentStatus($success, $message) {
     New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
     @{ lastCheckin = (Get-Date).ToString("o"); success = $success; message = $message } |
         ConvertTo-Json | Set-Content -Path $StatusFile -Encoding utf8
+}
+
+# Centralized-deployment half of the agent: compares this running script's own file content against
+# whatever's currently Published in Settings > Integrations > Digital Directory Agent, and if they
+# differ, overwrites itself and re-execs the NEW version immediately (so the rest of this run - task
+# registration, tray install, check-in - already uses the updated logic), then exits so the stale
+# in-memory copy never continues. Runs before anything else so a PC in a remote location never needs
+# a physical reinstall for a shell-level change again - only the Data Collector Script above already
+# worked this way; this is what extends the same idea to the shell itself. Line-ending differences
+# are normalized before comparing so a whitespace-only mismatch can't cause a self-update loop.
+function Invoke-SelfUpdate {
+    if (-not $PSCommandPath -or -not (Test-Path $PSCommandPath)) { return }
+    try {
+        $resp = Invoke-RestMethod -Method Get -Uri $AgentShellUrl -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
+        if (-not $resp -or -not $resp.script) { return }
+        $normalize = { param($t) $t -replace "\`r\`n", "\`n" -replace "\`r", "\`n" }
+        $current = & $normalize (Get-Content -Path $PSCommandPath -Raw)
+        $incoming = & $normalize $resp.script
+        if ($incoming -ne $current) {
+            Set-Content -Path $PSCommandPath -Value $resp.script -Encoding utf8 -NoNewline
+            Write-AgentLog "Agent updated to a newly published version - re-running with the new logic now."
+            & $PSCommandPath @PSBoundParameters
+            exit
+        }
+    } catch {
+        Write-Warning "Self-update check failed, continuing with the currently-installed version: $($_.Exception.Message)"
+    }
+}
+Invoke-SelfUpdate
+
+function Invoke-DefaultCollector {
+${indented}
 }
 
 function Get-RemoteCollectorScript {
@@ -1121,7 +1209,7 @@ if (-not $Once) {
     # range", confirmed live) - Task Scheduler's own convention for "repeat indefinitely" is an
     # EMPTY Duration, not the largest representable one, so that's set directly on the trigger
     # object instead of passed as a constructor value.
-    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Days 1)
+    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
     $Trigger.Repetition.Duration = ""
     $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
     try {
@@ -1130,7 +1218,7 @@ if (-not $Once) {
         } else {
             Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Description "Reports this PC's inventory to the Hypermedia Operations Dashboard." | Out-Null
         }
-        Write-Host "Scheduled task '$TaskName' installed (runs once a day)." -ForegroundColor Green
+        Write-Host "Scheduled task '$TaskName' installed (runs every 6 hours)." -ForegroundColor Green
     } catch {
         Write-Warning "Could not register the scheduled task: $($_.Exception.Message)"
     }

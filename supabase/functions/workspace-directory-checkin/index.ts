@@ -13,20 +13,22 @@
 // by whatever the current collector script (see workspace-directory-collector) produces, not fixed
 // here - this function just stores whatever comes in, defensively capped/typed.
 //
-// Two other things happen here, both to keep the remote-command feature bandwidth-light (several
-// of these PCs are on metered cellular SIMs, checking in only once a day by design):
-//  - Network usage: the agent reports networkBytesTotal, a raw cumulative counter off its network
-//    adapter(s). This function diffs it against the PREVIOUS reading and adds the delta (in MB) to
-//    data_used_mb_period - a running total since whenever tracking started (or was last reset from
-//    the dashboard), not a calendar-anchored figure. Since check-ins are daily, this same delta is
-//    also stored as data_used_mb_last_24h so the dashboard can show "used in the last 24h" without
-//    recomputing it. A lower new reading than the stored one means the counter reset (reboot) -
-//    treated as zero delta rather than going negative.
+// The check-in itself runs every 6 hours (see the agent script) - frequent enough that Online/
+// Offline status and general metadata stay fresh, cheap enough (a few KB per call) to not matter on
+// a metered cellular SIM. Two things happen here beyond the plain upsert:
+//  - Network usage: the agent reports networkBytesTotal on EVERY check-in, but this function only
+//    actually diffs it against the previous reading and folds the delta (in MB) into
+//    data_used_mb_period/data_used_mb_last_24h roughly once a day (gated by data_usage_computed_at,
+//    independent of the 6-hourly check-in cadence itself) - the DU-style usage figure is meant to
+//    read like a daily figure, not jump every 6 hours. On the 3 out of 4 check-ins where usage isn't
+//    due, network_bytes_total is left untouched so the NEXT due check-in still diffs against the
+//    right baseline and captures the full ~24h of usage in one go. A lower new reading than the
+//    stored baseline means the counter reset (reboot) - treated as zero delta rather than negative.
 //  - Remote command: admin queues one PowerShell one-liner per device (pending_command, set from
 //    the dashboard) - this function hands it back in the response for the agent to run locally
 //    (no extra request), and accepts the PREVIOUS command's output back via body.commandOutput on
 //    the agent's *next* check-in (cached locally by the agent meanwhile), clearing pending_command
-//    once recorded. So a command takes up to one extra day to report back, in exchange for
+//    once recorded. So a command takes up to one extra cycle to report back, in exchange for
 //    never needing a second network round-trip.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
@@ -34,6 +36,9 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-agent-secret',
 };
+// Gates the DU-style usage computation to roughly once a day, independent of the 6-hourly check-in
+// cadence - a bit under 24h so it reliably fires on the day's 4th check-in even with some drift.
+const USAGE_INTERVAL_MS = 20 * 60 * 60 * 1000;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -58,9 +63,16 @@ Deno.serve(async (req) => {
 
     // Software list is capped defensively - a machine with an unusually bloated Add/Remove
     // Programs list (thousands of entries from some install tooling) shouldn't be able to bloat a
-    // single jsonb row without bound.
+    // single jsonb row without bound. uninstallString (the registry's own QuietUninstallString/
+    // UninstallString, captured verbatim) is what the Digital Directory's per-item Uninstall button
+    // queues as the pending command, so it's passed through rather than re-derived server-side.
     const software = Array.isArray(body.software)
-      ? body.software.slice(0, 2000).map((s: any) => ({ name: String(s?.name || '').slice(0, 300), version: String(s?.version || '').slice(0, 100) })).filter((s: any) => s.name)
+      ? body.software.slice(0, 2000).map((s: any) => ({
+          name: String(s?.name || '').slice(0, 300),
+          version: String(s?.version || '').slice(0, 100),
+          publisher: String(s?.publisher || '').slice(0, 200),
+          uninstallString: String(s?.uninstallString || '').slice(0, 500),
+        })).filter((s: any) => s.name)
       : [];
 
     // Other remote-access tools beyond AnyDesk/TeamViewer (Chrome Remote Desktop, LogMeIn, etc.) -
@@ -81,7 +93,7 @@ Deno.serve(async (req) => {
     const components = (body.components && typeof body.components === 'object') ? body.components : {};
 
     const { data: existing } = await adminClient.from('workspace_devices')
-      .select('network_bytes_total, data_used_mb_period').eq('hostname', hostname).maybeSingle();
+      .select('network_bytes_total, data_used_mb_period, data_usage_computed_at').eq('hostname', hostname).maybeSingle();
 
     const row: Record<string, unknown> = {
       hostname,
@@ -104,16 +116,17 @@ Deno.serve(async (req) => {
     };
 
     const newCounter = Number.isFinite(Number(body.networkBytesTotal)) ? Number(body.networkBytesTotal) : null;
-    if (newCounter !== null) {
+    const lastUsageAt = existing?.data_usage_computed_at ? new Date(existing.data_usage_computed_at).getTime() : 0;
+    const usageDue = (Date.now() - lastUsageAt) >= USAGE_INTERVAL_MS;
+    if (newCounter !== null && usageDue) {
       const priorCounter = existing?.network_bytes_total;
       const priorUsedMb = existing?.data_used_mb_period || 0;
       const deltaBytes = (typeof priorCounter === 'number' && newCounter >= priorCounter) ? newCounter - priorCounter : 0;
       const deltaMb = deltaBytes / (1024 * 1024);
       row.network_bytes_total = newCounter;
       row.data_used_mb_period = priorUsedMb + deltaMb;
-      // Same delta this cycle produced, kept separately - with daily check-ins this IS "used in the
-      // last 24h", without the dashboard needing to diff two history rows to show that figure.
       row.data_used_mb_last_24h = deltaMb;
+      row.data_usage_computed_at = new Date().toISOString();
     }
 
     // A previous cycle's command result, cached locally by the agent and reported back now -

@@ -1,11 +1,12 @@
-// Serves the current PowerShell "collector" script body to every installed agent, each check-in
-// run - this is what makes the agent "generic"/remotely updatable per the requirement: the DATA
-// COLLECTION logic (which fields to gather, how) lives here, editable from Settings > Integrations
-// > Digital Directory Agent > Data Collector Script, and takes effect on every PC's next 6-hourly
-// check-in with no re-install anywhere. The outer shell itself (self-elevate, register the
-// scheduled task, fetch this collector, execute it, POST the result) is served the same way, just
-// from workspace-directory-agent-shell instead - see that function for why both halves needed to
-// be centrally updatable, not just this one.
+// Serves the current outer-shell script body (self-elevate, scheduled-task registration, remote-
+// command runner, tray icon install, self-update check itself) to every installed agent, each
+// check-in run. Until this existed, that shell was the one part of the Digital Directory Agent that
+// required physically re-running the installer on every PC to change - the Data Collector Script
+// (workspace-directory-collector) already worked this way for what gets collected, but not for the
+// shell logic around it. Several of these PCs are in remote locations with no one available to
+// manually re-install, so the shell's own Invoke-SelfUpdate function fetches from here on every run
+// and overwrites+re-execs itself if different - see buildWorkspaceDirectoryAgentScript in
+// src/pages/settings.js for that logic and for how "Publish Latest Agent Version" writes here.
 //
 // Same shared-secret auth as workspace-directory-checkin (x-agent-secret), not a user session.
 // GET only, no request body - just returns { script, version }.
@@ -31,9 +32,9 @@ Deno.serve(async (req) => {
       throw new Error('Not authenticated - missing or incorrect x-agent-secret header.');
     }
 
-    const { data: collectorRow } = await adminClient.from('app_settings').select('value').eq('key', 'workspaceDirectoryCollector').single();
-    const script = collectorRow?.value?.script || '';
-    const version = collectorRow?.value?.version || 0;
+    const { data: shellRow } = await adminClient.from('app_settings').select('value').eq('key', 'workspaceDirectoryAgentShell').single();
+    const script = shellRow?.value?.script || '';
+    const version = shellRow?.value?.version || 0;
 
     return new Response(JSON.stringify({ script, version }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,

@@ -8,10 +8,12 @@ import { esc, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
 
-// The agent checks in once a day (deliberately infrequent - several of these PCs run on
-// metered cellular SIM data). 30 hours gives a bit over one cycle of slack before flagging
-// Offline, rather than a device looking "down" just because its daily check-in landed a bit late.
-const STALE_AFTER_MINUTES = 30 * 60;
+// The agent checks in every 6 hours (deliberately infrequent - several of these PCs run on
+// metered cellular SIM data; the SIM-data-usage figure specifically is only recomputed about once a
+// day regardless, independent of this cadence - see workspace-directory-checkin). 8 hours gives one
+// cycle of slack before flagging Offline, rather than a device looking "down" just because its
+// check-in landed a few minutes late.
+const STALE_AFTER_MINUTES = 8 * 60;
 
 function isOnline(d) {
   if (!d.last_seen) return false;
@@ -70,6 +72,22 @@ export function copyWorkspaceId(event, id) {
 export function fillWorkspaceCommand(command) {
   const el = document.getElementById('wd-edit-command');
   if (el) el.value = command;
+}
+
+function workspacePackageId() {
+  const id = document.getElementById('wd-edit-pkgid')?.value.trim();
+  if (!id) toast('Enter a winget Package ID first', 'error');
+  return id || null;
+}
+
+export function fillWorkspaceInstallById() {
+  const id = workspacePackageId();
+  if (id) fillWorkspaceCommand(`winget install -e --id ${id} --silent --accept-package-agreements --accept-source-agreements`);
+}
+
+export function fillWorkspaceUninstallById() {
+  const id = workspacePackageId();
+  if (id) fillWorkspaceCommand(`winget uninstall -e --id ${id} --silent`);
 }
 
 // Cross-references this PC with the screen it drives in the Broadsign/Grassfish Console, by the
@@ -158,7 +176,7 @@ export function renderWorkspaceDirectory() {
   if (assetInventory?.__error) return loadingCard(assetInventory.__error);
 
   if (!devices.length) {
-    return `<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Digital Directory Agent) on a PC and it'll appear here within a few minutes of install (after that, it checks in once a day).</div></div>`;
+    return `<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Digital Directory Agent) on a PC and it'll appear here within a few minutes of install (after that, it checks in every 6 hours).</div></div>`;
   }
 
   const simById = new Map(simCards.map((s) => [s.id, s]));
@@ -178,7 +196,7 @@ export function renderWorkspaceDirectory() {
   const dataDevices = devices.filter((d) => d.sim_card_id);
   const dataTilesHtml = dataDevices.length
     ? `<div class="card">
-        <div class="card-head"><h3>SIM Data Usage</h3><div class="desc">Devices linked to a SIM Card record (Edit &gt; Linked SIM Card). Data Used/Left/Percentage are a running total since tracking started/was last reset here; Last 24h is just the latest check-in's usage. Figures are computed from the PC's own network adapter counters, not a carrier-billed figure. Comments shown below a tile come from that device's Notes (Edit).</div></div>
+        <div class="card-head"><h3>SIM Data Usage</h3><div class="desc">Devices linked to a SIM Card record (Edit &gt; Linked SIM Card). Data Used/Left/Percentage are a running total since tracking started/was last reset here; Last 24h is recomputed about once a day even though the agent itself checks in every 6 hours. Figures are computed from the PC's own network adapter counters, not a carrier-billed figure. Comments shown below a tile come from that device's Notes (Edit).</div></div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;">
           ${dataDevices.map((d) => dataUsageTile(d, simById.get(d.sim_card_id))).join('')}
         </div>
@@ -219,7 +237,7 @@ export function renderWorkspaceDirectory() {
     ${dataTilesHtml}
     <div class="card">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES / 60}+ hours (the agent checks in once a day).</div></div>
+        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES / 60}+ hours (the agent checks in every 6 hours).</div></div>
         <input placeholder="Search hostname, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
       </div>
       <div style="max-height:520px;overflow-y:auto;overflow-x:auto;">
@@ -286,7 +304,7 @@ export async function clearWorkspacePendingCommand(deviceId) {
 export async function resetWorkspaceDataUsage(deviceId) {
   if (!confirm('Reset this device\'s tracked data usage back to zero?')) return;
   try {
-    await updateWorkspaceDevice(deviceId, { data_used_mb_period: 0, data_used_mb_last_24h: 0 });
+    await updateWorkspaceDevice(deviceId, { data_used_mb_period: 0, data_used_mb_last_24h: 0, data_usage_computed_at: null });
     await logAudit('Reset workspace device data usage', deviceId);
     invalidate('workspaceDevices');
     toast('Data usage reset');
@@ -331,6 +349,7 @@ registerModal('workspaceDetails', (data) => {
   const d = devices.find((x) => x.id === data.deviceId);
   if (!d) return `<div class="empty">Device not found.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
   const matched = matchedScreenFor(d, assetInventory);
+  const editOk = canEdit('workspaceDirectory');
 
   const volumes = d.volumes || [];
   const volumesHtml = volumes.length
@@ -360,10 +379,10 @@ registerModal('workspaceDetails', (data) => {
   const softwareHtml = software.length
     ? `<details><summary style="cursor:pointer;font-size:12.5px;">${software.length} package(s) - click to expand</summary>
         <div style="max-height:260px;overflow-y:auto;margin-top:6px;">
-          <table><thead><tr><th>Name</th><th>Version</th></tr></thead><tbody>${software.map((s) => `<tr><td class="small">${esc(s.name)}</td><td class="small">${esc(s.version || '-')}</td></tr>`).join('')}</tbody></table>
+          <table><thead><tr><th>Name</th><th>Version</th><th>Publisher</th><th></th></tr></thead><tbody>${software.map((s) => `<tr><td class="small">${esc(s.name)}</td><td class="small">${esc(s.version || '-')}</td><td class="small">${esc(s.publisher || '-')}</td><td>${editOk && s.uninstallString ? `<button type="button" class="link-btn" style="padding:0;" onclick='App.openWorkspaceEditModal(${jsonAttr(d.id)}); App.fillWorkspaceCommand(${jsonAttr(s.uninstallString)})'>Uninstall</button>` : ''}</td></tr>`).join('')}</tbody></table>
         </div>
       </details>`
-    : '<div class="empty small">Not collected - the agent is metadata-only by default. Add it back via the Data Collector Script in Settings if you need it.</div>';
+    : '<div class="empty small">Not reported yet - shows up after this device\'s next check-in.</div>';
 
   return `
     <h3>${esc(d.hostname)}</h3>
@@ -429,8 +448,14 @@ registerModal('workspaceEdit', (data) => {
           <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id AnyDeskSoftwareGmbH.AnyDesk --silent')">AnyDesk</button>
           <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget uninstall -e --id TeamViewer.TeamViewer --silent')">TeamViewer</button>
         </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center;">
+          <span class="small muted">Any winget package:</span>
+          <input id="wd-edit-pkgid" placeholder="Package ID, e.g. VideoLAN.VLC" style="flex:1;min-width:160px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceInstallById()">Install</button>
+          <button type="button" class="btn-sm" onclick="App.fillWorkspaceUninstallById()">Uninstall</button>
+        </div>
         <textarea id="wd-edit-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent">${esc(device.pending_command || '')}</textarea>
-        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. The presets above use <code>winget</code> (built into Windows 10 21H2+/11) - requires that PC to already have it. For anything not in the presets, type <code>winget uninstall -e --id &lt;PackageId&gt; --silent</code> directly, or run <code>winget list</code> as a command first (its output shows up in Details) to find the exact package ID installed on that PC. Covers installing/updating/removing software or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
+        <div class="small muted" style="margin-top:4px;">Executes locally with the agent's (SYSTEM) privileges. The presets above use <code>winget</code> (built into Windows 10 21H2+/11) - requires that PC to already have it. Don't know the exact ID? Queue <code>winget search &lt;name&gt;</code> as a command first - its results show up in Details after the next check-in - or use the per-item Uninstall button in Details &gt; Software, which queues that program's own registered uninstall command directly. Covers installing/updating/removing software or pulling a log file's contents back - output shows up in Details after the device's next 1-2 check-ins. Leave blank to clear a pending command.</div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
