@@ -8,6 +8,7 @@ import { listSimCards, simLocationDuplicateCounts, isDuplicateLocationSim } from
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { listScreenReports } from '../data/screenReports.js';
 import { listWorkspaceDevices } from '../data/workspaceDevices.js';
+import { visibleProblems } from '../lib/workspaceProblems.js';
 import { hiddenMemberIds, locationOfflineStats, locationManualStats, sourceStats, inventoryFaceTotals, mafInventoryTotals } from '../data/locationStats.js';
 import { getSetting } from '../data/settings.js';
 import { VENUE_CATEGORY_KEYS, TAB_DEFS as TS_TAB_DEFS, venueMatchesTab, isFocMarketingCampaign } from './trafficSheet.js';
@@ -184,8 +185,8 @@ function newScreenReportsList(screenReports, assetInventory) {
 // checks last flagged, same source the Digital Directory page's own Issues column reads.
 function workspaceIssuesList(workspaceDevices) {
   return workspaceDevices
-    .filter((d) => (d.problems || []).length > 0)
-    .sort((a, b) => (b.problems || []).length - (a.problems || []).length);
+    .filter((d) => visibleProblems(d).length > 0)
+    .sort((a, b) => visibleProblems(b).length - visibleProblems(a).length);
 }
 
 function complianceDueItems(permits, metroPics) {
@@ -485,7 +486,7 @@ export function renderOpsOverview() {
       <div id="ops-card-workspaceIssues" class="bento-tile bento-span-2">
         <div class="card-head"><h3>Digital Directory Issues <span class="badge b-red">${deviceIssues.length}</span></h3><div class="desc">Devices currently reporting at least one problem (low disk, antivirus, missing remote access, an unexpected on-screen popup, etc.)</div></div>
         ${opsListRows(deviceIssues.slice(0, 8), (d) => ({
-          main: d.hostname, sub: d.location || 'Unassigned', tag: `${d.problems.length} issue${d.problems.length === 1 ? '' : 's'}`, tagClass: 'b-red',
+          main: d.hostname, sub: d.location || 'Unassigned', tag: `${visibleProblems(d).length} issue${visibleProblems(d).length === 1 ? '' : 's'}`, tagClass: 'b-red',
         }))}
         ${deviceIssues.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${deviceIssues.length - 8} more</div>` : ''}
         <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('workspaceDirectory')">View all</button>

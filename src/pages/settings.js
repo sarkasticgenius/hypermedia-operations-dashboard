@@ -1367,9 +1367,17 @@ function Get-DuDataUsageViaDom {
 $Script:ExpectedForegroundProcesses = @(
     'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost',
     'TextInputHost', 'ScreenClippingHost', 'LockApp',
-    'broadsignplayer', 'broadsign', 'grassfishplayer', 'grassfish',
+    # Broadsign's/Grassfish's actual player processes are the short "bsp"/"gfPlayer", not
+    # "broadsignplayer"/"broadsign"/"grassfishplayer"/"grassfish" - none of those longer strings is a
+    # substring of the real short name, so both were being flagged as an "unexpected" popup on every
+    # single networked screen. Kept the older/longer names too in case some builds still use them.
+    'bsp', 'broadsignplayer', 'broadsign', 'gfplayer', 'grassfishplayer', 'grassfish',
     'chrome', 'msedge', 'iexplore',
-    'powershell', 'powershell_ise', 'pwsh', 'conhost', 'cmd'
+    'powershell', 'powershell_ise', 'pwsh', 'conhost', 'cmd',
+    # The remote-access tools this whole agent depends on (Get-Problems elsewhere in this script
+    # separately flags their ABSENCE as its own problem) - their own window should never itself count
+    # as an unexpected popup, they're required to be there.
+    'anydesk', 'teamviewer'
 )
 # SystemSettings (the Settings app) is deliberately NOT allowlisted, unlike a normal office PC -
 # Windows Update's own "restart to finish installing" / setup prompts often render through it, and

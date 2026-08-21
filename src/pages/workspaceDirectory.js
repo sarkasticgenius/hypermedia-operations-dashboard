@@ -8,6 +8,7 @@ import { esc, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
 import { supabase } from '../supabaseClient.js';
+import { problemType, problemTypeLabel, visibleProblems } from '../lib/workspaceProblems.js';
 
 // The agent checks in every 6 hours (deliberately infrequent - several of these PCs run on
 // metered cellular SIM data; the SIM-data-usage figure specifically is only recomputed about once a
@@ -334,7 +335,7 @@ function dataUsageCellHtml(d, sim) {
 
 function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
   const online = isOnline(d);
-  const problemCount = (d.problems || []).length;
+  const problemCount = visibleProblems(d).length;
   return `<tr>
     ${editOk ? `<td style="width:24px;"><input type="checkbox" ${(selectedIds || new Set()).has(d.id) ? 'checked' : ''} onchange="App.toggleWorkspaceSelection('${d.id}', this.checked)"></td>` : ''}
     <td><b>${esc(d.hostname)}</b></td>
@@ -418,7 +419,7 @@ export function renderWorkspaceDirectory() {
   const simById = new Map(simCards.map((s) => [s.id, s]));
   const online = devices.filter(isOnline).length;
   const offline = devices.length - online;
-  const withProblems = devices.filter((d) => (d.problems || []).length).length;
+  const withProblems = devices.filter((d) => visibleProblems(d).length).length;
 
   const byLocation = new Map();
   devices.forEach((d) => {
@@ -654,6 +655,37 @@ export async function resetWorkspaceDataUsage(deviceId) {
   } catch (e) { toast(e.message || 'Failed to reset', 'error'); }
 }
 
+// Mutes a problem TYPE on this one device only (see visibleProblems/problemType in
+// lib/workspaceProblems.js) - the agent's own next check-in still reports the same underlying
+// problem text, this just stops it from counting toward Issues/showing in Problems here, until
+// someone un-ignores it.
+export async function ignoreWorkspaceProblemType(deviceId, type) {
+  try {
+    const devices = STATE.pageData.workspaceDevices?.data || [];
+    const device = devices.find((d) => d.id === deviceId);
+    const current = new Set(device?.ignored_problem_types || []);
+    current.add(type);
+    await updateWorkspaceDevice(deviceId, { ignored_problem_types: [...current] });
+    await logAudit('Ignore Digital Directory problem type', `${deviceId}: ${type}`);
+    invalidate('workspaceDevices');
+    toast('Ignored - won\'t be highlighted as an issue on this screen again');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to ignore', 'error'); }
+}
+
+export async function unignoreWorkspaceProblemType(deviceId, type) {
+  try {
+    const devices = STATE.pageData.workspaceDevices?.data || [];
+    const device = devices.find((d) => d.id === deviceId);
+    const current = (device?.ignored_problem_types || []).filter((t) => t !== type);
+    await updateWorkspaceDevice(deviceId, { ignored_problem_types: current });
+    await logAudit('Un-ignore Digital Directory problem type', `${deviceId}: ${type}`);
+    invalidate('workspaceDevices');
+    toast('Un-ignored');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to un-ignore', 'error'); }
+}
+
 export async function removeWorkspaceDevice(id) {
   if (!confirm('Remove this device from the directory? If its agent is still running, it\'ll show up in a "Removed but still reporting" alert here instead of silently reappearing in the list.')) return;
   try {
@@ -802,10 +834,30 @@ registerModal('workspaceDetails', (data) => {
     ? antivirus.map((a) => `<span class="badge ${a.enabled ? 'b-blue' : 'b-red'}" style="margin:0 4px 4px 0;">${esc(a.name)} - ${a.enabled ? 'Enabled' : 'Disabled'}</span>`).join('')
     : '<div class="empty">No antivirus data reported.</div>';
 
-  const problems = d.problems || [];
-  const problemsHtml = problems.length
-    ? `<ul style="margin:0;padding-left:18px;">${problems.map((p) => `<li class="small" style="color:var(--red);">${esc(p)}</li>`).join('')}</ul>`
+  // Ignoring a problem mutes its TYPE (see visibleProblems/problemType) rather than its exact text,
+  // since most problem strings embed details that change over time (a disk-space message's exact GB
+  // free, a popup message's exact window title) - matching literal text would stop working the
+  // moment those details shifted even slightly.
+  const shownProblems = visibleProblems(d);
+  const ignoredTypes = d.ignored_problem_types || [];
+  const problemsHtml = shownProblems.length
+    ? `<ul style="margin:0;padding-left:18px;">${shownProblems.map((p) => `<li class="small" style="color:var(--red);display:flex;justify-content:space-between;gap:8px;align-items:center;">
+        <span>${esc(p)}</span>
+        ${editOk ? `<button type="button" class="link-btn" style="white-space:nowrap;" onclick="App.ignoreWorkspaceProblemType('${d.id}', ${jsonAttr(problemType(p))})">Ignore</button>` : ''}
+      </li>`).join('')}</ul>`
     : '<div class="small" style="color:var(--green);">No problems detected.</div>';
+  const ignoredProblemsHtml = ignoredTypes.length
+    ? `<div class="small muted" style="margin-top:6px;">
+        <details><summary style="cursor:pointer;">${ignoredTypes.length} problem type${ignoredTypes.length === 1 ? '' : 's'} ignored on this screen</summary>
+          <div style="margin-top:6px;">
+            ${ignoredTypes.map((t) => `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;padding:2px 0;">
+              <span>${esc(problemTypeLabel(t))}</span>
+              ${editOk ? `<button type="button" class="link-btn" style="white-space:nowrap;" onclick="App.unignoreWorkspaceProblemType('${d.id}', ${jsonAttr(t)})">Un-ignore</button>` : ''}
+            </div>`).join('')}
+          </div>
+        </details>
+      </div>`
+    : '';
 
   const software = [...(d.software || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const softwareHtml = software.length
@@ -832,7 +884,7 @@ registerModal('workspaceDetails', (data) => {
     </div>
 
     <div class="card-head"><h3 style="font-size:13px;">Problems</h3></div>
-    <div style="margin-bottom:12px;">${problemsHtml}</div>
+    <div style="margin-bottom:12px;">${problemsHtml}${ignoredProblemsHtml}</div>
 
     <div class="card-head"><h3 style="font-size:13px;">Antivirus</h3></div>
     <div style="margin-bottom:12px;">${antivirusHtml}</div>
