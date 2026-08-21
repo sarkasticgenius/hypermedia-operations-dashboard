@@ -311,8 +311,12 @@ function volumeCellHtml(d) {
   });
   const freePct = worst.sizeGb > 0 ? (worst.freeGb / worst.sizeGb) * 100 : 0;
   const color = freePct <= 10 ? '#c0392b' : freePct <= 25 ? '#e07a2c' : '#1f9d55';
+  // Bar fills to the CONSUMED percentage (same convention as the Data Usage bar) - filling it to the
+  // free percentage instead reads backwards, since a mostly-full green bar looked like "consuming a
+  // lot of space" when it actually meant the opposite (mostly free). Danger color thresholds still
+  // key off free space, unchanged.
   return `<div style="display:flex;align-items:center;gap:6px;" title="${esc(worst.drive)} - ${worst.freeGb} of ${worst.sizeGb} GB free">
-    <span class="small muted">${esc(worst.drive)}</span>${stripedBarHtml(freePct, color)}
+    <span class="small muted">${esc(worst.drive)}</span>${stripedBarHtml(100 - freePct, color)}
   </div>`;
 }
 
@@ -813,10 +817,12 @@ registerModal('workspaceDetails', (data) => {
 
   const volumes = d.volumes || [];
   const volumesHtml = volumes.length
-    ? `<table><thead><tr><th>Drive</th><th>Label</th><th>Free</th><th>Free %</th></tr></thead><tbody>${volumes.map((v) => {
+    ? `<table><thead><tr><th>Drive</th><th>Label</th><th>Free</th><th>Used %</th></tr></thead><tbody>${volumes.map((v) => {
         const freePct = v.sizeGb > 0 ? (v.freeGb / v.sizeGb) * 100 : 0;
         const color = freePct <= 10 ? '#c0392b' : freePct <= 25 ? '#e07a2c' : '#1f9d55';
-        return `<tr><td>${esc(v.drive)}</td><td class="small">${esc(v.label || '-')}</td><td class="small" style="white-space:nowrap;">${v.freeGb} of ${v.sizeGb} GB</td><td>${stripedBarHtml(freePct, color)}</td></tr>`;
+        // Bar fills to CONSUMED percentage (same convention as Data Usage) - see volumeCellHtml for
+        // why. Danger color thresholds still key off free space, unchanged.
+        return `<tr><td>${esc(v.drive)}</td><td class="small">${esc(v.label || '-')}</td><td class="small" style="white-space:nowrap;">${v.freeGb} of ${v.sizeGb} GB</td><td>${stripedBarHtml(100 - freePct, color)}</td></tr>`;
       }).join('')}</tbody></table>`
     : '<div class="empty">No volume data reported.</div>';
 
@@ -843,7 +849,7 @@ registerModal('workspaceDetails', (data) => {
   const problemsHtml = shownProblems.length
     ? `<ul style="margin:0;padding-left:18px;">${shownProblems.map((p) => `<li class="small" style="color:var(--red);display:flex;justify-content:space-between;gap:8px;align-items:center;">
         <span>${esc(p)}</span>
-        ${editOk ? `<button type="button" class="link-btn" style="white-space:nowrap;" onclick="App.ignoreWorkspaceProblemType('${d.id}', ${jsonAttr(problemType(p))})">Ignore</button>` : ''}
+        ${editOk ? `<button type="button" class="link-btn" style="white-space:nowrap;" onclick='App.ignoreWorkspaceProblemType(${jsonAttr(d.id)}, ${jsonAttr(problemType(p))})'>Ignore</button>` : ''}
       </li>`).join('')}</ul>`
     : '<div class="small" style="color:var(--green);">No problems detected.</div>';
   const ignoredProblemsHtml = ignoredTypes.length
@@ -852,7 +858,7 @@ registerModal('workspaceDetails', (data) => {
           <div style="margin-top:6px;">
             ${ignoredTypes.map((t) => `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;padding:2px 0;">
               <span>${esc(problemTypeLabel(t))}</span>
-              ${editOk ? `<button type="button" class="link-btn" style="white-space:nowrap;" onclick="App.unignoreWorkspaceProblemType('${d.id}', ${jsonAttr(t)})">Un-ignore</button>` : ''}
+              ${editOk ? `<button type="button" class="link-btn" style="white-space:nowrap;" onclick='App.unignoreWorkspaceProblemType(${jsonAttr(d.id)}, ${jsonAttr(t)})'>Un-ignore</button>` : ''}
             </div>`).join('')}
           </div>
         </details>
