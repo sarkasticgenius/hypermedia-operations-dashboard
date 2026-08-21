@@ -73,6 +73,23 @@ function remoteAccessCell(d) {
   return chips || '<span class="small muted">-</span>';
 }
 
+// One compact button for the table's Remote Access column, same idea (and same picker modal, from
+// networkPanels.js's registerModal('remoteAccessPicker')) as the Offline modal's own Remote Access
+// button - listing chips inline here would keep growing the column with every extra tool a PC has
+// (see Get-AllAnyDeskIds). The Details modal keeps the fuller inline chip display (remoteAccessCell
+// above) since it already has the room for it.
+function remoteAccessButtonHtml(d) {
+  const tools = [];
+  if (d.anydesk_id) tools.push({ tool: 'AnyDesk', id: d.anydesk_id, protocol: 'anydesk' });
+  if (d.teamviewer_id) tools.push({ tool: 'TeamViewer', id: d.teamviewer_id, protocol: 'teamviewer10' });
+  (d.other_remote_ids || []).forEach((r) => {
+    const protocol = protocolForTool(r.tool);
+    if (protocol) tools.push({ tool: r.tool, id: r.id, protocol });
+  });
+  if (!tools.length) return '<span class="small muted">-</span>';
+  return `<button class="btn-sm" onclick='App.openRemoteAccessPicker(${jsonAttr({ tools, label: d.hostname })})'>Remote Access</button>`;
+}
+
 export function copyWorkspaceId(event, id) {
   event.preventDefault();
   navigator.clipboard?.writeText(id).then(() => toast('Copied')).catch(() => {});
@@ -251,7 +268,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds) {
     <td><b>${esc(d.hostname)}</b></td>
     <td class="small">${esc(d.location || '-')}</td>
     <td class="small" style="white-space:nowrap;">${esc(d.ip_address || '-')}</td>
-    <td>${remoteAccessCell(d)}</td>
+    <td>${remoteAccessButtonHtml(d)}</td>
     <td>${volumeCellHtml(d)}</td>
     <td>${statusDotHtml(online)}</td>
     <td>${matchedScreenHtml(matchedScreenFor(d, assetInventory))}</td>
@@ -397,7 +414,7 @@ export function renderWorkspaceDirectory() {
             ${sortTh('workspaceDevices', 'hostname', 'Hostname', 14)}
             ${sortTh('workspaceDevices', 'location', 'Location', 12)}
             ${sortTh('workspaceDevices', 'ip', 'IP', 15)}
-            <th style="width:26ch;">Remote Access</th>
+            <th style="width:15ch;">Remote Access</th>
             <th style="width:14ch;">Volume</th>
             <th style="width:8ch;">Status</th>
             <th style="width:20ch;">Matched Screen</th>
@@ -553,7 +570,7 @@ registerModal('workspaceLocation', (data) => {
     <h3>${esc(data.location)} - ${list.length} device(s)</h3>
     <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:26ch;">Remote Access</th><th style="width:14ch;">Volume</th><th style="width:8ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
+        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:15ch;">Remote Access</th><th style="width:14ch;">Volume</th><th style="width:8ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>

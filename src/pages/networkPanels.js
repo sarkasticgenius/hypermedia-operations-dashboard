@@ -768,10 +768,12 @@ registerModal('offlineAssetsModal', (data) => {
 
   return `
     <h3>Offline - ${esc(displayName)}</h3>
-    <table>
-      <thead><tr><th>Location</th><th>Name</th><th>Detail</th><th>Remote Access</th><th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
+    <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
+      <table style="${FIXED_TABLE_STYLE}">
+        <thead><tr><th style="width:16ch;">Location</th><th style="width:18ch;">Name</th><th style="width:26ch;">Detail</th><th style="width:12ch;">Remote Access</th><th style="width:9ch;"></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
     <div class="modal-actions">
       ${(ticketAddOk && bulkPrefill && items.length > 1) ? `<button class="btn-sm" onclick='App.openTicketFromOffline(${jsonAttr(bulkPrefill)})'>Create Ticket for All</button>` : ''}
       <button class="btn-sm" onclick="App.closeModal()">Close</button>
@@ -843,10 +845,12 @@ registerModal('grassfishVenueModal', (data) => {
   return `
     <h3>Grassfish - ${esc(venue)}</h3>
     <div class="small muted" style="margin-bottom:8px;">${screens.length} screen${screens.length === 1 ? '' : 's'} at this venue, pulled from Asset Inventory (Player Type = Grassfish).</div>
-    <table>
-      <thead><tr><th>Name</th><th>Format</th>${admin ? '<th>Player Box ID</th>' : ''}<th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
+    <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
+      <table style="${FIXED_TABLE_STYLE}">
+        <thead><tr><th style="width:22ch;">Name</th><th style="width:16ch;">Format</th>${admin ? '<th style="width:18ch;">Player Box ID</th>' : ''}<th style="width:9ch;"></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
   `;
 });
