@@ -309,10 +309,13 @@ function volumeCellHtml(d) {
 // warning without needing to scroll to the tile grid - positioned before Volume since data running
 // out is the more time-sensitive of the two (a full disk is rarely urgent; a cut-off SIM is).
 function dataUsageCellHtml(d, sim) {
-  const haveDu = !!d.du_scraped_at;
-  const allocGb = haveDu && d.du_data_total_gb != null ? Number(d.du_data_total_gb) : (Number(sim?.data_allocation_gb) || 0);
-  if (!allocGb) return '<span class="small muted">-</span>';
-  const usedGb = haveDu && d.du_data_used_gb != null ? Number(d.du_data_used_gb) : (d.data_used_mb_period || 0) / 1024;
+  const { haveDu, allocGb, usedGb, phone } = duUsageInfo(d, sim);
+  if (!allocGb) {
+    // No total yet (the scrape hasn't parsed a usage figure, and no SIM Card's linked) - shows the
+    // phone number instead of a bare dash whenever the scrape at least got that far, rather than
+    // waiting on the full total/used pair before showing anything at all.
+    return phone ? `<span class="small muted">${esc(phone)}</span>` : '<span class="small muted">-</span>';
+  }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
   const color = pct >= 90 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
   return `<div title="${usedGb.toFixed(2)} of ${allocGb} GB used${haveDu ? ' (DU)' : ''}">${stripedBarHtml(pct, color)}</div>`;
@@ -344,18 +347,26 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
   </tr>`;
 }
 
-function dataUsageTile(d, sim) {
-  // The agent's own once-a-day scrape of mydata.du.ae (Get-DuDataUsage) is the carrier's own
-  // reported figures - preferred over the network-adapter-counter estimate whenever it's present,
-  // since that estimate is only ever an approximation of real billed usage.
+// Shared by the Data Usage column, the SIM Data Usage tile, and the Details modal - DU (the
+// carrier's own figures, scraped from mydata.du.ae) is preferred whenever present, since the
+// network-adapter-counter estimate is only ever an approximation of real billed usage. The phone
+// number specifically can show up well before the GB figures do (the scrape's regex for the usage
+// bar can fail to match while the phone number - shown in the page's static header - still parses
+// fine), so it's returned on its own rather than only alongside a completed total/used pair.
+function duUsageInfo(d, sim) {
   const haveDu = !!d.du_scraped_at;
   const allocGb = haveDu && d.du_data_total_gb != null ? Number(d.du_data_total_gb) : (Number(sim?.data_allocation_gb) || 0);
   const usedGb = haveDu && d.du_data_used_gb != null ? Number(d.du_data_used_gb) : (d.data_used_mb_period || 0) / 1024;
   const leftGb = haveDu && d.du_data_left_gb != null ? Number(d.du_data_left_gb) : Math.max(0, allocGb - usedGb);
+  const phone = d.du_phone_number || sim?.sim_number || sim?.iccid || '';
+  return { haveDu, allocGb, usedGb, leftGb, phone };
+}
+
+function dataUsageTile(d, sim) {
+  const { haveDu, allocGb, usedGb, leftGb, phone } = duUsageInfo(d, sim);
   const last24hGb = (d.data_used_mb_last_24h || 0) / 1024;
   const pct = allocGb ? Math.min(100, (usedGb / allocGb) * 100) : 0;
   const color = pct >= 90 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
-  const phone = d.du_phone_number || sim?.sim_number || sim?.iccid || '';
   return `<div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
       <div>
@@ -721,10 +732,25 @@ registerModal('workspaceLocation', (data) => {
 registerModal('workspaceDetails', (data) => {
   const devices = STATE.pageData.workspaceDevices?.data || [];
   const assetInventory = STATE.pageData.assetInventory?.data || [];
+  const simCards = STATE.pageData.simCardsForDirectory?.data || [];
   const d = devices.find((x) => x.id === data.deviceId);
   if (!d) return `<div class="empty">Device not found.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
   const matched = matchedScreenFor(d, assetInventory);
   const editOk = canEdit('workspaceDirectory');
+  const sim = simCards.find((s) => s.id === d.sim_card_id);
+  const { haveDu, allocGb, usedGb, leftGb, phone } = duUsageInfo(d, sim);
+  const usagePct = allocGb ? Math.min(100, (usedGb / allocGb) * 100) : 0;
+  const usageColor = usagePct >= 90 ? '#c0392b' : usagePct >= 70 ? '#e07a2c' : '#1f9d55';
+  const dataUsageHtml = !phone && !allocGb
+    ? '<div class="empty">No data usage reported yet.</div>'
+    : `<div class="small" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;">
+        ${phone ? `<span class="muted">Phone Number</span><span style="text-align:right;">${esc(phone)}</span>` : ''}
+        <span class="muted">Total Data</span><span style="text-align:right;">${allocGb ? `${allocGb} GB` : '&mdash;'}</span>
+        <span class="muted">Data Used</span><span style="text-align:right;">${allocGb ? `${usedGb.toFixed(2)} GB` : '&mdash;'}</span>
+        <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? `${leftGb.toFixed(2)} GB` : '&mdash;'}</span>
+        <span class="muted">${haveDu ? 'DU Last Update' : 'Last Update'}</span><span style="text-align:right;">${haveDu ? esc(fmtRelativeTime(d.du_scraped_at)) : (d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : '&mdash;')}</span>
+      </div>
+      ${allocGb ? `<div style="margin-top:8px;">${stripedBarHtml(usagePct, usageColor)}</div>` : '<div class="small muted" style="margin-top:6px;">No plan size set yet - link a SIM Card, or wait for the usage figure to finish scraping.</div>'}`;
 
   const volumes = d.volumes || [];
   const volumesHtml = volumes.length
@@ -769,6 +795,9 @@ registerModal('workspaceDetails', (data) => {
 
     <div class="card-head" style="margin-top:4px;"><h3 style="font-size:13px;">Remote Access</h3></div>
     <div style="margin-bottom:12px;">${remoteAccessCell(d)}</div>
+
+    <div class="card-head"><h3 style="font-size:13px;">Data Usage</h3></div>
+    <div style="margin-bottom:12px;">${dataUsageHtml}</div>
 
     <div class="card-head"><h3 style="font-size:13px;">Matched Broadsign/Grassfish Screen</h3></div>
     <div class="small" style="margin-bottom:12px;">

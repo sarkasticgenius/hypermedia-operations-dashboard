@@ -12,6 +12,15 @@ import { renderTabs } from '../lib/tabs.js';
 
 const TABS = [{ key: 'users', label: 'Users' }, { key: 'audit', label: 'Audit Log' }];
 
+// PERMISSION_AREAS entries are raw camelCase keys ('workspaceDirectory') shared with page routing
+// and the DB's area check constraint - this table is the one place they're shown to a user, so it
+// needs a friendly name where the raw key wouldn't otherwise match what's shown elsewhere in the
+// app (the Digital Directory page/nav label, for instance).
+function areaLabel(area) {
+  if (area === 'workspaceDirectory') return 'Digital Directory';
+  return area;
+}
+
 export function renderAdmin() {
   const tab = STATE.adminTab || 'users';
   return `${renderTabs(TABS, tab, 'App.setAdminTab')}${tab === 'audit' ? renderAuditTab() : renderUsersTab()}`;
@@ -176,7 +185,7 @@ registerModal('user', (data) => {
     const p = permissions[area] || { ...PERM_NONE };
     return `
       <tr>
-        <td>${esc(area)}</td>
+        <td>${esc(areaLabel(area))}</td>
         ${['view', 'add', 'edit', 'delete', 'export'].map((f) => `
           <td style="text-align:center;">
             <input type="checkbox" ${p[f] ? 'checked' : ''} onchange="App.togglePermCheckbox('${area}','${f}')">
