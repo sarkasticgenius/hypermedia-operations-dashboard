@@ -296,9 +296,13 @@ function stripedBarHtml(pct, color) {
 // each place inventing its own Online/Offline treatment.
 function statusDotHtml(online, labelled) {
   const color = online ? '#1f9d55' : '#c0392b';
-  const dot = `<span title="${online ? 'Online' : 'Offline'}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};box-shadow:0 0 0 3px ${online ? 'rgba(31,157,85,.2)' : 'rgba(192,57,43,.2)'};flex:none;"></span>`;
+  // Bigger + a labeled text alongside when this is going in the busy All Devices table (labelled)
+  // than the SIM Data Usage tile above (bare) - a plain 10px dot easily gets lost among everything
+  // else in a dense table row, even though it's the exact same dot either way.
+  const size = labelled ? 13 : 10;
+  const dot = `<span title="${online ? 'Online' : 'Offline'}" style="display:inline-block;width:${size}px;height:${size}px;border-radius:50%;background:${color};box-shadow:0 0 0 3px ${online ? 'rgba(31,157,85,.2)' : 'rgba(192,57,43,.2)'};flex:none;"></span>`;
   if (!labelled) return dot;
-  return `<span style="display:inline-flex;align-items:center;gap:6px;">${dot}<span class="small" style="color:${color};font-weight:600;">${online ? 'Online' : 'Offline'}</span></span>`;
+  return `<span style="display:inline-flex;align-items:center;gap:7px;">${dot}<span class="small" style="color:${color};font-weight:700;">${online ? 'Online' : 'Offline'}</span></span>`;
 }
 
 // Same striped-bar treatment as the Details modal's Volumes table (see registerModal
