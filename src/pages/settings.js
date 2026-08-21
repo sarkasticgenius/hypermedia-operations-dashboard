@@ -1208,11 +1208,14 @@ function Get-DuDataUsage {
 # signature); this is a much more ordinary, common PowerShell pattern that doesn't do either.
 $Script:ExpectedForegroundProcesses = @(
     'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost',
-    'TextInputHost', 'ScreenClippingHost', 'SystemSettings', 'LockApp',
+    'TextInputHost', 'ScreenClippingHost', 'LockApp',
     'broadsignplayer', 'broadsign', 'grassfishplayer', 'grassfish',
     'chrome', 'msedge', 'iexplore',
     'powershell', 'powershell_ise', 'pwsh', 'conhost', 'cmd'
 )
+# SystemSettings (the Settings app) is deliberately NOT allowlisted, unlike a normal office PC -
+# Windows Update's own "restart to finish installing" / setup prompts often render through it, and
+# an unattended signage PC has no legitimate reason for that app to ever be open on screen anyway.
 
 function Get-UnexpectedWindows {
     Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Trim() } | ForEach-Object {
