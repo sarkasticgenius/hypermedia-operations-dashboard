@@ -21,6 +21,11 @@ export async function saveTicket(row, photoFile) {
   if (photoFile) {
     const uploaded = await uploadAttachment('tickets', photoFile);
     payload.photo_path = uploaded.path;
+  } else if (row.photoPath !== undefined) {
+    // Carries over an existing attachment (a Screen Report's media, or the ticket's own current
+    // photo_path on a plain edit) as-is, or clears it if the admin removed it - only when no NEW
+    // file is being uploaded in its place.
+    payload.photo_path = row.photoPath || null;
   }
   if (row.id) {
     const { data, error } = await supabase.from('tickets').update(payload).eq('id', row.id).select().single();

@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, toast, setState, openModal, closeModal } from '../state.js';
 import { registerModal, loadingCard } from '../modals.js';
-import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice } from '../data/workspaceDevices.js';
+import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice, listGhostWorkspaceDevices, restoreWorkspaceDevice, permanentlyDeleteWorkspaceDevice } from '../data/workspaceDevices.js';
 import { listSimCards } from '../data/simCards.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { canEdit, canDelete } from '../auth.js';
@@ -329,7 +329,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
     <td>${remoteAccessButtonHtml(d)}</td>
     <td>${dataUsageCellHtml(d, sim)}</td>
     <td>${volumeCellHtml(d)}</td>
-    <td>${statusDotHtml(online)}</td>
+    <td style="white-space:nowrap;">${statusDotHtml(online, true)}</td>
     <td>${matchedScreenHtml(matchedScreenFor(d, assetInventory))}</td>
     <td class="small">${esc(d.os_name || '-')}${d.os_version ? ` <span class="muted">${esc(d.os_version)}</span>` : ''}</td>
     <td class="small">${esc(d.logged_in_user || '-')}</td>
@@ -382,13 +382,15 @@ export function renderWorkspaceDirectory() {
   // Same cache key other pages (Settings, Gantt) already use for the full Asset Inventory table -
   // reuses whatever's already fetched instead of pulling a second copy of a large table.
   const assetInventory = loadData('assetInventory', listAssetInventory);
+  const ghostDevices = loadData('ghostWorkspaceDevices', listGhostWorkspaceDevices);
   if (devices === null || simCards === null || assetInventory === null) return loadingCard();
   if (devices?.__error) return loadingCard(devices.__error);
   if (simCards?.__error) return loadingCard(simCards.__error);
   if (assetInventory?.__error) return loadingCard(assetInventory.__error);
+  const ghostHtml = ghostBannerHtml(Array.isArray(ghostDevices) ? ghostDevices : []);
 
   if (!devices.length) {
-    return `<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Digital Directory Agent) on a PC and it'll appear here within a few minutes of install (after that, it checks in every 6 hours).</div></div>`;
+    return `${ghostHtml}<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Digital Directory Agent) on a PC and it'll appear here within a few minutes of install (after that, it checks in every 6 hours).</div></div>`;
   }
 
   const simById = new Map(simCards.map((s) => [s.id, s]));
@@ -439,6 +441,7 @@ export function renderWorkspaceDirectory() {
     || `<tr><td colspan="${colCount}"><div class="empty">No devices match "${esc(STATE.workspaceDirectorySearch || '')}".</div></td></tr>`;
 
   return `
+    ${ghostHtml}
     <div class="kpi-row" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Total Devices</div><div class="value">${devices.length}</div></div>
       <div class="kpi"><div class="label">Online</div><div class="value" style="color:#1f9d55;">${online}</div></div>
@@ -476,7 +479,7 @@ export function renderWorkspaceDirectory() {
             <th style="width:15ch;">Remote Access</th>
             <th style="width:14ch;">Data Usage</th>
             <th style="width:14ch;">Volume</th>
-            <th style="width:8ch;">Status</th>
+            <th style="width:13ch;">Status</th>
             <th style="width:20ch;">Matched Screen</th>
             ${sortTh('workspaceDevices', 'os', 'OS', 16)}
             ${sortTh('workspaceDevices', 'user', 'Logged-in User', 19)}
@@ -613,14 +616,126 @@ export async function resetWorkspaceDataUsage(deviceId) {
   } catch (e) { toast(e.message || 'Failed to reset', 'error'); }
 }
 
+export function viewWorkspacePopupScreenshot(deviceId) {
+  openModal('workspacePopupScreenshot', { deviceId });
+  loadWorkspacePopupScreenshot(deviceId);
+}
+
+registerModal('workspacePopupScreenshot', (data) => {
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const d = devices.find((x) => x.id === data.deviceId);
+  return `
+    <h3>Screen Popup - ${esc(d?.hostname || '')}</h3>
+    <div class="small muted" style="margin-bottom:8px;">${d?.popup_detected_at ? esc(fmtRelativeTime(d.popup_detected_at)) : ''} - ${(d?.popup_titles || []).map(esc).join('; ')}</div>
+    <div id="wd-popup-shot" class="small muted">Loading...</div>
+    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
+  `;
+});
+
+// Signed URL (attachments bucket is private) fetched fresh on open rather than stored - same
+// pattern as loadScreenReportMedia in screenReports.js.
+export async function loadWorkspacePopupScreenshot(deviceId) {
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const d = devices.find((x) => x.id === deviceId);
+  const el = document.getElementById('wd-popup-shot');
+  if (!el || !d?.popup_screenshot_path) { if (el) el.textContent = 'No screenshot available.'; return; }
+  try {
+    const { data, error } = await supabase.storage.from('attachments').createSignedUrl(d.popup_screenshot_path, 3600);
+    if (error) throw error;
+    el.outerHTML = `<img id="wd-popup-shot" src="${data.signedUrl}" style="width:100%;border-radius:8px;">`;
+  } catch (e) {
+    el.textContent = 'Failed to load screenshot';
+  }
+}
+
+// Clears the recorded popup evidence once someone's reviewed it (screen is presumably back to
+// normal by then) - doesn't touch `problems`, which reflects only the MOST RECENT check-in.
+export async function clearWorkspacePopupDetection(id) {
+  try {
+    await updateWorkspaceDevice(id, { popup_titles: [], popup_screenshot_path: null, popup_detected_at: null });
+    await logAudit('Clear screen popup detection', id);
+    invalidate('workspaceDevices');
+    toast('Cleared');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to clear', 'error'); }
+}
+
 export async function removeWorkspaceDevice(id) {
-  if (!confirm('Remove this device from the directory? It will reappear on its next check-in if the agent is still running.')) return;
+  if (!confirm('Remove this device from the directory? If its agent is still running, it\'ll show up in a "Removed but still reporting" alert here instead of silently reappearing in the list.')) return;
   try {
     await deleteWorkspaceDevice(id);
     await logAudit('Delete workspace device', id);
     invalidate('workspaceDevices');
+    invalidate('ghostWorkspaceDevices');
     closeModal();
     toast('Device removed');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to delete device', 'error'); }
+}
+
+// -------------------- removed-but-still-reporting ("ghost") devices --------------------
+// hostname is unique, so removing a device is otherwise only cosmetic if its agent is still
+// installed - the PC just re-creates the same row on its next check-in with no way to tell that
+// apart from a genuinely new device. This banner is what actually surfaces that instead of letting
+// it silently slip back into the directory.
+function ghostBannerHtml(ghostDevices) {
+  if (!ghostDevices.length) return '';
+  const deleteOk = canDelete('workspaceDirectory');
+  const rows = ghostDevices.map((d) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:6px 0;border-top:1px solid rgba(0,0,0,.08);">
+      <span><b>${esc(d.hostname)}</b> <span class="small muted">checked in ${esc(fmtRelativeTime(d.last_seen))} - removed ${esc(fmtRelativeTime(d.removed_at))}</span></span>
+      ${deleteOk ? `<div style="display:flex;gap:6px;">
+        <button class="btn-sm" onclick="App.queueRemoteWorkspaceUninstall('${d.id}')">Uninstall Agent</button>
+        <button class="btn-sm" onclick="App.restoreGhostWorkspaceDevice('${d.id}')">Restore to Directory</button>
+        <button class="btn-sm" style="color:#c0392b;" onclick="App.permanentlyDeleteGhostWorkspaceDevice('${d.id}')">Delete Permanently</button>
+      </div>` : ''}
+    </div>
+  `).join('');
+  return `
+    <div class="banner" style="border-color:#c0392b;background:rgba(192,57,43,.06);color:var(--text);margin-bottom:14px;">
+      <div style="font-weight:600;color:#c0392b;">${ghostDevices.length} device${ghostDevices.length === 1 ? '' : 's'} removed from the directory ${ghostDevices.length === 1 ? 'is' : 'are'} still checking in</div>
+      <div class="small muted" style="margin-top:2px;">Its agent (and scheduled tasks) are still running on the physical PC. Uninstall the agent remotely to stop it for good, restore it if it was removed by mistake, or delete it permanently if you don't need it tracked here at all.</div>
+      ${rows}
+    </div>
+  `;
+}
+
+// Queues a special ::UNINSTALL marker (see Invoke-PendingCommand in the agent script) instead of
+// the normal password-gated -Uninstall flow - that password exists to stop someone with only local/
+// physical access to the PC from uninstalling it, which doesn't apply here: queuing this already
+// required being signed into the dashboard with delete permission on this exact device, so that
+// authentication IS the authorization. Runs on the device's next check-in (light or full, either
+// picks up a pending_command) and reports back immediately once done, rather than waiting a second
+// cycle like a normal Run Command - there's no "next cycle" to report on once its tasks are gone.
+export async function queueRemoteWorkspaceUninstall(id) {
+  if (!confirm('Remotely uninstall the Digital Directory Agent from this PC? Its scheduled tasks and local state will be removed on its next check-in (within ~20 minutes). This cannot be undone from here - the agent would need to be reinstalled locally on that PC to bring it back.')) return;
+  try {
+    await updateWorkspaceDevice(id, { pending_command: '::UNINSTALL' });
+    await logAudit('Queue remote agent uninstall', id);
+    invalidate('ghostWorkspaceDevices');
+    toast('Uninstall queued - runs on this PC\'s next check-in');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to queue uninstall', 'error'); }
+}
+
+export async function restoreGhostWorkspaceDevice(id) {
+  try {
+    await restoreWorkspaceDevice(id);
+    await logAudit('Restore workspace device', id);
+    invalidate('workspaceDevices');
+    invalidate('ghostWorkspaceDevices');
+    toast('Restored to the directory');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to restore device', 'error'); }
+}
+
+export async function permanentlyDeleteGhostWorkspaceDevice(id) {
+  if (!confirm('Permanently delete this device? Unlike Remove, this cannot be undone - if the agent is still installed, this hostname would simply reappear as a new device on its next check-in.')) return;
+  try {
+    await permanentlyDeleteWorkspaceDevice(id);
+    await logAudit('Permanently delete workspace device', id);
+    invalidate('ghostWorkspaceDevices');
+    toast('Deleted permanently');
     setState({});
   } catch (e) { toast(e.message || 'Failed to delete device', 'error'); }
 }
@@ -639,7 +754,7 @@ registerModal('workspaceLocation', (data) => {
     <h3>${esc(data.location)} - ${list.length} device(s)</h3>
     <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:15ch;">Remote Access</th><th style="width:14ch;">Data Usage</th><th style="width:14ch;">Volume</th><th style="width:8ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
+        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:15ch;">Remote Access</th><th style="width:14ch;">Data Usage</th><th style="width:14ch;">Volume</th><th style="width:13ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -706,6 +821,16 @@ registerModal('workspaceDetails', (data) => {
 
     <div class="card-head"><h3 style="font-size:13px;">Problems</h3></div>
     <div style="margin-bottom:12px;">${problemsHtml}</div>
+
+    ${(d.popup_titles || []).length ? `
+      <div class="card-head"><h3 style="font-size:13px;">Screen Popup Detected</h3></div>
+      <div style="margin-bottom:12px;">
+        <div class="small" style="color:var(--red);margin-bottom:4px;">${d.popup_titles.map(esc).join('; ')}</div>
+        <div class="small muted" style="margin-bottom:6px;">${d.popup_detected_at ? esc(fmtRelativeTime(d.popup_detected_at)) : ''}</div>
+        ${d.popup_screenshot_path ? `<button class="btn-sm" onclick="App.viewWorkspacePopupScreenshot('${d.id}')">View Screenshot</button>` : ''}
+        ${editOk ? `<button class="btn-sm" onclick="App.clearWorkspacePopupDetection('${d.id}')">Clear</button>` : ''}
+      </div>
+    ` : ''}
 
     <div class="card-head"><h3 style="font-size:13px;">Antivirus</h3></div>
     <div style="margin-bottom:12px;">${antivirusHtml}</div>

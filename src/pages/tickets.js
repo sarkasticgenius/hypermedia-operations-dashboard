@@ -412,12 +412,22 @@ export function onTicketLocationChange(value) {
 }
 
 export async function viewTicketPhoto() {
-  const path = STATE.modal?.data?.photo_path;
+  const path = document.getElementById('tk-existing-photo-path')?.value;
   if (!path) return;
   try {
     const url = await getSignedUrl(path, 300);
     window.open(url, '_blank');
   } catch (e) { toast(e.message, 'error'); }
+}
+
+// Only unlinks it from THIS ticket (clears the hidden path so save() won't carry it over) -
+// doesn't delete the underlying file, since a Screen Report attachment still belongs to that
+// report regardless of whether the admin wants it on the ticket too.
+export function removeTicketPhoto() {
+  const pathInput = document.getElementById('tk-existing-photo-path');
+  if (pathInput) pathInput.value = '';
+  const row = document.getElementById('tk-existing-photo-row');
+  if (row) row.style.display = 'none';
 }
 
 export async function saveTicketForm(event) {
@@ -446,6 +456,10 @@ export async function saveTicketForm(event) {
     reportedBy: document.getElementById('tk-reported-by').value.trim(),
     dateReported: document.getElementById('tk-date-reported').value || null,
     dateClosed: status === 'Closed' ? new Date().toISOString().slice(0, 10) : null,
+    // Whatever's left in this hidden field once the form's submitted - the ticket's existing
+    // photo_path, a Screen Report attachment carried over on open, or '' if the admin hit Remove -
+    // takes effect whenever a NEW file isn't also being uploaded (see saveTicket).
+    photoPath: document.getElementById('tk-existing-photo-path')?.value || null,
   };
   const photoFile = document.getElementById('tk-photo')?.files?.[0] || null;
   // A ticket opened from Screen Reports > Create Ticket carries this through the modal's own data
@@ -521,9 +535,15 @@ registerModal('ticket', (data) => {
       </div>
       <div class="field"><label>Date Reported</label><input id="tk-date-reported" type="date" value="${data.date_reported || ''}"></div>
       <div class="field"><label>Root Cause (required to close)</label><textarea id="tk-root-cause" rows="2">${esc(data.root_cause || '')}</textarea></div>
-      <div class="field"><label>Photo (jpg/png)</label>
-        <input id="tk-photo" type="file" accept="image/jpeg,image/png">
-        ${data.photo_path ? `<button type="button" class="link-btn" style="margin-left:8px;" onclick="App.viewTicketPhoto()">View current photo</button>` : ''}
+      <div class="field"><label>Photo/Video</label>
+        <input id="tk-photo" type="file" accept="image/*,video/*">
+        <input type="hidden" id="tk-existing-photo-path" value="${esc(data.photo_path || '')}">
+        <div id="tk-existing-photo-row" class="small" style="margin-top:4px;display:flex;align-items:center;gap:10px;${data.photo_path ? '' : 'display:none;'}">
+          <span>${data.__fromScreenReport ? 'Attached from the screen report' : 'Current attachment'}:</span>
+          <button type="button" class="link-btn" onclick="App.viewTicketPhoto()">View</button>
+          <button type="button" class="link-btn" style="color:#c0392b;" onclick="App.removeTicketPhoto()">Remove</button>
+        </div>
+        ${data.__extraReportMediaCount ? `<div class="small muted" style="margin-top:4px;">+${data.__extraReportMediaCount} more attachment(s) on the original Screen Report (Screen Reports &gt; View).</div>` : ''}
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>

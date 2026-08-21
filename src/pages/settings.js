@@ -964,6 +964,15 @@ if (-not $Once -and -not $PollOnce -and -not $currentPrincipal.IsInRole([Securit
     exit
 }
 
+# Shared by both uninstall paths below: the interactive -Uninstall (password-gated) and the
+# dashboard's remote "Uninstall Agent" button on a removed-but-still-reporting device (::UNINSTALL
+# pending command, see Invoke-PendingCommand) - same cleanup either way, just gated differently.
+function Invoke-UninstallCleanup {
+    Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item -Path $StateDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # Gated behind the password set in Settings > Integrations > Digital Directory Agent > Client
 # Uninstall Password (stored/baked in as a SHA-256 hash only, never the plaintext) - so removing
 # the agent from a kiosk/back-office PC needs someone who actually has that password, not just
@@ -985,9 +994,7 @@ if ($Uninstall) {
         exit 1
     }
     Write-Host "Password confirmed - removing the Digital Directory Agent from this PC..." -ForegroundColor Yellow
-    Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
-    Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-Item -Path $StateDir -Recurse -Force -ErrorAction SilentlyContinue
+    Invoke-UninstallCleanup
     Write-Host "Digital Directory Agent uninstalled from this PC (scheduled tasks removed, local state deleted)." -ForegroundColor Green
     Write-Host "Note: this PC's row on the dashboard is left as-is (last known state) - remove it there separately if needed."
     exit 0
@@ -1061,6 +1068,21 @@ function Get-RemoteCollectorScript {
 # SYSTEM in a non-interactive session (no signage-screen popups), so cmd.exe here never gets a
 # window to show even without an explicit -WindowStyle.
 function Invoke-PendingCommand($command) {
+    # A dashboard-queued remote uninstall (the "Uninstall Agent" button on a removed-but-still-
+    # reporting device) - distinct from the interactive -Uninstall flow's password prompt above,
+    # since queuing this already required being signed into the dashboard with delete permission on
+    # this exact device; that authentication IS the authorization; a second local password check
+    # would just be unreachable anyway (this runs completely non-interactively as SYSTEM). Reports
+    # success back with its own immediate POST instead of the normal cache-for-next-cycle path used
+    # below, since there IS no next cycle once the scheduled tasks are gone.
+    if ($command -eq '::UNINSTALL') {
+        Invoke-UninstallCleanup
+        try {
+            $finalPayload = @{ hostname = $env:COMPUTERNAME; light = $true; commandOutput = "Agent uninstalled remotely from the dashboard - scheduled tasks removed, local state cleared." } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body $finalPayload -ContentType "application/json" -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15 | Out-Null
+        } catch {}
+        exit 0
+    }
     $isBatch = $command -match '^\s*::BATCH\r?\n'
     try {
         if ($isBatch) {
@@ -1169,7 +1191,89 @@ function Get-DuDataUsage {
     }
 }
 
-function Invoke-Checkin {
+# Signage PCs should show ONLY their own player/browser content full-screen - so ANY other visible
+# window (a Windows Security toast like the "VulnerableDriver:WinNT/Winring0 - restart your device"
+# one screenshotted at Dubai Festival City Mall, a Windows Update prompt, an error dialog, some
+# OEM utility's warning) is itself the problem, whatever caused it. This can't see an in-page
+# browser permission bar (the Burjuman "Show notifications?" screenshot) - that's rendered INSIDE
+# the browser's own already-allowlisted window, not a separate one - the registry policy applied at
+# install time below is the real fix for that class; this is the safety net for everything else,
+# including anything nobody thought to suppress yet.
+$Script:ExpectedForegroundProcesses = @(
+    'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost',
+    'TextInputHost', 'ScreenClippingHost', 'SystemSettings', 'LockApp',
+    'broadsignplayer', 'broadsign', 'grassfishplayer', 'grassfish',
+    'chrome', 'msedge', 'iexplore',
+    'powershell', 'powershell_ise', 'pwsh', 'conhost', 'cmd'
+)
+
+function Get-VisibleIntrusiveWindows {
+    Add-Type -ErrorAction SilentlyContinue -Namespace WorkspaceDirectoryAgent -Name Win32 -MemberDefinition @'
+        [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+        [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+'@
+
+    $found = New-Object System.Collections.Generic.List[object]
+    $callback = {
+        param($hWnd, $lParam)
+        try {
+            if (-not [WorkspaceDirectoryAgent.Win32]::IsWindowVisible($hWnd)) { return $true }
+            $len = [WorkspaceDirectoryAgent.Win32]::GetWindowTextLength($hWnd)
+            if ($len -eq 0) { return $true }
+            $sb = New-Object System.Text.StringBuilder ($len + 1)
+            [WorkspaceDirectoryAgent.Win32]::GetWindowText($hWnd, $sb, $sb.Capacity) | Out-Null
+            $title = $sb.ToString().Trim()
+            if (-not $title) { return $true }
+            $rect = New-Object WorkspaceDirectoryAgent.Win32+RECT
+            [WorkspaceDirectoryAgent.Win32]::GetWindowRect($hWnd, [ref]$rect) | Out-Null
+            if (($rect.Right - $rect.Left) -lt 150 -or ($rect.Bottom - $rect.Top) -lt 80) { return $true }
+            $procId = 0
+            [WorkspaceDirectoryAgent.Win32]::GetWindowThreadProcessId($hWnd, [ref]$procId) | Out-Null
+            $procName = try { (Get-Process -Id $procId -ErrorAction Stop).ProcessName } catch { '' }
+            $isExpected = $false
+            foreach ($allowed in $Script:ExpectedForegroundProcesses) {
+                if ($procName -match [regex]::Escape($allowed)) { $isExpected = $true; break }
+            }
+            if (-not $isExpected) {
+                $found.Add([pscustomobject]@{ title = $title; process = $procName })
+            }
+        } catch {}
+        return $true
+    }
+    [WorkspaceDirectoryAgent.Win32]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
+    return $found
+}
+
+# Downscaled + JPEG-compressed before encoding - this is evidence that something unexpected is on
+# screen, not a pixel-perfect record, and keeps the check-in payload small on a metered cellular SIM.
+function Get-ScreenshotBase64 {
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing -ErrorAction Stop
+    $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+    $graphics = [System.Drawing.Graphics]::FromImage($bmp)
+    $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+    $maxWidth = 960
+    $scale = [Math]::Min(1.0, $maxWidth / $bounds.Width)
+    $targetW = [Math]::Max(1, [int]($bounds.Width * $scale))
+    $targetH = [Math]::Max(1, [int]($bounds.Height * $scale))
+    $thumb = New-Object System.Drawing.Bitmap $bmp, $targetW, $targetH
+    $ms = New-Object System.IO.MemoryStream
+    $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+    $encParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
+    $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [int64]55)
+    $thumb.Save($ms, $jpegCodec, $encParams)
+    $bytes = $ms.ToArray()
+    $graphics.Dispose(); $bmp.Dispose(); $thumb.Dispose(); $ms.Dispose()
+    return [Convert]::ToBase64String($bytes)
+}
+
+function Invoke-Checkin([switch]$Light) {
     $remoteScript = Get-RemoteCollectorScript
     $data = $null
     if ($remoteScript) {
@@ -1180,6 +1284,38 @@ function Invoke-Checkin {
         }
     }
     if (-not $data) { $data = Invoke-DefaultCollector }
+
+    # -Light (the 20-minute poll cycle, see -PollOnce below) still collects everything locally -
+    # that costs CPU time, not metered SIM data - but drops the one field that's actually large
+    # enough to matter for bandwidth before it's ever sent: "software" (up to 2000 Add/Remove
+    # Programs entries). Everything else here (volumes, antivirus, problems, remote-access IDs,
+    # logged-in user) is at most a few hundred bytes combined, so it stays on every cycle - that's
+    # what keeps Online/Offline, Issues, and Remote Access fresh every 20 minutes instead of every 6
+    # hours. Software rarely changes minute-to-minute anyway, so it only needs the full 6-hourly
+    # cycle. workspace-directory-checkin leaves the stored software list untouched (sticky) whenever
+    # this flag is set, rather than wiping it to empty.
+    if ($Light) {
+        $data.software = @()
+        $data.light = $true
+    }
+
+    # Runs on every check-in, not gated like the DU scrape - a stray popup shouldn't sit unreported
+    # for the length of a whole gate interval, and enumerating windows is cheap. See -PollOnce below
+    # for how this also forces an out-of-cycle check-in the moment one appears, instead of waiting
+    # for the full 6-hour interval.
+    try {
+        $__popups = @(Get-VisibleIntrusiveWindows)
+    } catch { $__popups = @() }
+    if ($__popups.Count -gt 0) {
+        $popupSummary = ($__popups | ForEach-Object { "$($_.title) ($($_.process))" }) -join '; '
+        $existingProblems = @($data.problems) | Where-Object { $_ }
+        $data.problems = @($existingProblems + "Unexpected window/popup detected: $popupSummary")
+        $data.popupTitles = @($__popups | ForEach-Object { $_.title })
+        try {
+            $data.popupScreenshotBase64 = Get-ScreenshotBase64
+        } catch { Write-AgentLog "Popup screenshot capture failed: $($_.Exception.Message)" }
+        Write-AgentLog "Popup/unexpected window detected: $popupSummary"
+    }
 
     # A previous cycle's command result, if one is waiting locally - reported on this check-in,
     # then removed so it isn't sent again next time.
@@ -1283,11 +1419,13 @@ if (-not $Once) {
 
     # Runs -PollOnce every 20 minutes, entirely headless as SYSTEM (no tray icon, no window, no
     # notification - these PCs drive signage screens, so nothing may ever pop up on top of the
-    # content) - the ONLY way a dashboard "Force Inventory Pull" click can reach a specific PC
-    # sooner than its next scheduled cycle, since these PCs are on metered SIMs behind NAT/cellular
-    # routers with no inbound reachability; the dashboard can never push to them, only they can poll
-    # out. Up to ~20 minutes' latency and a tiny request are an easy trade for "the button on the
-    # dashboard actually does something soon" instead of waiting up to 6 hours.
+    # content). Does double duty: it's the ONLY way a dashboard "Force Inventory Pull" click can
+    # reach a specific PC sooner than its next scheduled cycle (these PCs are on metered SIMs behind
+    # NAT/cellular routers with no inbound reachability; the dashboard can never push to them, only
+    # they can poll out) - AND, on every cycle that isn't a force/popup, it sends a light check-in
+    # (see Invoke-Checkin's -Light handling) so Online/Offline status, Issues, and Remote Access stay
+    # fresh at 20-minute resolution without resending the installed-software list every time. Up to
+    # ~20 minutes' latency and a small request are an easy trade for both of those.
     try {
         $PollAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -PollOnce"
         $PollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 20)
@@ -1303,14 +1441,59 @@ if (-not $Once) {
     }
 }
 
-# A lightweight, silent check for a queued Force Inventory Pull - NOT a full check-in by itself,
-# so a PC sitting idle isn't hitting the checkin endpoint every 20 minutes for no reason.
+# Every 20-minute poll checks in - lightly (see Invoke-Checkin's -Light handling above) unless a
+# Force Inventory Pull or a popup is waiting, in which case it does the real thing instead. A cheap
+# GET decides which, first:
 if ($PollOnce) {
+    $forceRequested = $false
     try {
         $resp = Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10
-        if ($resp -and $resp.force) { Invoke-Checkin }
+        $forceRequested = $resp -and $resp.force
     } catch {}
+    # A stray popup shouldn't sit unreported for up to 6 hours either - this cheap window scan runs
+    # every 20-minute poll regardless of whether a Force Inventory Pull was requested, and triggers a
+    # full (not light) check-in immediately the moment one shows up (Invoke-Checkin re-detects it
+    # properly and reports it, including the screenshot) rather than waiting for the next scheduled
+    # cycle.
+    $popupNow = $false
+    try { $popupNow = (@(Get-VisibleIntrusiveWindows)).Count -gt 0 } catch {}
+    if ($forceRequested -or $popupNow) {
+        Invoke-Checkin
+    } else {
+        # The common case - keeps Online/Offline, Issues, and Remote Access fresh at 20-minute
+        # resolution instead of 6 hours, without resending the installed-software list (the one field
+        # actually large enough to matter on a metered cellular SIM) more often than it needs to.
+        Invoke-Checkin -Light
+    }
     exit
+}
+
+# Suppresses the two interruption classes actually screenshotted on live signage screens, at the
+# source, on top of the detection safety net above:
+#  - Windows Security/Action Center toast notifications (the "VulnerableDriver:WinNT/Winring0 -
+#    restart your device" popup from Dubai Festival City Mall) - the Explorer key is the documented
+#    registry equivalent of the "Remove Notifications and Action Center" policy.
+#  - Chrome/Edge's own "Show notifications?" permission prompt bar (the Burjuman screenshot) -
+#    rendered INSIDE the browser's own window, so Get-VisibleIntrusiveWindows can't see it; only a
+#    browser policy stops it before it ever appears.
+# Runs on every real check-in (fresh install AND the 6-hourly -Once cycle, skipped only for the
+# lightweight 20-minute -PollOnce path via the exit above) rather than install time only - the outer
+# shell self-updates from the published agent-shell version on every run (Invoke-SelfUpdate above),
+# so this reaches the whole already-installed fleet the same way any other shell change does, no
+# per-machine re-install needed. Cheap/idempotent, so running it every cycle also means it self-heals
+# if something else resets these keys.
+try {
+    New-Item -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" -Name "DisableNotificationCenter" -Value 1 -Type DWord -Force
+    New-Item -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows Defender Security Center\\Notifications" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows Defender Security Center\\Notifications" -Name "DisableNotifications" -Value 1 -Type DWord -Force
+    foreach ($browserKey in @("HKLM:\\SOFTWARE\\Policies\\Google\\Chrome", "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge")) {
+        New-Item -Path $browserKey -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path $browserKey -Name "DefaultNotificationsSetting" -Value 2 -Type DWord -Force
+    }
+    Write-AgentLog "Applied signage notification-suppression policy (Windows Security toasts + Chrome/Edge permission prompts)."
+} catch {
+    Write-Warning "Could not apply notification-suppression policy: $($_.Exception.Message)"
 }
 
 Invoke-Checkin
