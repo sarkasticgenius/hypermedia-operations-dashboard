@@ -1468,14 +1468,15 @@ if ($PollOnce) {
     exit
 }
 
-# Suppresses the two interruption classes actually screenshotted on live signage screens, at the
-# source, on top of the detection safety net above:
-#  - Windows Security/Action Center toast notifications (the "VulnerableDriver:WinNT/Winring0 -
-#    restart your device" popup from Dubai Festival City Mall) - the Explorer key is the documented
-#    registry equivalent of the "Remove Notifications and Action Center" policy.
-#  - Chrome/Edge's own "Show notifications?" permission prompt bar (the Burjuman screenshot) -
-#    rendered INSIDE the browser's own window, so Get-VisibleIntrusiveWindows can't see it; only a
-#    browser policy stops it before it ever appears.
+# Suppresses the Chrome/Edge "Show notifications?" permission prompt bar (the Burjuman screenshot) -
+# rendered INSIDE the browser's own window, so Get-VisibleIntrusiveWindows can't see it as a separate
+# popup; only a browser policy stops it before it ever appears. Deliberately does NOT touch anything
+# under Windows Defender/Security Center - an earlier version also disabled its notification toasts
+# via HKLM:\SOFTWARE\Microsoft\Windows Defender Security Center\Notifications, which is close to a
+# textbook "malware disables the antivirus" signature - Defender's own AMSI scanner flagged the whole
+# script as malicious content and blocked every fresh install outright the moment that shipped. The
+# general Windows Explorer notification-center key was left in as it's a documented, widely-used
+# enterprise kiosk policy setting, not something specific to security software.
 # Runs on every real check-in (fresh install AND the 6-hourly -Once cycle, skipped only for the
 # lightweight 20-minute -PollOnce path via the exit above) rather than install time only - the outer
 # shell self-updates from the published agent-shell version on every run (Invoke-SelfUpdate above),
@@ -1485,13 +1486,11 @@ if ($PollOnce) {
 try {
     New-Item -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
     Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" -Name "DisableNotificationCenter" -Value 1 -Type DWord -Force
-    New-Item -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows Defender Security Center\\Notifications" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows Defender Security Center\\Notifications" -Name "DisableNotifications" -Value 1 -Type DWord -Force
     foreach ($browserKey in @("HKLM:\\SOFTWARE\\Policies\\Google\\Chrome", "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge")) {
         New-Item -Path $browserKey -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path $browserKey -Name "DefaultNotificationsSetting" -Value 2 -Type DWord -Force
     }
-    Write-AgentLog "Applied signage notification-suppression policy (Windows Security toasts + Chrome/Edge permission prompts)."
+    Write-AgentLog "Applied signage notification-suppression policy (Action Center + Chrome/Edge permission prompts)."
 } catch {
     Write-Warning "Could not apply notification-suppression policy: $($_.Exception.Message)"
 }
