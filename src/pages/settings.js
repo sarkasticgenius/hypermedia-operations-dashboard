@@ -728,7 +728,7 @@ function Get-OtherRemoteIds($anydeskIds) {
 }
 
 # Same discovery approach Broadsign's own player leaves on disk (and the same fallback file/keyword
-# search the original NSOC agent used) - matched server-side against Asset Inventory's Player Box
+# search the original Jstar agent used) - matched server-side against Asset Inventory's Player Box
 # ID (Player Type = Broadsign), the exact field broadsign-sync itself matches on, so this PC can be
 # cross-referenced with the screen it drives in the Broadsign Console.
 function Get-BroadsignPlayerId {
@@ -1124,7 +1124,7 @@ function Get-DuDataUsage {
 }
 
 # Modeled on a working reference script (Python + Selenium-wire, already deployed via a separate
-# NSOC/GLPI agent on some of these same PCs) that reads the SAME underlying API call the page's own
+# Jstar/GLPI agent on some of these same PCs) that reads the SAME underlying API call the page's own
 # JavaScript uses to render the usage bar - a request whose URL contains "dashboard/query", returning
 # resultBody.dashBoardValue.{monthTotal,monthUsed,monthLeft} in KB - plus the phone number straight
 # from the page's own localStorage ('serviceNo'). Far more reliable than parsing whatever text
@@ -1639,7 +1639,7 @@ export function downloadWorkspaceDirectoryAgentScript() {
   downloadTextFile(buildWorkspaceDirectoryAgentScript(secret, settings.workspaceDirectoryAgent?.uninstallPasswordHash), 'Install-JstarAgent.ps1');
 }
 
-// Plain double-clickable launcher, same idea as the reference NSOC agent's own .cmd wrapper -
+// Plain double-clickable launcher, same idea as the reference Jstar agent's own .cmd wrapper -
 // double-clicking a .ps1 directly just opens it in Notepad (Windows' safety default), so this is
 // the intended way to actually run the install. Requests elevation itself (the .ps1 also
 // self-elevates, but starting elevated avoids two separate UAC prompts). Closes itself
