@@ -211,6 +211,7 @@ export function renderAssetsInventory() {
         ${selectedIds.size > pageIds.length ? ` (spans every page of this filter)` : ''}
       </span>
       <div style="display:flex;gap:8px;">
+        <button class="btn-sm" onclick="App.openPrintQrCodesModal()">Print QR Codes</button>
         ${editOk ? `<button class="btn-sm" onclick="App.openBulkEditAssetInv()">Bulk Edit</button>` : ''}
         ${delOk ? `<button class="btn-sm" style="color:#c0392b;" onclick="App.bulkDeleteAssetInv()">Bulk Delete</button>` : ''}
         <button class="btn-sm" onclick="App.clearAssetInvSelection()">Clear Selection</button>
@@ -662,5 +663,58 @@ export async function downloadAssetQrCode(assetId) {
     });
   } catch (e) {
     toast('Failed to generate QR code for download', 'error');
+  }
+}
+
+// -------------------- bulk QR printing (mall-wise or any other selection) --------------------
+// Reuses the same selection mechanism as Bulk Edit/Bulk Delete - search/filter down to one mall
+// (or anything else), "Select all N matching this filter", then this. No new filter UI needed since
+// venue is already one of the fields the search box matches.
+export function openPrintQrCodesModal() {
+  const ids = STATE.aiSelectedIds || [];
+  if (!ids.length) { toast('Select at least one screen first', 'error'); return; }
+  openModal('printQrCodes', { labelMode: 'name' });
+  renderPrintQrGrid('name');
+}
+
+registerModal('printQrCodes', (data) => {
+  const count = (STATE.aiSelectedIds || []).length;
+  return `
+    <h3>Print QR Codes - ${count} screen${count === 1 ? '' : 's'}</h3>
+    <div class="small muted" style="margin-bottom:10px;">Print this page (or Save as PDF) and cut out each one - only the codes below print, not the rest of the dashboard.</div>
+    <div class="small" style="display:flex;gap:14px;margin-bottom:12px;">
+      <label style="display:flex;align-items:center;gap:5px;font-weight:400;"><input type="radio" name="pqr-label" value="name" checked style="width:auto;" onchange="App.renderPrintQrGrid('name')"> Label with Name</label>
+      <label style="display:flex;align-items:center;gap:5px;font-weight:400;"><input type="radio" name="pqr-label" value="assetId" style="width:auto;" onchange="App.renderPrintQrGrid('assetId')"> Label with Asset ID</label>
+    </div>
+    <div id="print-area" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:16px;max-height:50vh;overflow-y:auto;">Generating...</div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="App.closeModal()">Close</button>
+      <button class="btn btn-orange" onclick="window.print()">Print</button>
+    </div>
+  `;
+});
+
+export async function renderPrintQrGrid(labelMode) {
+  const pd = pageData();
+  const wrap = document.getElementById('print-area');
+  if (!pd || !wrap) return;
+  const ids = STATE.aiSelectedIds || [];
+  const rows = ids.map((id) => pd.rows.find((r) => r.id === id)).filter(Boolean);
+  wrap.textContent = 'Generating...';
+  try {
+    const items = await Promise.all(rows.map(async (row) => {
+      const labelText = labelMode === 'assetId' ? (row.source_asset_id != null ? String(row.source_asset_id) : row.id) : row.name;
+      const dataUrl = await QRCode.toDataURL(screenReportUrlFor(row.id), { width: 200, margin: 1 });
+      return { dataUrl, labelText };
+    }));
+    // page-break-inside:avoid keeps a QR code and its label from splitting across a printed page.
+    wrap.innerHTML = items.map((it) => `
+      <div style="text-align:center;page-break-inside:avoid;">
+        <img src="${it.dataUrl}" style="width:100%;max-width:160px;height:auto;">
+        <div class="small" style="margin-top:4px;font-weight:600;">${esc(it.labelText)}</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    wrap.textContent = 'Failed to generate one or more QR codes.';
   }
 }

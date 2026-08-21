@@ -243,6 +243,17 @@ tr:hover td{background:var(--row-hover);}
 
 .modal-overlay{position:fixed;inset:0;background:rgba(20,17,10,0.35);display:flex;align-items:center;justify-content:center;z-index:50;}
 .modal{background:var(--card-bg);border-radius:14px;padding:26px;width:480px;max-width:92vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.2);}
+
+/* "Print just this one element" pattern - hides everything else on the page (including the modal's
+   own fixed-size/scrolling chrome, which would otherwise clip a large QR grid to 480px/88vh) and
+   repositions #print-area to the top of the page regardless of where it sits in the DOM. Used by the
+   bulk QR-code print view (Asset Inventory) - keep the id in sync if that page changes it. */
+@media print {
+  body > *:not(.modal-overlay), .modal-overlay > *:not(.modal), .modal > *:not(#print-area) { display:none !important; }
+  #print-area, #print-area * { visibility:visible; }
+  #print-area { position:absolute; left:0; top:0; width:100%; margin:0; padding:0; }
+  .modal-overlay, .modal { position:static; background:none; box-shadow:none; padding:0; width:auto; max-width:none; max-height:none; overflow:visible; }
+}
 .modal h3{margin:0 0 16px;font-size:16px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
