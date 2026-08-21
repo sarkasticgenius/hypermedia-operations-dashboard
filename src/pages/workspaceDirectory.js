@@ -212,7 +212,8 @@ function installerUploadHtml(fileInputId, argsInputId, targetId) {
       <input type="file" id="${fileInputId}" accept=".exe,.msi" style="flex:1;min-width:160px;font-size:12px;">
       <input id="${argsInputId}" placeholder="Silent args (.exe only, e.g. /S or /verysilent)" style="flex:1;min-width:160px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
       <button type="button" class="btn-sm" onclick="App.uploadWorkspaceInstaller('${fileInputId}', '${argsInputId}', '${targetId}')">Upload &amp; Queue Install</button>
-    </div>`;
+    </div>
+    <div class="small muted" style="margin-bottom:6px;">.msi always installs silently on its own (/qn /norestart) - no args needed. For a .exe, the right silent flag depends on what built the installer: NSIS &rarr; <code>/S</code>, Inno Setup &rarr; <code>/VERYSILENT /SUPPRESSMSGBOXES /NORESTART</code>, InstallShield &rarr; <code>/s /v"/qn"</code>, most others &rarr; <code>/quiet</code> or <code>/silent</code>. Leaving it blank launches the installer's normal on-screen wizard - which nobody can click through, since the agent runs in a background SYSTEM session with no visible desktop at all (not even someone standing at the screen could interact with it). A run with no silent args (or the wrong one) now times out and gets killed after 5 minutes instead of hanging that PC's check-in indefinitely.</div>`;
 }
 
 export async function uploadWorkspaceInstaller(fileInputId, argsInputId, targetId) {
@@ -232,9 +233,19 @@ export async function uploadWorkspaceInstaller(fileInputId, argsInputId, targetI
     const { data: signed, error: signError } = await supabase.storage.from('agent-installers').createSignedUrl(path, 604800);
     if (signError) throw signError;
     const localPath = `$env:TEMP\\${file.name}`;
+    // -PassThru + WaitForExit(ms) instead of a bare -Wait - a .exe deployed with no silent args (or
+    // the wrong one for its installer framework) launches a UI that's invisible and unclickable
+    // anyway, since the agent runs in a background SYSTEM session with no desktop - -Wait alone
+    // would hang that PC's check-in forever waiting for a window nobody can ever interact with. 5
+    // minutes is generous for a real silent install; anything still running past that almost
+    // certainly needs a different silent flag, not more time.
+    const timeoutMs = 5 * 60 * 1000;
+    // A bare string statement (not Write-Warning) so it actually lands in Last Command Output on
+    // the dashboard - Invoke-PendingCommand only merges the error stream into its captured output
+    // (2>&1), not the separate warning stream Write-Warning writes to.
     const command = ext === 'msi'
-      ? `Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile "${localPath}" -UseBasicParsing; Start-Process msiexec.exe -ArgumentList '/i "${localPath}" /qn /norestart' -Wait; Remove-Item "${localPath}" -Force -ErrorAction SilentlyContinue`
-      : `Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile "${localPath}" -UseBasicParsing; Start-Process "${localPath}"${silentArgs ? ` -ArgumentList '${silentArgs}'` : ''} -Wait; Remove-Item "${localPath}" -Force -ErrorAction SilentlyContinue`;
+      ? `Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile "${localPath}" -UseBasicParsing; $__p = Start-Process msiexec.exe -ArgumentList '/i "${localPath}" /qn /norestart' -PassThru; if (-not $__p.WaitForExit(${timeoutMs})) { Stop-Process -Id $__p.Id -Force -ErrorAction SilentlyContinue; "Install timed out after 5 minutes" } else { "Install exited with code $($__p.ExitCode)" }; Remove-Item "${localPath}" -Force -ErrorAction SilentlyContinue`
+      : `Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile "${localPath}" -UseBasicParsing; $__p = Start-Process "${localPath}"${silentArgs ? ` -ArgumentList '${silentArgs}'` : ''} -PassThru; if (-not $__p.WaitForExit(${timeoutMs})) { Stop-Process -Id $__p.Id -Force -ErrorAction SilentlyContinue; "Install timed out after 5 minutes - likely missing or incorrect silent install args" } else { "Install exited with code $($__p.ExitCode)" }; Remove-Item "${localPath}" -Force -ErrorAction SilentlyContinue`;
     fillWorkspaceCommand(command, targetId);
     toast(`${file.name} uploaded - review the generated command below, then Save/Queue.`);
   } catch (e) {
@@ -468,6 +479,7 @@ export function renderWorkspaceDirectory() {
     ${editOk && selectedIds.size > 0 ? `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
       <span><b>${selectedIds.size}</b> device${selectedIds.size === 1 ? '' : 's'} selected</span>
       <div style="display:flex;gap:8px;">
+        <button class="btn-sm" title="Pull fresh inventory (or push each one's queued command) within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.bulkForceWorkspaceInventoryPull()">Force Selected</button>
         <button class="btn-sm" onclick="App.openWorkspaceBulkDeployModal()">Deploy to Selected</button>
         <button class="btn-sm" onclick="App.clearWorkspaceSelection()">Clear Selection</button>
       </div>
@@ -612,6 +624,21 @@ export async function forceWorkspaceInventoryPull(deviceId) {
     await logAudit('Force Digital Directory check-in', deviceId);
     invalidate('workspaceDevices');
     toast(hasPending ? 'Queued command will be pushed within ~20 minutes.' : 'Requested - picked up within ~20 minutes.');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to request pull', 'error'); }
+}
+
+// Same idea as forceWorkspaceInventoryPull above, fanned out over every currently-selected device -
+// each one still only gets picked up on its OWN next poll cycle (not simultaneously), same as a
+// single-device Force.
+export async function bulkForceWorkspaceInventoryPull() {
+  const ids = STATE.workspaceDirectorySelectedIds || [];
+  if (!ids.length) { toast('Select at least one device first', 'error'); return; }
+  try {
+    await Promise.all(ids.map((id) => updateWorkspaceDevice(id, { force_checkin_requested: true })));
+    await logAudit('Bulk force Digital Directory check-in', `${ids.length} device(s)`);
+    invalidate('workspaceDevices');
+    toast(`${ids.length} device(s) will be picked up within ~20 minutes.`);
     setState({});
   } catch (e) { toast(e.message || 'Failed to request pull', 'error'); }
 }

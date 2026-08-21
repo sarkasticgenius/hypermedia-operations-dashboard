@@ -6,6 +6,8 @@ import { listPermits, permitStatus } from '../data/permits.js';
 import { listMetroPics, metroPicStatus } from '../data/metroPics.js';
 import { listSimCards, simLocationDuplicateCounts, isDuplicateLocationSim } from '../data/simCards.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
+import { listScreenReports } from '../data/screenReports.js';
+import { listWorkspaceDevices } from '../data/workspaceDevices.js';
 import { hiddenMemberIds, locationOfflineStats, locationManualStats, sourceStats, inventoryFaceTotals, mafInventoryTotals } from '../data/locationStats.js';
 import { getSetting } from '../data/settings.js';
 import { VENUE_CATEGORY_KEYS, TAB_DEFS as TS_TAB_DEFS, venueMatchesTab, isFocMarketingCampaign } from './trafficSheet.js';
@@ -20,10 +22,11 @@ let refreshTimer = null;
 const TS_LABELS = Object.fromEntries(TS_TAB_DEFS.map((t) => [t.key, t.label]));
 
 async function loadOverview() {
-  const [locations, tickets, permits, metroPics, simCards, assetInventory, iotApi, trafficSheetApi] = await Promise.all([
+  const [locations, tickets, permits, metroPics, simCards, assetInventory, iotApi, trafficSheetApi, screenReports, workspaceDevices] = await Promise.all([
     listLocations(), listTickets(), listPermits(), listMetroPics(), listSimCards(), listAssetInventory(), getSetting('iotApi'), getSetting('trafficSheetApi'),
+    listScreenReports(), listWorkspaceDevices(),
   ]);
-  return { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi, trafficSheetApi };
+  return { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi, trafficSheetApi, screenReports, workspaceDevices };
 }
 
 // Fetches the whole current year in one call (Jan-Dec) instead of just the current month - the
@@ -165,6 +168,26 @@ function allSimIssues(simCards) {
   return issues.sort((a, b) => (a.issueType === 'Duplicate' ? -1 : 1) - (b.issueType === 'Duplicate' ? -1 : 1));
 }
 
+// "New" only - a report already turned into a ticket or resolved/dismissed isn't something Live
+// Ops needs to flag as needing attention right now, same idea as urgentOpenTickets() excluding
+// closed tickets.
+function newScreenReportsList(screenReports, assetInventory) {
+  const assetById = new Map(assetInventory.map((a) => [a.id, a]));
+  return screenReports
+    .filter((r) => r.status === 'New')
+    .map((r) => ({ ...r, asset: assetById.get(r.asset_id) }))
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+}
+
+// Devices with at least one currently-reported problem (low disk space, antivirus disabled, no
+// remote-access tool, an unexpected window/popup, etc.) - whatever Get-Problems/the agent's own
+// checks last flagged, same source the Digital Directory page's own Issues column reads.
+function workspaceIssuesList(workspaceDevices) {
+  return workspaceDevices
+    .filter((d) => (d.problems || []).length > 0)
+    .sort((a, b) => (b.problems || []).length - (a.problems || []).length);
+}
+
 function complianceDueItems(permits, metroPics) {
   const items = [
     ...permits.filter((p) => ['Expired', 'Expiring Soon'].includes(permitStatus(p))).map((p) => ({ kind: 'permit', type: 'Permit', label: p.title, date: p.expiry_date, status: permitStatus(p), id: p.id })),
@@ -274,8 +297,10 @@ export function renderOpsOverview() {
   if (data === null) return loadingCard();
   if (data.__error) return loadingCard(data.__error);
 
-  const { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi, trafficSheetApi } = data;
+  const { locations, tickets, permits, metroPics, simCards, assetInventory, iotApi, trafficSheetApi, screenReports, workspaceDevices } = data;
   const openTickets = urgentOpenTickets(tickets);
+  const newReports = newScreenReportsList(screenReports, assetInventory);
+  const deviceIssues = workspaceIssuesList(workspaceDevices);
   const { items: offlineAssets, networkedOfflineFaces } = allOfflineAssets(locations);
   const simIssues = allSimIssues(simCards);
   const compliance = complianceDueItems(permits, metroPics);
@@ -313,6 +338,8 @@ export function renderOpsOverview() {
     { key: 'offlineFaces', label: 'Offline Faces', value: networkedOfflineFaces, sub: 'Broadsign + Grassfish' },
     { key: 'sims', label: 'SIM Issues', value: simIssues.length },
     { key: 'compliance', label: 'Compliance Due', value: compliance.length },
+    { key: 'screenReports', label: 'New Screen Reports', value: newReports.length },
+    { key: 'workspaceIssues', label: 'Digital Directory Issues', value: deviceIssues.length },
   ];
 
   // The live-status line (pulse dot + timestamp) is functional, not a tip - stays for everyone,
@@ -444,6 +471,24 @@ export function renderOpsOverview() {
           <button class="btn-sm" onclick="App.setPage('permits')">View Permits</button>
           <button class="btn-sm" onclick="App.setPage('metroPic')">View Metro PIC</button>
         </div>
+      </div>
+
+      <div id="ops-card-screenReports" class="bento-tile bento-span-2">
+        <div class="card-head"><h3>New Screen Reports <span class="badge b-red">${newReports.length}</span></h3><div class="desc">Submitted by scanning a screen's QR code - not yet turned into a ticket.</div></div>
+        ${opsListRows(newReports.slice(0, 8), (r) => ({
+          main: r.asset?.name || 'Unknown screen', sub: r.description, tag: r.asset?.venue || '-', tagClass: 'b-gray',
+        }))}
+        ${newReports.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${newReports.length - 8} more</div>` : ''}
+        <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('screenReports')">View all</button>
+      </div>
+
+      <div id="ops-card-workspaceIssues" class="bento-tile bento-span-2">
+        <div class="card-head"><h3>Digital Directory Issues <span class="badge b-red">${deviceIssues.length}</span></h3><div class="desc">Devices currently reporting at least one problem (low disk, antivirus, missing remote access, an unexpected on-screen popup, etc.)</div></div>
+        ${opsListRows(deviceIssues.slice(0, 8), (d) => ({
+          main: d.hostname, sub: d.location || 'Unassigned', tag: `${d.problems.length} issue${d.problems.length === 1 ? '' : 's'}`, tagClass: 'b-red',
+        }))}
+        ${deviceIssues.length > 8 ? `<div class="small muted" style="margin-top:6px;">+${deviceIssues.length - 8} more</div>` : ''}
+        <button class="btn-sm" style="margin-top:8px;" onclick="App.setPage('workspaceDirectory')">View all</button>
       </div>
     </div>
   `;
