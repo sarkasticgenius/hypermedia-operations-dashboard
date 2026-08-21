@@ -12,10 +12,13 @@ import { problemType, problemTypeLabel, visibleProblems } from '../lib/workspace
 
 // The agent's light heartbeat runs every 20 minutes (see Invoke-Checkin's -Light handling in the
 // agent script) specifically so Online/Offline can be this responsive - the separate full 6-hourly
-// cycle is only for the heavier inventory fields (installed software etc.), not this. 20 minutes
-// means a device is flagged Offline as soon as it misses a single expected check-in, not several
-// hours later.
-const STALE_AFTER_MINUTES = 20;
+// cycle is only for the heavier inventory fields (installed software etc.), not this. Exactly 20
+// minutes here (matching the cycle with zero slack) made genuinely-online screens flap to "Offline"
+// on completely ordinary scheduling jitter - a poll landing even a few seconds late is enough to
+// cross the line right before its own next check-in fixes it again. 30 minutes (1.5x the cycle)
+// keeps this far more responsive than the old 8-hour threshold while giving one cycle's worth of
+// real slack, same idea as the original 6h-cycle/8h-threshold ratio.
+const STALE_AFTER_MINUTES = 30;
 
 function isOnline(d) {
   if (!d.last_seen) return false;
