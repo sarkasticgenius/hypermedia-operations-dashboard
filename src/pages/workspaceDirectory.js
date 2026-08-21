@@ -10,12 +10,12 @@ import { logAudit } from '../lib/audit.js';
 import { supabase } from '../supabaseClient.js';
 import { problemType, problemTypeLabel, visibleProblems } from '../lib/workspaceProblems.js';
 
-// The agent checks in every 6 hours (deliberately infrequent - several of these PCs run on
-// metered cellular SIM data; the SIM-data-usage figure specifically is only recomputed about once a
-// day regardless, independent of this cadence - see workspace-directory-checkin). 8 hours gives one
-// cycle of slack before flagging Offline, rather than a device looking "down" just because its
-// check-in landed a few minutes late.
-const STALE_AFTER_MINUTES = 8 * 60;
+// The agent's light heartbeat runs every 20 minutes (see Invoke-Checkin's -Light handling in the
+// agent script) specifically so Online/Offline can be this responsive - the separate full 6-hourly
+// cycle is only for the heavier inventory fields (installed software etc.), not this. 20 minutes
+// means a device is flagged Offline as soon as it misses a single expected check-in, not several
+// hours later.
+const STALE_AFTER_MINUTES = 20;
 
 function isOnline(d) {
   if (!d.last_seen) return false;
@@ -491,7 +491,7 @@ export function renderWorkspaceDirectory() {
     </div>` : ''}
     <div class="card">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES / 60}+ hours (the agent checks in every 6 hours).${editOk ? ' Tick devices below to deploy a command (install/uninstall software, etc.) to several at once.' : ''}</div></div>
+        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES}+ minutes (a light check-in runs every 20 minutes; the heavier full inventory only every 6 hours).${editOk ? ' Tick devices below to deploy a command (install/uninstall software, etc.) to several at once.' : ''}</div></div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <input placeholder="Search hostname, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
           <button class="btn-sm" title="Reload this page's data without refreshing the whole app" onclick="App.refreshWorkspaceDirectory()">&#8635; Refresh</button>

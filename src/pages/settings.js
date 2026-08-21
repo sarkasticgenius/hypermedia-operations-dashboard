@@ -1360,11 +1360,18 @@ function Get-DuDataUsageViaDom {
 # "Setup"/"restart to finish installing" prompt, or some other app's error dialog, is itself the
 # problem regardless of what caused it (real examples: a fuel-pump screen showing a stray app
 # window, a Yas Mall totem with an open Windows dialog and taskbar visible over the ad content).
-# Deliberately just Get-Process/MainWindowTitle - no raw Win32 API calls (EnumWindows etc.), no
-# screen capture - an earlier version using both got blocked twice by Windows Defender's AMSI
-# scanner (window enumeration + screenshot + network upload is close to a textbook spyware
-# signature); this is a much more ordinary, common PowerShell pattern that doesn't do either.
-$Script:ExpectedForegroundProcesses = @(
+# Reports EVERY window that's actually visible and not minimized right now (there can genuinely be
+# more than one stacked on screen at once), excluding the player/browser/remote-access tools below -
+# a background/minimized Task Manager or admin console that isn't actually covering the player
+# doesn't count, but anything currently rendered on screen does, regardless of whether it happens to
+# have keyboard focus. Get-Process already exposes each window's handle with no extra API call
+# needed to find it; checking whether THAT handle is visible/not-minimized takes two small Win32
+# calls (IsWindowVisible/IsIconic) per already-titled window, not a raw system-wide enumeration.
+# An earlier version instead enumerated EVERY window in the system (EnumWindows) and captured a
+# screenshot on top of that, which got blocked twice by Windows Defender's AMSI scanner (window
+# enumeration + screenshot + network upload is close to a textbook spyware signature); this is a
+# much smaller, more ordinary use of the Windows API that does neither of those two things.
+$Script:ExpectedVisibleProcesses = @(
     'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost',
     'TextInputHost', 'ScreenClippingHost', 'LockApp',
     # Broadsign's/Grassfish's actual player processes are the short "bsp"/"gfPlayer", not
@@ -1384,16 +1391,33 @@ $Script:ExpectedForegroundProcesses = @(
 # an unattended signage PC has no legitimate reason for that app to ever be open on screen anyway.
 
 function Get-UnexpectedWindows {
-    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Trim() } | ForEach-Object {
+    Add-Type -ErrorAction SilentlyContinue -Namespace WorkspaceDirectoryAgent -Name Win32 -MemberDefinition @'
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+'@
+
+    $found = New-Object System.Collections.Generic.List[object]
+    Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -and $_.MainWindowTitle.Trim()
+    } | ForEach-Object {
+        $hWnd = $_.MainWindowHandle
+        # A minimized or otherwise not-actually-visible window (Task Manager sitting in the
+        # taskbar, an admin console tucked away) still reports a MainWindowTitle via Get-Process
+        # regardless of its on-screen state - these two checks are what actually distinguish
+        # "genuinely displayed right now" from "merely exists somewhere".
+        if (-not [WorkspaceDirectoryAgent.Win32]::IsWindowVisible($hWnd)) { return }
+        if ([WorkspaceDirectoryAgent.Win32]::IsIconic($hWnd)) { return }
+
         $procName = $_.ProcessName
         $isExpected = $false
-        foreach ($allowed in $Script:ExpectedForegroundProcesses) {
+        foreach ($allowed in $Script:ExpectedVisibleProcesses) {
             if ($procName -match [regex]::Escape($allowed)) { $isExpected = $true; break }
         }
         if (-not $isExpected) {
-            [pscustomobject]@{ title = $_.MainWindowTitle.Trim(); process = $procName }
+            $found.Add([pscustomobject]@{ title = $_.MainWindowTitle.Trim(); process = $procName })
         }
     }
+    return $found
 }
 
 function Invoke-Checkin([switch]$Light) {
