@@ -616,50 +616,6 @@ export async function resetWorkspaceDataUsage(deviceId) {
   } catch (e) { toast(e.message || 'Failed to reset', 'error'); }
 }
 
-export function viewWorkspacePopupScreenshot(deviceId) {
-  openModal('workspacePopupScreenshot', { deviceId });
-  loadWorkspacePopupScreenshot(deviceId);
-}
-
-registerModal('workspacePopupScreenshot', (data) => {
-  const devices = STATE.pageData.workspaceDevices?.data || [];
-  const d = devices.find((x) => x.id === data.deviceId);
-  return `
-    <h3>Screen Popup - ${esc(d?.hostname || '')}</h3>
-    <div class="small muted" style="margin-bottom:8px;">${d?.popup_detected_at ? esc(fmtRelativeTime(d.popup_detected_at)) : ''} - ${(d?.popup_titles || []).map(esc).join('; ')}</div>
-    <div id="wd-popup-shot" class="small muted">Loading...</div>
-    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
-  `;
-});
-
-// Signed URL (attachments bucket is private) fetched fresh on open rather than stored - same
-// pattern as loadScreenReportMedia in screenReports.js.
-export async function loadWorkspacePopupScreenshot(deviceId) {
-  const devices = STATE.pageData.workspaceDevices?.data || [];
-  const d = devices.find((x) => x.id === deviceId);
-  const el = document.getElementById('wd-popup-shot');
-  if (!el || !d?.popup_screenshot_path) { if (el) el.textContent = 'No screenshot available.'; return; }
-  try {
-    const { data, error } = await supabase.storage.from('attachments').createSignedUrl(d.popup_screenshot_path, 3600);
-    if (error) throw error;
-    el.outerHTML = `<img id="wd-popup-shot" src="${data.signedUrl}" style="width:100%;border-radius:8px;">`;
-  } catch (e) {
-    el.textContent = 'Failed to load screenshot';
-  }
-}
-
-// Clears the recorded popup evidence once someone's reviewed it (screen is presumably back to
-// normal by then) - doesn't touch `problems`, which reflects only the MOST RECENT check-in.
-export async function clearWorkspacePopupDetection(id) {
-  try {
-    await updateWorkspaceDevice(id, { popup_titles: [], popup_screenshot_path: null, popup_detected_at: null });
-    await logAudit('Clear screen popup detection', id);
-    invalidate('workspaceDevices');
-    toast('Cleared');
-    setState({});
-  } catch (e) { toast(e.message || 'Failed to clear', 'error'); }
-}
-
 export async function removeWorkspaceDevice(id) {
   if (!confirm('Remove this device from the directory? If its agent is still running, it\'ll show up in a "Removed but still reporting" alert here instead of silently reappearing in the list.')) return;
   try {
@@ -821,16 +777,6 @@ registerModal('workspaceDetails', (data) => {
 
     <div class="card-head"><h3 style="font-size:13px;">Problems</h3></div>
     <div style="margin-bottom:12px;">${problemsHtml}</div>
-
-    ${(d.popup_titles || []).length ? `
-      <div class="card-head"><h3 style="font-size:13px;">Screen Popup Detected</h3></div>
-      <div style="margin-bottom:12px;">
-        <div class="small" style="color:var(--red);margin-bottom:4px;">${d.popup_titles.map(esc).join('; ')}</div>
-        <div class="small muted" style="margin-bottom:6px;">${d.popup_detected_at ? esc(fmtRelativeTime(d.popup_detected_at)) : ''}</div>
-        ${d.popup_screenshot_path ? `<button class="btn-sm" onclick="App.viewWorkspacePopupScreenshot('${d.id}')">View Screenshot</button>` : ''}
-        ${editOk ? `<button class="btn-sm" onclick="App.clearWorkspacePopupDetection('${d.id}')">Clear</button>` : ''}
-      </div>
-    ` : ''}
 
     <div class="card-head"><h3 style="font-size:13px;">Antivirus</h3></div>
     <div style="margin-bottom:12px;">${antivirusHtml}</div>

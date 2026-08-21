@@ -1177,100 +1177,24 @@ function Get-DuDataUsage {
         if (-not $left -and $used -and $total) { $left = [math]::Round($total - $used, 2) }
         if (-not $total -and $used -and $left) { $total = [math]::Round($used + $left, 2) }
 
+        # Included whenever the GB figures specifically are incomplete, not just when EVERYTHING
+        # failed - a real account was seen where the phone number scraped fine (it's in the static
+        # header) but used/left/total came back null, which the old "only if phone AND used AND left
+        # AND total are all missing" condition would hide the raw page text for entirely, since one
+        # piece succeeding was enough to suppress it - exactly the case that most needs to be seen to
+        # debug why the usage figure itself didn't match.
         [ordered]@{
             phoneNumber = $phone
             dataUsedGb  = $used
             dataLeftGb  = $left
             dataTotalGb = $total
-            rawSnippet  = if (-not $phone -and -not $used -and -not $left -and -not $total) { $joined.Substring(0, [Math]::Min(1500, $joined.Length)) } else { $null }
+            rawSnippet  = if (-not $used -or -not $total) { $joined.Substring(0, [Math]::Min(1500, $joined.Length)) } else { $null }
         }
     } catch {
         return $null
     } finally {
         Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
     }
-}
-
-# Signage PCs should show ONLY their own player/browser content full-screen - so ANY other visible
-# window (a Windows Security toast like the "VulnerableDriver:WinNT/Winring0 - restart your device"
-# one screenshotted at Dubai Festival City Mall, a Windows Update prompt, an error dialog, some
-# OEM utility's warning) is itself the problem, whatever caused it. This can't see an in-page
-# browser permission bar (the Burjuman "Show notifications?" screenshot) - that's rendered INSIDE
-# the browser's own already-allowlisted window, not a separate one - the registry policy applied at
-# install time below is the real fix for that class; this is the safety net for everything else,
-# including anything nobody thought to suppress yet.
-$Script:ExpectedForegroundProcesses = @(
-    'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost',
-    'TextInputHost', 'ScreenClippingHost', 'SystemSettings', 'LockApp',
-    'broadsignplayer', 'broadsign', 'grassfishplayer', 'grassfish',
-    'chrome', 'msedge', 'iexplore',
-    'powershell', 'powershell_ise', 'pwsh', 'conhost', 'cmd'
-)
-
-function Get-VisibleIntrusiveWindows {
-    Add-Type -ErrorAction SilentlyContinue -Namespace WorkspaceDirectoryAgent -Name Win32 -MemberDefinition @'
-        [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-        [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
-        [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
-        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-        [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-        public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-'@
-
-    $found = New-Object System.Collections.Generic.List[object]
-    $callback = {
-        param($hWnd, $lParam)
-        try {
-            if (-not [WorkspaceDirectoryAgent.Win32]::IsWindowVisible($hWnd)) { return $true }
-            $len = [WorkspaceDirectoryAgent.Win32]::GetWindowTextLength($hWnd)
-            if ($len -eq 0) { return $true }
-            $sb = New-Object System.Text.StringBuilder ($len + 1)
-            [WorkspaceDirectoryAgent.Win32]::GetWindowText($hWnd, $sb, $sb.Capacity) | Out-Null
-            $title = $sb.ToString().Trim()
-            if (-not $title) { return $true }
-            $rect = New-Object WorkspaceDirectoryAgent.Win32+RECT
-            [WorkspaceDirectoryAgent.Win32]::GetWindowRect($hWnd, [ref]$rect) | Out-Null
-            if (($rect.Right - $rect.Left) -lt 150 -or ($rect.Bottom - $rect.Top) -lt 80) { return $true }
-            $procId = 0
-            [WorkspaceDirectoryAgent.Win32]::GetWindowThreadProcessId($hWnd, [ref]$procId) | Out-Null
-            $procName = try { (Get-Process -Id $procId -ErrorAction Stop).ProcessName } catch { '' }
-            $isExpected = $false
-            foreach ($allowed in $Script:ExpectedForegroundProcesses) {
-                if ($procName -match [regex]::Escape($allowed)) { $isExpected = $true; break }
-            }
-            if (-not $isExpected) {
-                $found.Add([pscustomobject]@{ title = $title; process = $procName })
-            }
-        } catch {}
-        return $true
-    }
-    [WorkspaceDirectoryAgent.Win32]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
-    return $found
-}
-
-# Downscaled + JPEG-compressed before encoding - this is evidence that something unexpected is on
-# screen, not a pixel-perfect record, and keeps the check-in payload small on a metered cellular SIM.
-function Get-ScreenshotBase64 {
-    Add-Type -AssemblyName System.Windows.Forms, System.Drawing -ErrorAction Stop
-    $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
-    $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-    $graphics = [System.Drawing.Graphics]::FromImage($bmp)
-    $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-    $maxWidth = 960
-    $scale = [Math]::Min(1.0, $maxWidth / $bounds.Width)
-    $targetW = [Math]::Max(1, [int]($bounds.Width * $scale))
-    $targetH = [Math]::Max(1, [int]($bounds.Height * $scale))
-    $thumb = New-Object System.Drawing.Bitmap $bmp, $targetW, $targetH
-    $ms = New-Object System.IO.MemoryStream
-    $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
-    $encParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
-    $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [int64]55)
-    $thumb.Save($ms, $jpegCodec, $encParams)
-    $bytes = $ms.ToArray()
-    $graphics.Dispose(); $bmp.Dispose(); $thumb.Dispose(); $ms.Dispose()
-    return [Convert]::ToBase64String($bytes)
 }
 
 function Invoke-Checkin([switch]$Light) {
@@ -1297,24 +1221,6 @@ function Invoke-Checkin([switch]$Light) {
     if ($Light) {
         $data.software = @()
         $data.light = $true
-    }
-
-    # Runs on every check-in, not gated like the DU scrape - a stray popup shouldn't sit unreported
-    # for the length of a whole gate interval, and enumerating windows is cheap. See -PollOnce below
-    # for how this also forces an out-of-cycle check-in the moment one appears, instead of waiting
-    # for the full 6-hour interval.
-    try {
-        $__popups = @(Get-VisibleIntrusiveWindows)
-    } catch { $__popups = @() }
-    if ($__popups.Count -gt 0) {
-        $popupSummary = ($__popups | ForEach-Object { "$($_.title) ($($_.process))" }) -join '; '
-        $existingProblems = @($data.problems) | Where-Object { $_ }
-        $data.problems = @($existingProblems + "Unexpected window/popup detected: $popupSummary")
-        $data.popupTitles = @($__popups | ForEach-Object { $_.title })
-        try {
-            $data.popupScreenshotBase64 = Get-ScreenshotBase64
-        } catch { Write-AgentLog "Popup screenshot capture failed: $($_.Exception.Message)" }
-        Write-AgentLog "Popup/unexpected window detected: $popupSummary"
     }
 
     # A previous cycle's command result, if one is waiting locally - reported on this check-in,
@@ -1422,7 +1328,7 @@ if (-not $Once) {
     # content). Does double duty: it's the ONLY way a dashboard "Force Inventory Pull" click can
     # reach a specific PC sooner than its next scheduled cycle (these PCs are on metered SIMs behind
     # NAT/cellular routers with no inbound reachability; the dashboard can never push to them, only
-    # they can poll out) - AND, on every cycle that isn't a force/popup, it sends a light check-in
+    # they can poll out) - AND, on every cycle that isn't a force, it sends a light check-in
     # (see Invoke-Checkin's -Light handling) so Online/Offline status, Issues, and Remote Access stay
     # fresh at 20-minute resolution without resending the installed-software list every time. Up to
     # ~20 minutes' latency and a small request are an easy trade for both of those.
@@ -1442,22 +1348,15 @@ if (-not $Once) {
 }
 
 # Every 20-minute poll checks in - lightly (see Invoke-Checkin's -Light handling above) unless a
-# Force Inventory Pull or a popup is waiting, in which case it does the real thing instead. A cheap
-# GET decides which, first:
+# Force Inventory Pull is waiting, in which case it does the real thing instead. A cheap GET decides
+# which, first:
 if ($PollOnce) {
     $forceRequested = $false
     try {
         $resp = Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10
         $forceRequested = $resp -and $resp.force
     } catch {}
-    # A stray popup shouldn't sit unreported for up to 6 hours either - this cheap window scan runs
-    # every 20-minute poll regardless of whether a Force Inventory Pull was requested, and triggers a
-    # full (not light) check-in immediately the moment one shows up (Invoke-Checkin re-detects it
-    # properly and reports it, including the screenshot) rather than waiting for the next scheduled
-    # cycle.
-    $popupNow = $false
-    try { $popupNow = (@(Get-VisibleIntrusiveWindows)).Count -gt 0 } catch {}
-    if ($forceRequested -or $popupNow) {
+    if ($forceRequested) {
         Invoke-Checkin
     } else {
         # The common case - keeps Online/Offline, Issues, and Remote Access fresh at 20-minute
@@ -1468,15 +1367,23 @@ if ($PollOnce) {
     exit
 }
 
-# Suppresses the Chrome/Edge "Show notifications?" permission prompt bar (the Burjuman screenshot) -
-# rendered INSIDE the browser's own window, so Get-VisibleIntrusiveWindows can't see it as a separate
-# popup; only a browser policy stops it before it ever appears. Deliberately does NOT touch anything
-# under Windows Defender/Security Center - an earlier version also disabled its notification toasts
-# via HKLM:\SOFTWARE\Microsoft\Windows Defender Security Center\Notifications, which is close to a
-# textbook "malware disables the antivirus" signature - Defender's own AMSI scanner flagged the whole
-# script as malicious content and blocked every fresh install outright the moment that shipped. The
-# general Windows Explorer notification-center key was left in as it's a documented, widely-used
-# enterprise kiosk policy setting, not something specific to security software.
+# Suppresses two known interruption classes at the source, since detecting them after the fact
+# turned out to be more trouble than it's worth on a real signage PC (see below):
+#  - Windows Action Center/toast notifications, via the Explorer policy key.
+#  - Chrome/Edge's own "Show notifications?" permission prompt bar, via a browser policy - this one
+#    can't be caught by watching for popups at all, since it renders INSIDE the browser's own window,
+#    not as a separate one.
+# Deliberately does NOT touch anything under Windows Defender/Security Center - an earlier version
+# also disabled its notification toasts via HKLM:\SOFTWARE\Microsoft\Windows Defender Security
+# Center\Notifications, which is close to a textbook "malware disables the antivirus" signature -
+# Defender's own AMSI scanner flagged the whole script as malicious content and blocked every fresh
+# install outright the moment that shipped. A later version also tried detecting arbitrary unexpected
+# popups generically (EnumWindows + a screenshot of whatever was found) as a fallback for anything
+# not covered by the two keys below - AMSI blocked that too, for the same reason: window enumeration
+# + screen capture + uploading the result over the network is close to the definition of spyware,
+# regardless of intent, and no amount of removing the Defender-specific key alone fixed it. Both were
+# pulled entirely rather than reworked further, since a working install matters far more than being
+# able to catch a stray popup on screen.
 # Runs on every real check-in (fresh install AND the 6-hourly -Once cycle, skipped only for the
 # lightweight 20-minute -PollOnce path via the exit above) rather than install time only - the outer
 # shell self-updates from the published agent-shell version on every run (Invoke-SelfUpdate above),

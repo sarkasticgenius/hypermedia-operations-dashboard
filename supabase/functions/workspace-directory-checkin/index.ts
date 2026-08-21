@@ -163,27 +163,6 @@ Deno.serve(async (req) => {
       row.du_scraped_at = new Date().toISOString();
     }
 
-    // Get-VisibleIntrusiveWindows (agent script) only sends these when it actually found something
-    // on screen that shouldn't be there - sticky (like last_command_output above) rather than
-    // cleared on every clean check-in, so the evidence survives until someone's actually looked at
-    // it, not just until the popup happens to be gone by the next 6-hourly cycle.
-    const popupTitles = Array.isArray(body.popupTitles)
-      ? body.popupTitles.slice(0, 20).map((t: any) => String(t).slice(0, 300)).filter(Boolean)
-      : [];
-    if (popupTitles.length) {
-      row.popup_titles = popupTitles;
-      row.popup_detected_at = new Date().toISOString();
-      if (typeof body.popupScreenshotBase64 === 'string' && body.popupScreenshotBase64.length) {
-        try {
-          const bytes = Uint8Array.from(atob(body.popupScreenshotBase64), (c) => c.charCodeAt(0));
-          const path = `workspace-popups/${hostname}-${Date.now()}.jpg`;
-          const { error: uploadError } = await adminClient.storage.from('attachments')
-            .upload(path, bytes, { contentType: 'image/jpeg', upsert: true });
-          if (!uploadError) row.popup_screenshot_path = path;
-        } catch { /* screenshot is best-effort evidence - the text detection above still gets through either way */ }
-      }
-    }
-
     const { data: saved, error } = await adminClient.from('workspace_devices')
       .upsert(row, { onConflict: 'hostname' }).select('pending_command').single();
     if (error) throw error;
