@@ -556,7 +556,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
   const shell = settings.workspaceDirectoryAgentShell || {};
   return `
     <div class="card">
-      <div class="card-head"><h3>Digital Directory Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, installed software, detected problems). The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Fully headless by design - no tray icon, window, or notification ever appears, since these PCs drive signage screens. Generate a secret, save, then run the .bat as Administrator on each PC once (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files). After that one install, every agent self-updates from Published Agent Version below - PCs in remote locations never need a physical reinstall again for anything except a secret rotation.</div></div>
+      <div class="card-head"><h3>Jstar Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, installed software, detected problems). The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Fully headless by design - no tray icon, window, or notification ever appears, since these PCs drive signage screens. Generate a secret, save, then run the .bat as Administrator on each PC once (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files). After that one install, every agent self-updates from Published Agent Version below - PCs in remote locations never need a physical reinstall again for anything except a secret rotation.</div></div>
       <form onsubmit="App.saveWorkspaceDirectoryAgentForm(event)">
         <div class="field"><label>Shared Agent Secret</label>
           <div style="display:flex;gap:8px;">
@@ -659,7 +659,7 @@ export async function publishWorkspaceDirectoryAgentShell() {
   const version = (settings.workspaceDirectoryAgentShell?.version || 0) + 1;
   try {
     await saveSetting('workspaceDirectoryAgentShell', { script, version, publishedAt: new Date().toISOString() });
-    await logAudit('Publish Digital Directory agent version', `v${version}`);
+    await logAudit('Publish Jstar Agent version', `v${version}`);
     invalidate('settings');
     toast(`Agent v${version} published - every PC self-updates on its next check-in.`);
     setState({});
@@ -919,12 +919,12 @@ function buildWorkspaceDirectoryAgentScript(secret, uninstallPasswordHash) {
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
   const uninstallHash = (uninstallPasswordHash || '').toLowerCase();
   const indented = defaultCollectorScript().split('\n').map((l) => `    ${l}`).join('\n');
-  return `# Digital Directory Agent
+  return `# Jstar Agent
 # Collects PC inventory and checks in with the Hypermedia Operations Dashboard every 6 hours via a
 # scheduled task (the SIM-data-usage figure itself is only recomputed about once a day regardless -
 # see workspace-directory-checkin), since several of these PCs run on metered cellular SIM data
 # rather than broadband. What gets collected is fetched fresh from the dashboard on every run
-# (Settings > Integrations > Digital Directory Agent > Data Collector Script) - this outer shell
+# (Settings > Integrations > Jstar Agent > Data Collector Script) - this outer shell
 # itself never needs to change or be re-installed to pick up a new field. Re-run this script any
 # time to update the install (e.g. after rotating the secret).
 #
@@ -950,6 +950,7 @@ $StatusFile = Join-Path $StateDir "status.json"
 $LogFile = Join-Path $StateDir "agent.log"
 $PendingBatchFile = Join-Path $StateDir "pending-command.bat"
 $DuScrapeStateFile = Join-Path $StateDir "du-scrape-last.txt"
+$PopupStateFile = Join-Path $StateDir "last-unexpected-windows.txt"
 $UninstallPasswordHash = "${uninstallHash}"
 
 # Self-elevate if not already running as Administrator (needed to register/unregister the
@@ -973,14 +974,14 @@ function Invoke-UninstallCleanup {
     Remove-Item -Path $StateDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Gated behind the password set in Settings > Integrations > Digital Directory Agent > Client
+# Gated behind the password set in Settings > Integrations > Jstar Agent > Client
 # Uninstall Password (stored/baked in as a SHA-256 hash only, never the plaintext) - so removing
 # the agent from a kiosk/back-office PC needs someone who actually has that password, not just
 # physical/admin access to the machine. Runs before self-update or anything network-related since
 # a PC being uninstalled shouldn't matter what version it's currently on.
 if ($Uninstall) {
     if (-not $UninstallPasswordHash) {
-        Write-Warning "No uninstall password has been set yet (Settings > Integrations > Digital Directory Agent > Client Uninstall Password on the dashboard). Set one there, Save, then Publish Latest Agent Version before this PC can be uninstalled."
+        Write-Warning "No uninstall password has been set yet (Settings > Integrations > Jstar Agent > Client Uninstall Password on the dashboard). Set one there, Save, then Publish Latest Agent Version before this PC can be uninstalled."
         exit 1
     }
     $securePwd = Read-Host "Enter the Digital Directory client uninstall password" -AsSecureString
@@ -993,9 +994,9 @@ if ($Uninstall) {
         Write-Warning "Incorrect password. Uninstall cancelled."
         exit 1
     }
-    Write-Host "Password confirmed - removing the Digital Directory Agent from this PC..." -ForegroundColor Yellow
+    Write-Host "Password confirmed - removing the Jstar Agent from this PC..." -ForegroundColor Yellow
     Invoke-UninstallCleanup
-    Write-Host "Digital Directory Agent uninstalled from this PC (scheduled tasks removed, local state deleted)." -ForegroundColor Green
+    Write-Host "Jstar Agent uninstalled from this PC (scheduled tasks removed, local state deleted)." -ForegroundColor Green
     Write-Host "Note: this PC's row on the dashboard is left as-is (last known state) - remove it there separately if needed."
     exit 0
 }
@@ -1018,7 +1019,7 @@ function Write-AgentStatus($success, $message) {
 }
 
 # Centralized-deployment half of the agent: compares this running script's own file content against
-# whatever's currently Published in Settings > Integrations > Digital Directory Agent, and if they
+# whatever's currently Published in Settings > Integrations > Jstar Agent, and if they
 # differ, overwrites itself and re-execs the NEW version immediately (so the rest of this run - task
 # registration, poll registration, check-in - already uses the updated logic), then exits so the stale
 # in-memory copy never continues. Runs before anything else so a PC in a remote location never needs
@@ -1197,6 +1198,35 @@ function Get-DuDataUsage {
     }
 }
 
+# Signage PCs should show ONLY their own player/browser content full-screen - Windows Update's own
+# "Setup"/"restart to finish installing" prompt, or some other app's error dialog, is itself the
+# problem regardless of what caused it (real examples: a fuel-pump screen showing a stray app
+# window, a Yas Mall totem with an open Windows dialog and taskbar visible over the ad content).
+# Deliberately just Get-Process/MainWindowTitle - no raw Win32 API calls (EnumWindows etc.), no
+# screen capture - an earlier version using both got blocked twice by Windows Defender's AMSI
+# scanner (window enumeration + screenshot + network upload is close to a textbook spyware
+# signature); this is a much more ordinary, common PowerShell pattern that doesn't do either.
+$Script:ExpectedForegroundProcesses = @(
+    'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost',
+    'TextInputHost', 'ScreenClippingHost', 'SystemSettings', 'LockApp',
+    'broadsignplayer', 'broadsign', 'grassfishplayer', 'grassfish',
+    'chrome', 'msedge', 'iexplore',
+    'powershell', 'powershell_ise', 'pwsh', 'conhost', 'cmd'
+)
+
+function Get-UnexpectedWindows {
+    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Trim() } | ForEach-Object {
+        $procName = $_.ProcessName
+        $isExpected = $false
+        foreach ($allowed in $Script:ExpectedForegroundProcesses) {
+            if ($procName -match [regex]::Escape($allowed)) { $isExpected = $true; break }
+        }
+        if (-not $isExpected) {
+            [pscustomobject]@{ title = $_.MainWindowTitle.Trim(); process = $procName }
+        }
+    }
+}
+
 function Invoke-Checkin([switch]$Light) {
     $remoteScript = Get-RemoteCollectorScript
     $data = $null
@@ -1221,6 +1251,29 @@ function Invoke-Checkin([switch]$Light) {
     if ($Light) {
         $data.software = @()
         $data.light = $true
+    }
+
+    # Only reported when the detected set actually CHANGES from last time (a local state file
+    # tracks the last-reported titles) - the same stray Windows Update prompt sitting there for
+    # hours shouldn't get resent every 20 minutes, only the moment something new shows up (or the
+    # existing one finally clears). Runs on every check-in (light or full) since it's cheap -
+    # Get-Process, no network calls, no screen capture.
+    try {
+        $__unexpected = @(Get-UnexpectedWindows)
+    } catch { $__unexpected = @() }
+    $__unexpectedKey = (($__unexpected | ForEach-Object { "$($_.title)|$($_.process)" }) | Sort-Object) -join ';'
+    $__lastPopupKey = if (Test-Path $PopupStateFile) { Get-Content -Path $PopupStateFile -Raw -ErrorAction SilentlyContinue } else { '' }
+    if ($__unexpectedKey -ne $__lastPopupKey) {
+        New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-Content -Path $PopupStateFile -Value $__unexpectedKey -Encoding utf8 -NoNewline
+        if ($__unexpected.Count -gt 0) {
+            $popupSummary = ($__unexpected | ForEach-Object { "$($_.title) ($($_.process))" }) -join '; '
+            $existingProblems = @($data.problems) | Where-Object { $_ }
+            $data.problems = @($existingProblems + "Unexpected window/popup detected: $popupSummary")
+            Write-AgentLog "Popup/unexpected window detected: $popupSummary"
+        } else {
+            Write-AgentLog "Previously-detected popup/unexpected window is gone."
+        }
     }
 
     # A previous cycle's command result, if one is waiting locally - reported on this check-in,
@@ -1422,7 +1475,7 @@ export function downloadWorkspaceDirectoryAgentScript() {
   const settings = STATE.pageData.settings?.data || {};
   const secret = settings.workspaceDirectoryAgent?.secret;
   if (!secret) { toast('Save a secret first', 'error'); return; }
-  downloadTextFile(buildWorkspaceDirectoryAgentScript(secret, settings.workspaceDirectoryAgent?.uninstallPasswordHash), 'Install-DigitalDirectoryAgent.ps1');
+  downloadTextFile(buildWorkspaceDirectoryAgentScript(secret, settings.workspaceDirectoryAgent?.uninstallPasswordHash), 'Install-JstarAgent.ps1');
 }
 
 // Plain double-clickable launcher, same idea as the reference NSOC agent's own .cmd wrapper -
@@ -1442,10 +1495,10 @@ IF %ERRORLEVEL% NEQ 0 (
     GOTO :ADMIN_ELEVATION
 )
 
-ECHO Launching Digital Directory Agent installation...
+ECHO Launching Jstar Agent installation...
 ECHO.
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-DigitalDirectoryAgent.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-JstarAgent.ps1"
 IF %ERRORLEVEL% NEQ 0 (
     ECHO.
     ECHO Installation failed - see the error above.
@@ -1465,10 +1518,10 @@ GOTO :EOF
 }
 
 export function downloadWorkspaceDirectoryAgentBatch() {
-  downloadTextFile(buildAgentBatchLauncher(), 'Install-DigitalDirectoryAgent.bat');
+  downloadTextFile(buildAgentBatchLauncher(), 'Install-JstarAgent.bat');
 }
 
-// Runs the SAME installed Install-DigitalDirectoryAgent.ps1 (must already be in this folder from
+// Runs the SAME installed Install-JstarAgent.ps1 (must already be in this folder from
 // the install above) with -Uninstall instead of a separate script - the .ps1 itself prompts for
 // the Client Uninstall Password and does the actual removal (see the $Uninstall block in
 // buildWorkspaceDirectoryAgentScript above); this .bat is just the same double-clickable/elevated
@@ -1484,11 +1537,11 @@ IF %ERRORLEVEL% NEQ 0 (
     GOTO :ADMIN_ELEVATION
 )
 
-ECHO Uninstalling the Digital Directory Agent from this PC...
+ECHO Uninstalling the Jstar Agent from this PC...
 ECHO You will be asked for the Client Uninstall Password.
 ECHO.
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-DigitalDirectoryAgent.ps1" -Uninstall
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-JstarAgent.ps1" -Uninstall
 IF %ERRORLEVEL% NEQ 0 (
     ECHO.
     ECHO Uninstall failed or was cancelled - see the error above.
@@ -1508,7 +1561,7 @@ GOTO :EOF
 }
 
 export function downloadWorkspaceDirectoryAgentUninstallBatch() {
-  downloadTextFile(buildAgentUninstallBatchLauncher(), 'Uninstall-DigitalDirectoryAgent.bat');
+  downloadTextFile(buildAgentUninstallBatchLauncher(), 'Uninstall-JstarAgent.bat');
 }
 
 function renderAssetInventoryApiCard(settings) {

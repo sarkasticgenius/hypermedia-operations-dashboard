@@ -390,7 +390,7 @@ export function renderWorkspaceDirectory() {
   const ghostHtml = ghostBannerHtml(Array.isArray(ghostDevices) ? ghostDevices : []);
 
   if (!devices.length) {
-    return `${ghostHtml}<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Digital Directory Agent) on a PC and it'll appear here within a few minutes of install (after that, it checks in every 6 hours).</div></div>`;
+    return `${ghostHtml}<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Jstar Agent) on a PC and it'll appear here within a few minutes of install (after that, it checks in every 6 hours).</div></div>`;
   }
 
   const simById = new Map(simCards.map((s) => [s.id, s]));
@@ -664,7 +664,7 @@ function ghostBannerHtml(ghostDevices) {
 // picks up a pending_command) and reports back immediately once done, rather than waiting a second
 // cycle like a normal Run Command - there's no "next cycle" to report on once its tasks are gone.
 export async function queueRemoteWorkspaceUninstall(id) {
-  if (!confirm('Remotely uninstall the Digital Directory Agent from this PC? Its scheduled tasks and local state will be removed on its next check-in (within ~20 minutes). This cannot be undone from here - the agent would need to be reinstalled locally on that PC to bring it back.')) return;
+  if (!confirm('Remotely uninstall the Jstar Agent from this PC? Its scheduled tasks and local state will be removed on its next check-in (within ~20 minutes). This cannot be undone from here - the agent would need to be reinstalled locally on that PC to bring it back.')) return;
   try {
     await updateWorkspaceDevice(id, { pending_command: '::UNINSTALL' });
     await logAudit('Queue remote agent uninstall', id);
