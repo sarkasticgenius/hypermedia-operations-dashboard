@@ -27,6 +27,8 @@ import * as workspaceDirectoryPage from './pages/workspaceDirectory.js';
 import * as recycleBinPage from './pages/recycleBin.js';
 import * as clientCampaignMonitorPage from './pages/clientCampaignMonitor.js';
 import { initContractorPortal, renderContractorPortal, bindContractorPortalForm } from './pages/contractorPortal.js';
+import { initScreenReportPortal, renderScreenReportPortal, bindScreenReportPortalForm } from './pages/screenReportPortal.js';
+import * as screenReportsPage from './pages/screenReports.js';
 import { renderShell, goToPage, doLogout, goToDashGroup, goToDashLink, goToClientMonitor, goBack, toggleNavExpand, stopImpersonating } from './shell.js';
 import { registerPage, renderPage } from './router.js';
 import { renderModalRoot } from './modals.js';
@@ -45,6 +47,12 @@ if (initContractorPortal()) {
     bindContractorPortalForm(renderPortal);
   }
   renderPortal();
+} else if (initScreenReportPortal()) {
+  async function renderReportPortal() {
+    appEl.innerHTML = await renderScreenReportPortal();
+    bindScreenReportPortalForm(renderReportPortal);
+  }
+  renderReportPortal();
 } else {
   bootMainApp();
 }
@@ -77,6 +85,7 @@ registerPage('grassfishPanel', networkPanelsPage.renderGrassfishPanel);
 registerPage('iotPanel', networkPanelsPage.renderIotPanel);
 registerPage('creativeResizer', creativeResizerPage.renderCreativeResizer);
 registerPage('workspaceDirectory', workspaceDirectoryPage.renderWorkspaceDirectory);
+registerPage('screenReports', screenReportsPage.renderScreenReports);
 
 // Every inline onclick="App.xyz(...)" in the HTML-string page templates resolves against this
 // single global, assembled here from each page module's exported handlers. Keeps the render-
@@ -121,6 +130,7 @@ window.App = {
   ...networkPanelsPage,
   ...bulkImportPage,
   ...workspaceDirectoryPage,
+  ...screenReportsPage,
   ...recycleBinPage,
   ...clientCampaignMonitorPage,
 };

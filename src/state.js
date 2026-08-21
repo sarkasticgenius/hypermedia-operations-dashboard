@@ -64,7 +64,13 @@ export function render() {
 
   const fieldSnapshot = {};
   if (modalEl) {
-    modalEl.querySelectorAll('input[id], select[id], textarea[id]').forEach((el) => {
+    // type="file" is excluded entirely, not just from the checkbox/radio branch - its .value is a
+    // browser-fabricated string (e.g. "C:\fakepath\name.exe") that the browser then REFUSES to
+    // write back (throws "may only be programmatically set to the empty string"), and there's no
+    // way to restore the actual selected File across an innerHTML rebuild regardless (the DOM node
+    // holding it is destroyed). Confirmed live: a re-render mid-upload (any setState(), e.g. the
+    // upload's own "Uploading..." toast) threw here and silently aborted the whole upload.
+    modalEl.querySelectorAll('input[id]:not([type="file"]), select[id], textarea[id]').forEach((el) => {
       fieldSnapshot[el.id] = (el.type === 'checkbox' || el.type === 'radio') ? { checked: el.checked } : { value: el.value };
     });
   }

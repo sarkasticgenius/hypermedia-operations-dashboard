@@ -24,6 +24,7 @@ const NAV_ITEMS_TOP = [
   { page: 'tickets', label: 'Ticketing' },
   { page: 'simCards', label: 'SIM Cards' },
   { page: 'workspaceDirectory', label: 'Digital Directory' },
+  { page: 'screenReports', label: 'Screen Reports' },
 ];
 const NAV_ITEMS_BOTTOM = [
   { page: 'staticCampaigns', label: 'Static Campaigns' },
@@ -49,6 +50,7 @@ const NAV_ICONS = {
   Ticketing: { grad: ['#7c3aed', '#a855f7'], svg: '<path d="M3 8a2 2 0 012-2h14a2 2 0 012 2v2a2 2 0 000 4v2a2 2 0 01-2 2H5a2 2 0 01-2-2v-2a2 2 0 000-4z"/><path d="M14 6v12" stroke-dasharray="2 2"/>' },
   'SIM Cards': { grad: ['#0284c7', '#38bdf8'], svg: '<path d="M4 20h2v-4H4z"/><path d="M9 20h2v-8H9z"/><path d="M14 20h2v-12h-2z"/><path d="M19 20h2v-16h-2z"/>' },
   'Digital Directory': { grad: ['#0891b2', '#22d3ee'], svg: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><circle cx="7.5" cy="6.5" r=".6" fill="#fff"/><circle cx="9.5" cy="6.5" r=".6" fill="#fff"/>' },
+  'Screen Reports': { grad: ['#dc2626', '#f97316'], svg: '<rect x="4" y="3" width="16" height="16" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/><path d="M12 13v3M12 18h.01"/>' },
   'Static Campaigns': { grad: ['#db2777', '#f472b6'], svg: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-6-6-4 4-2-2-6 6"/>' },
   'Traffic Sheet': { grad: ['#ea580c', '#dc2626'], svg: '<rect x="9" y="2" width="6" height="16" rx="3"/><circle cx="12" cy="6" r="1.3"/><circle cx="12" cy="10" r="1.3"/><circle cx="12" cy="14" r="1.3"/><path d="M9 20h6"/>' },
   Reporting: { grad: ['#0ea5e9', '#6366f1'], svg: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M9 16v-3M12 16v-5M15 16v-2"/>' },
@@ -245,6 +247,7 @@ const PAGE_TITLES = {
   tickets: 'Ticketing',
   simCards: 'SIM Cards',
   workspaceDirectory: 'Digital Directory',
+  screenReports: 'Screen Reports',
   campaigns: 'Digital Campaigns',
   gantt: 'Campaign Calendar',
   staticCampaigns: 'Static Campaigns',

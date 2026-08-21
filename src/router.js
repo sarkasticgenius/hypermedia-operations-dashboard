@@ -24,6 +24,7 @@ export const PAGE_AREA = {
   reporting: 'reporting',
   dashboards: 'dashboards',
   workspaceDirectory: 'workspaceDirectory',
+  screenReports: 'screenReports',
   creativeResizer: null,
   admin: 'admin',
   settings: 'admin',

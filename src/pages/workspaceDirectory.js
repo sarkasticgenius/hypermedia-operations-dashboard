@@ -7,6 +7,7 @@ import { canEdit, canDelete } from '../auth.js';
 import { esc, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
+import { supabase } from '../supabaseClient.js';
 
 // The agent checks in every 6 hours (deliberately infrequent - several of these PCs run on
 // metered cellular SIM data; the SIM-data-usage figure specifically is only recomputed about once a
@@ -198,6 +199,49 @@ function commandPresetsHtml(pkgInputId, chocoInputId, targetId) {
     </div>`;
 }
 
+// Lets an admin queue an actual installer package (not just a script referencing a URL) - uploads
+// the file to the private agent-installers bucket, mints a signed URL (expires in 7 days - long
+// enough to survive this device's next check-in even at the slow end of its 6-hourly cadence), and
+// writes a PowerShell one-liner that downloads and runs it silently. The signed URL is what lets
+// the agent's plain Invoke-WebRequest through despite the bucket itself staying private - nothing
+// else needs to be public.
+function installerUploadHtml(fileInputId, argsInputId, targetId) {
+  return `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center;">
+      <span class="small muted">Deploy an installer (.exe/.msi):</span>
+      <input type="file" id="${fileInputId}" accept=".exe,.msi" style="flex:1;min-width:160px;font-size:12px;">
+      <input id="${argsInputId}" placeholder="Silent args (.exe only, e.g. /S or /verysilent)" style="flex:1;min-width:160px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+      <button type="button" class="btn-sm" onclick="App.uploadWorkspaceInstaller('${fileInputId}', '${argsInputId}', '${targetId}')">Upload &amp; Queue Install</button>
+    </div>`;
+}
+
+export async function uploadWorkspaceInstaller(fileInputId, argsInputId, targetId) {
+  const fileInput = document.getElementById(fileInputId);
+  const file = fileInput?.files?.[0];
+  if (!file) { toast('Choose a .exe or .msi file first', 'error'); return; }
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (ext !== 'exe' && ext !== 'msi') { toast('Only .exe or .msi files are supported', 'error'); return; }
+  const silentArgs = (document.getElementById(argsInputId)?.value || '').trim();
+  const path = `installers/${crypto.randomUUID()}-${file.name}`;
+  try {
+    toast('Uploading...');
+    const { error: uploadError } = await supabase.storage.from('agent-installers').upload(path, file, { contentType: 'application/octet-stream' });
+    if (uploadError) throw uploadError;
+    // 7 days - long enough to survive this device's next check-in even at the slow end of its
+    // 6-hourly cadence, or a PC that's been powered off for a few days.
+    const { data: signed, error: signError } = await supabase.storage.from('agent-installers').createSignedUrl(path, 604800);
+    if (signError) throw signError;
+    const localPath = `$env:TEMP\\${file.name}`;
+    const command = ext === 'msi'
+      ? `Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile "${localPath}" -UseBasicParsing; Start-Process msiexec.exe -ArgumentList '/i "${localPath}" /qn /norestart' -Wait; Remove-Item "${localPath}" -Force -ErrorAction SilentlyContinue`
+      : `Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile "${localPath}" -UseBasicParsing; Start-Process "${localPath}"${silentArgs ? ` -ArgumentList '${silentArgs}'` : ''} -Wait; Remove-Item "${localPath}" -Force -ErrorAction SilentlyContinue`;
+    fillWorkspaceCommand(command, targetId);
+    toast(`${file.name} uploaded - review the generated command below, then Save/Queue.`);
+  } catch (e) {
+    toast(e.message || 'Upload failed', 'error');
+  }
+}
+
 // Cross-references this PC with the screen it drives in the Broadsign/Grassfish Console, by the
 // same Player Box ID those syncs themselves match on (see broadsign-sync/grassfish-sync) - so an
 // admin can see "this PC is behind screen X at location Y" without leaving Digital Directory.
@@ -260,7 +304,21 @@ function volumeCellHtml(d) {
   </div>`;
 }
 
-function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds) {
+// Same used/total percentage math as the SIM Data Usage tile above, collapsed to a single striped
+// pipe (matching volumeCellHtml's treatment of Volume) so the main table gives an at-a-glance data
+// warning without needing to scroll to the tile grid - positioned before Volume since data running
+// out is the more time-sensitive of the two (a full disk is rarely urgent; a cut-off SIM is).
+function dataUsageCellHtml(d, sim) {
+  const haveDu = !!d.du_scraped_at;
+  const allocGb = haveDu && d.du_data_total_gb != null ? Number(d.du_data_total_gb) : (Number(sim?.data_allocation_gb) || 0);
+  if (!allocGb) return '<span class="small muted">-</span>';
+  const usedGb = haveDu && d.du_data_used_gb != null ? Number(d.du_data_used_gb) : (d.data_used_mb_period || 0) / 1024;
+  const pct = Math.min(100, (usedGb / allocGb) * 100);
+  const color = pct >= 90 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
+  return `<div title="${usedGb.toFixed(2)} of ${allocGb} GB used${haveDu ? ' (DU)' : ''}">${stripedBarHtml(pct, color)}</div>`;
+}
+
+function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
   const online = isOnline(d);
   const problemCount = (d.problems || []).length;
   return `<tr>
@@ -269,6 +327,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds) {
     <td class="small">${esc(d.location || '-')}</td>
     <td class="small" style="white-space:nowrap;">${esc(d.ip_address || '-')}</td>
     <td>${remoteAccessButtonHtml(d)}</td>
+    <td>${dataUsageCellHtml(d, sim)}</td>
     <td>${volumeCellHtml(d)}</td>
     <td>${statusDotHtml(online)}</td>
     <td>${matchedScreenHtml(matchedScreenFor(d, assetInventory))}</td>
@@ -279,7 +338,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds) {
     <td style="white-space:nowrap;">
       <button class="btn-sm" onclick="App.openWorkspaceDetailsModal('${d.id}')">Details</button>
       ${editOk ? `<button class="btn-sm" onclick="App.openWorkspaceEditModal('${d.id}')">Edit</button>` : ''}
-      ${editOk && !d.force_checkin_requested ? `<button class="btn-sm" title="Ask this PC to check in within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force Pull</button>` : ''}
+      ${editOk && !d.force_checkin_requested ? `<button class="btn-sm" title="${d.pending_command ? 'Push the queued Run Command to this PC now' : 'Pull fresh inventory from this PC now'} - within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force</button>` : ''}
       ${deleteOk ? `<button class="btn-sm" onclick="App.removeWorkspaceDevice('${d.id}')">Delete</button>` : ''}
     </td>
   </tr>`;
@@ -375,8 +434,8 @@ export function renderWorkspaceDirectory() {
   const selectedIds = new Set(STATE.workspaceDirectorySelectedIds || []);
   const sortedIds = sorted.map((d) => d.id);
   const allSelected = sortedIds.length > 0 && sortedIds.every((id) => selectedIds.has(id));
-  const colCount = editOk ? 13 : 12;
-  const rows = sorted.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds)).join('')
+  const colCount = editOk ? 14 : 13;
+  const rows = sorted.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, simById.get(d.sim_card_id))).join('')
     || `<tr><td colspan="${colCount}"><div class="empty">No devices match "${esc(STATE.workspaceDirectorySearch || '')}".</div></td></tr>`;
 
   return `
@@ -415,6 +474,7 @@ export function renderWorkspaceDirectory() {
             ${sortTh('workspaceDevices', 'location', 'Location', 12)}
             ${sortTh('workspaceDevices', 'ip', 'IP', 15)}
             <th style="width:15ch;">Remote Access</th>
+            <th style="width:14ch;">Data Usage</th>
             <th style="width:14ch;">Volume</th>
             <th style="width:8ch;">Status</th>
             <th style="width:20ch;">Matched Screen</th>
@@ -519,18 +579,25 @@ export async function clearWorkspacePendingCommand(deviceId) {
   } catch (e) { toast(e.message || 'Failed to clear command', 'error'); }
 }
 
+// One button, two effects depending on what's already true of the device - not really "pull" as a
+// separate concept from "push": a forced check-in ALWAYS runs Invoke-Checkin, which (per the agent
+// shell) executes any pending_command as part of that same check-in before reporting back - so if
+// a Run Command is queued, forcing effectively pushes it out now instead of waiting on the device's
+// own schedule; if nothing's queued, the same forced check-in just pulls fresh inventory instead.
 // The dashboard can never reach OUT to these PCs directly - they're on metered SIMs behind
-// NAT/cellular routers with no inbound reachability - so "force" just sets a flag that the agent's
-// own hidden poll task (WorkspaceDirectoryAgentPoll, runs as SYSTEM every 20 minutes, no UI) picks
-// up and acts on locally. Up to ~20 minutes' latency, not instant, but far faster than waiting for
-// the next scheduled 6-hourly check-in - and runs regardless of whether anyone's signed into that
-// PC, since it's a SYSTEM task rather than a signed-in-user one.
+// NAT/cellular routers with no inbound reachability - so this only ever sets a flag that the
+// agent's own hidden poll task (WorkspaceDirectoryAgentPoll, runs as SYSTEM every 20 minutes, no
+// UI) picks up and acts on locally. Up to ~20 minutes' latency, not instant, but far faster than
+// waiting for the next scheduled 6-hourly check-in - and runs regardless of whether anyone's
+// signed into that PC, since it's a SYSTEM task rather than a signed-in-user one.
 export async function forceWorkspaceInventoryPull(deviceId) {
   try {
+    const devices = STATE.pageData.workspaceDevices?.data || [];
+    const hasPending = !!devices.find((d) => d.id === deviceId)?.pending_command;
     await updateWorkspaceDevice(deviceId, { force_checkin_requested: true });
-    await logAudit('Force Digital Directory inventory pull', deviceId);
+    await logAudit('Force Digital Directory check-in', deviceId);
     invalidate('workspaceDevices');
-    toast('Requested - picked up within ~20 minutes.');
+    toast(hasPending ? 'Queued command will be pushed within ~20 minutes.' : 'Requested - picked up within ~20 minutes.');
     setState({});
   } catch (e) { toast(e.message || 'Failed to request pull', 'error'); }
 }
@@ -561,16 +628,18 @@ export async function removeWorkspaceDevice(id) {
 registerModal('workspaceLocation', (data) => {
   const devices = STATE.pageData.workspaceDevices?.data || [];
   const assetInventory = STATE.pageData.assetInventory?.data || [];
+  const simCards = STATE.pageData.simCardsForDirectory?.data || [];
+  const simById = new Map(simCards.map((s) => [s.id, s]));
   const list = devices.filter((d) => ((d.location || '').trim() || 'Unassigned') === data.location);
   const editOk = canEdit('workspaceDirectory');
   const deleteOk = canDelete('workspaceDirectory');
   const selectedIds = new Set(STATE.workspaceDirectorySelectedIds || []);
-  const rows = list.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds)).join('') || `<tr><td colspan="${editOk ? 13 : 12}"><div class="empty">No devices.</div></td></tr>`;
+  const rows = list.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, simById.get(d.sim_card_id))).join('') || `<tr><td colspan="${editOk ? 14 : 13}"><div class="empty">No devices.</div></td></tr>`;
   return `
     <h3>${esc(data.location)} - ${list.length} device(s)</h3>
     <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:15ch;">Remote Access</th><th style="width:14ch;">Volume</th><th style="width:8ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
+        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:15ch;">Remote Access</th><th style="width:14ch;">Data Usage</th><th style="width:14ch;">Volume</th><th style="width:8ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -674,6 +743,7 @@ registerModal('workspaceEdit', (data) => {
         <div class="small muted" style="margin-top:4px;">Used to show data used vs. plan size on the Digital Directory's SIM Data Usage tiles.${device.sim_card_id ? ` <button type="button" class="link-btn" onclick="App.resetWorkspaceDataUsage('${device.id}')">Reset usage counter</button>` : ''}</div>
       </div>
       <div class="field"><label>Run Command (runs on this device's next check-in)</label>
+        ${installerUploadHtml('wd-edit-installer', 'wd-edit-installer-args', 'wd-edit-command')}
         ${commandPresetsHtml('wd-edit-pkgid', 'wd-edit-chocoid', 'wd-edit-command')}
         ${commandTypeRadiosHtml('wd-edit-command', pendingIsBatch ? 'batch' : 'powershell')}
         <textarea id="wd-edit-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent">${esc(stripBatchMarker(device.pending_command))}</textarea>
@@ -696,6 +766,7 @@ registerModal('workspaceBulkDeploy', () => {
     <div class="small muted" style="margin-bottom:10px;">${esc(names.join(', ')) || `${ids.length} device(s)`}</div>
     <form onsubmit="App.saveWorkspaceBulkDeploy(event)">
       <div class="field"><label>Run Command (PowerShell, runs on each selected device's next check-in)</label>
+        ${installerUploadHtml('wd-bulk-installer', 'wd-bulk-installer-args', 'wd-bulk-command')}
         ${commandPresetsHtml('wd-bulk-pkgid', 'wd-bulk-chocoid', 'wd-bulk-command')}
         ${commandTypeRadiosHtml('wd-bulk-command', 'powershell')}
         <textarea id="wd-bulk-command" rows="2" placeholder="e.g. winget install -e --id 7zip.7zip --silent"></textarea>

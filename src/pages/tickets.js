@@ -2,6 +2,7 @@ import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } f
 import { loadingCard, registerModal } from '../modals.js';
 import { canAdd, canEdit, canDelete, canExportArea } from '../auth.js';
 import { listTickets, saveTicket, deleteTicket } from '../data/tickets.js';
+import { updateScreenReport } from '../data/screenReports.js';
 import { listLocations } from '../data/locations.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { assetInventoryForLocationFull, screenLabel } from '../data/locationStats.js';
@@ -447,12 +448,24 @@ export async function saveTicketForm(event) {
     dateClosed: status === 'Closed' ? new Date().toISOString().slice(0, 10) : null,
   };
   const photoFile = document.getElementById('tk-photo')?.files?.[0] || null;
+  // A ticket opened from Screen Reports > Create Ticket carries this through the modal's own data
+  // (STATE.modal.data, the prefill object) rather than any form field, since it's plumbing between
+  // pages, not something the admin edits - marks that report handled once the ticket actually
+  // saves, so it drops off the "needs action" list without deleting the report itself (still
+  // useful history against that screen).
+  const screenReportId = STATE.modal?.data?.__screenReportId || null;
   try {
-    await saveTicket(row, photoFile);
+    const saved = await saveTicket(row, photoFile);
     await logAudit(id ? 'Edit ticket' : 'Add ticket', row.title);
     invalidate('ticketsPage');
     invalidate('opsOverviewV2');
     invalidate('assetsInventoryPage');
+    if (screenReportId) {
+      try {
+        await updateScreenReport(screenReportId, { status: 'Ticket Created', ticket_id: saved.id });
+        invalidate('screenReports');
+      } catch (e) { /* non-fatal - the ticket itself already saved fine */ }
+    }
     closeModal();
     toast('Ticket saved');
   } catch (e) { toast(e.message, 'error'); }

@@ -14,6 +14,7 @@ import { logAudit } from '../lib/audit.js';
 import { esc, fmtDate } from '../lib/format.js';
 import { exportToExcel } from '../lib/excelExport.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
+import QRCode from 'qrcode';
 
 const PAGE_SIZE_OPTIONS = [50, 100, 150, 200];
 const DEFAULT_PAGE_SIZE = 50;
@@ -149,7 +150,8 @@ export function renderAssetsInventory() {
       <td class="tcenter">${r.pdooh_ready ? '<span class="badge b-green">Yes</span>' : '<span class="muted small">No</span>'}</td>
       <td>${r.contractor_id ? esc(contractorLabel(contractors, r.contractor_id)) : '<span class="muted small">-</span>'}</td>
       <td>${ticketCountByAsset[r.id] ? `<button class="link-btn" onclick="App.openAssetTicketHistory('${r.id}')">${ticketCountByAsset[r.id]}</button>` : '<span class="muted small">0</span>'}</td>
-      <td>
+      <td style="white-space:nowrap;">
+        <button class="btn-sm" onclick="App.openAssetQrModal('${r.id}')">QR Code</button>
         ${editOk ? `<button class="btn-sm" onclick="App.editAssetInv('${r.id}')">Edit</button>` : ''}
         ${delOk ? `<button class="btn-sm" onclick="App.removeAssetInv('${r.id}')">Delete</button>` : ''}
       </td>
@@ -575,3 +577,90 @@ registerModal('assetTicketHistory', (data) => {
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
   `;
 });
+
+// Builds the exact URL a scanned QR code should open - the no-login screen-report portal for this
+// one asset (see src/pages/screenReportPortal.js). origin+pathname (not a hardcoded domain) so this
+// keeps working whether generated from localhost during testing or the real deployed URL.
+function screenReportUrlFor(assetId) {
+  return `${window.location.origin}${window.location.pathname}?portal=report&asset=${assetId}`;
+}
+
+export function openAssetQrModal(id) {
+  openModal('assetQr', { id, label: 'name' });
+  renderAssetQrPreview(id, 'name');
+}
+
+registerModal('assetQr', (data) => {
+  const pd = pageData();
+  const row = (pd?.rows || []).find((r) => r.id === data.id);
+  if (!row) return `<div class="empty">Screen not found.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
+  return `
+    <h3>QR Code - ${esc(row.name)}</h3>
+    <div class="small muted" style="margin-bottom:10px;">Print this and stick it on the physical screen. Anyone scanning it can report an issue - with an optional photo/video - straight to Screen Reports, no login needed.</div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
+      <div id="aqr-canvas-wrap" style="min-height:280px;display:flex;align-items:center;justify-content:center;">Generating...</div>
+      <div class="small" style="display:flex;gap:14px;">
+        <label style="display:flex;align-items:center;gap:5px;font-weight:400;"><input type="radio" name="aqr-label" value="name" checked style="width:auto;" onchange="App.renderAssetQrPreview('${row.id}', 'name')"> Label with Name</label>
+        <label style="display:flex;align-items:center;gap:5px;font-weight:400;"><input type="radio" name="aqr-label" value="assetId" style="width:auto;" onchange="App.renderAssetQrPreview('${row.id}', 'assetId')"> Label with Asset ID</label>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="App.closeModal()">Close</button>
+      <button class="btn btn-orange" onclick="App.downloadAssetQrCode('${row.id}')">Download for Printing</button>
+    </div>
+  `;
+});
+
+// Redrawn on open and on every label-choice change - cheap enough (a few ms) that there's no need
+// to cache a previous render, and it keeps the preview and the eventual download pixel-identical.
+export async function renderAssetQrPreview(assetId, labelMode) {
+  const pd = pageData();
+  const row = (pd?.rows || []).find((r) => r.id === assetId);
+  const wrap = document.getElementById('aqr-canvas-wrap');
+  if (!row || !wrap) return;
+  const labelText = labelMode === 'assetId' ? (row.source_asset_id != null ? String(row.source_asset_id) : row.id) : row.name;
+  try {
+    const dataUrl = await QRCode.toDataURL(screenReportUrlFor(assetId), { width: 240, margin: 1 });
+    wrap.innerHTML = `<div style="text-align:center;"><img src="${dataUrl}" style="width:240px;height:240px;"><div class="small" style="margin-top:6px;font-weight:600;">${esc(labelText)}</div></div>`;
+  } catch (e) {
+    wrap.textContent = 'Failed to generate QR code.';
+  }
+}
+
+// Composites the QR + label onto one canvas (rather than just downloading the bare QR image) so
+// what gets printed already has the screen's name/id readable next to it - one file, ready to
+// print and cut out, no separate label needed.
+export async function downloadAssetQrCode(assetId) {
+  const pd = pageData();
+  const row = (pd?.rows || []).find((r) => r.id === assetId);
+  if (!row) return;
+  const labelMode = document.querySelector('input[name="aqr-label"]:checked')?.value || 'name';
+  const labelText = labelMode === 'assetId' ? (row.source_asset_id != null ? String(row.source_asset_id) : row.id) : row.name;
+  try {
+    const qrCanvas = document.createElement('canvas');
+    await QRCode.toCanvas(qrCanvas, screenReportUrlFor(assetId), { width: 480, margin: 2 });
+    const canvas = document.createElement('canvas');
+    canvas.width = qrCanvas.width;
+    canvas.height = qrCanvas.height + 70;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(qrCanvas, 0, 0);
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 28px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(labelText, canvas.width / 2, qrCanvas.height + 45, canvas.width - 20);
+    canvas.toBlob((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `qr-${(row.name || row.id).toString().replace(/[^a-z0-9-_]+/gi, '_')}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    });
+  } catch (e) {
+    toast('Failed to generate QR code for download', 'error');
+  }
+}
