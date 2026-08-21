@@ -1107,13 +1107,171 @@ function Invoke-PendingCommand($command) {
 # alternative to the network-adapter-counter estimate above. No login is needed: browsing to that
 # page over the SIM's OWN mobile-data connection auto-identifies the subscriber (the whole reason
 # this works without ever touching a password/OTP) - so this only produces useful data on a PC
-# whose internet actually egresses through that SIM, not over Wi-Fi/office LAN. Uses headless
-# Edge/Chrome's own --dump-dom flag rather than Selenium/WebDriver - no extra tooling to install.
-# The exact page layout isn't something we have visibility into ahead of time, so parsing is
-# keyword-proximity based (looks for a number near "used"/"left"/"total" etc) rather than a fixed
-# selector - queue "Get-DuDataUsage | ConvertTo-Json" as a Run Command from the dashboard to see
-# the raw parsed result (or the raw page text if nothing could be parsed) for tuning.
+# whose internet actually egresses through that SIM, not over Wi-Fi/office LAN. Queue
+# "Get-DuDataUsage | ConvertTo-Json" as a Run Command from the dashboard to see the raw result for
+# tuning either method below.
+#
+# Tries the network-based method first (reads the page's own underlying API response directly - see
+# Get-DuDataUsageViaNetwork below), falling back to the older DOM-text method only if that comes back
+# empty. EXPERIMENTAL: the network method is unverified against a real account as of this writing -
+# this dispatcher exists specifically so a PC where it doesn't pan out is no worse off than before,
+# not silently stuck on a method that never works for it.
 function Get-DuDataUsage {
+    $viaNetwork = $null
+    try { $viaNetwork = Get-DuDataUsageViaNetwork } catch { Write-AgentLog "DU network-based scrape failed: $($_.Exception.Message)" }
+    if ($viaNetwork -and ($null -ne $viaNetwork.dataUsedGb -or $null -ne $viaNetwork.dataTotalGb)) { return $viaNetwork }
+    return Get-DuDataUsageViaDom
+}
+
+# Modeled on a working reference script (Python + Selenium-wire, already deployed via a separate
+# NSOC/GLPI agent on some of these same PCs) that reads the SAME underlying API call the page's own
+# JavaScript uses to render the usage bar - a request whose URL contains "dashboard/query", returning
+# resultBody.dashBoardValue.{monthTotal,monthUsed,monthLeft} in KB - plus the phone number straight
+# from the page's own localStorage ('serviceNo'). Far more reliable than parsing whatever text
+# happens to be visible once the page's async JS finishes rendering (see Get-DuDataUsageViaDom's
+# fragility below), since this reads the structured data directly rather than guessing at rendered
+# markup we don't control or get to preview ahead of time.
+#
+# Talks to headless Edge/Chrome's own DevTools Protocol over a plain WebSocket - no Selenium/Python
+# needed on the PC, just the browser already required for the DOM method. Every step is wrapped in a
+# generous but firm timeout (nothing here can hang indefinitely - the worst case is returning $null a
+# few seconds later than usual, letting the DOM method take over).
+function Get-DuDataUsageViaNetwork {
+    $browserPaths = @(
+        "$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe",
+        "\${env:ProgramFiles(x86)}\\Microsoft\\Edge\\Application\\msedge.exe",
+        "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe",
+        "\${env:ProgramFiles(x86)}\\Google\\Chrome\\Application\\chrome.exe"
+    )
+    $browser = $browserPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $browser) { return $null }
+
+    $port = Get-Random -Minimum 9300 -Maximum 9899
+    $tempProfile = Join-Path $env:TEMP ("du-scrape-cdp-" + [guid]::NewGuid().ToString("N"))
+    $proc = $null
+    $client = $null
+    try {
+        $proc = Start-Process -FilePath $browser -ArgumentList @(
+            "--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=$tempProfile",
+            "--no-first-run", "--disable-extensions", "--remote-debugging-port=$port"
+        ) -PassThru -WindowStyle Hidden
+
+        # The debug port takes a moment to start listening after the process launches.
+        $wsUrl = $null
+        $startDeadline = (Get-Date).AddSeconds(8)
+        while ((Get-Date) -lt $startDeadline -and -not $wsUrl) {
+            Start-Sleep -Milliseconds 300
+            try {
+                $target = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/new?http://mydata.du.ae/" -Method Put -TimeoutSec 3
+                $wsUrl = $target.webSocketDebuggerUrl
+            } catch {}
+        }
+        if (-not $wsUrl) { return $null }
+
+        $client = New-Object System.Net.WebSockets.ClientWebSocket
+        $connectCts = New-Object System.Threading.CancellationTokenSource
+        $connectCts.CancelAfter(8000)
+        $client.ConnectAsync([Uri]$wsUrl, $connectCts.Token).GetAwaiter().GetResult() | Out-Null
+
+        function Send-CdpMessage($sock, $obj) {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes(($obj | ConvertTo-Json -Compress -Depth 6))
+            $seg = New-Object System.ArraySegment[byte] (,$bytes)
+            $sock.SendAsync($seg, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+        }
+        # Reassembles a message across multiple WebSocket frames (a real CDP response body can
+        # easily exceed one 64KB read) rather than assuming a single ReceiveAsync call is the whole
+        # thing.
+        function Receive-CdpMessage($sock, $timeoutMs) {
+            $localCts = New-Object System.Threading.CancellationTokenSource
+            $localCts.CancelAfter($timeoutMs)
+            $ms = New-Object System.IO.MemoryStream
+            $seg = New-Object System.ArraySegment[byte] (,(New-Object byte[] 65536))
+            try {
+                do {
+                    $result = $sock.ReceiveAsync($seg, $localCts.Token).GetAwaiter().GetResult()
+                    $ms.Write($seg.Array, 0, $result.Count)
+                } while (-not $result.EndOfMessage)
+                return ([System.Text.Encoding]::UTF8.GetString($ms.ToArray())) | ConvertFrom-Json
+            } catch { return $null }
+        }
+
+        Send-CdpMessage $client @{ id = 1; method = "Network.enable" }
+
+        # Watches every network event until it sees the response we care about AND that response has
+        # finished loading (a body can't be fetched reliably before then) - or the deadline passes,
+        # in which case it tries anyway with whatever requestId it has, best-effort.
+        $requestId = $null
+        $finished = $false
+        $findDeadline = (Get-Date).AddSeconds(25)
+        while ((Get-Date) -lt $findDeadline -and -not $finished) {
+            $msg = Receive-CdpMessage $client 2000
+            if (-not $msg -or -not $msg.method) { continue }
+            if ($msg.method -eq "Network.responseReceived" -and $msg.params.response.url -match "(?i)dashboard/query") {
+                $requestId = $msg.params.requestId
+            }
+            if ($requestId -and $msg.method -eq "Network.loadingFinished" -and $msg.params.requestId -eq $requestId) {
+                $finished = $true
+            }
+        }
+        if (-not $requestId) { return $null }
+
+        Send-CdpMessage $client @{ id = 2; method = "Network.getResponseBody"; params = @{ requestId = $requestId } }
+        $bodyMsg = $null
+        $bodyDeadline = (Get-Date).AddSeconds(8)
+        while ((Get-Date) -lt $bodyDeadline -and -not $bodyMsg) {
+            $m = Receive-CdpMessage $client 2000
+            if ($m -and $m.id -eq 2) { $bodyMsg = $m }
+        }
+        if (-not $bodyMsg -or -not $bodyMsg.result -or -not $bodyMsg.result.body) { return $null }
+
+        $bodyText = if ($bodyMsg.result.base64Encoded) {
+            [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($bodyMsg.result.body))
+        } else { $bodyMsg.result.body }
+
+        $json = $bodyText | ConvertFrom-Json
+        $dv = $json.resultBody.dashBoardValue
+        if (-not $dv) { return $null }
+
+        $du = [ordered]@{
+            dataTotalGb = [math]::Round([double]$dv.monthTotal / 1024 / 1024, 2)
+            dataUsedGb  = [math]::Round([double]$dv.monthUsed / 1024 / 1024, 2)
+            dataLeftGb  = [math]::Round([double]$dv.monthLeft / 1024 / 1024, 2)
+            phoneNumber = $null
+        }
+
+        # Same source the reference script uses for the phone number - the page's own localStorage,
+        # rather than trying to regex it out of rendered text. Best-effort: the GB figures above are
+        # the part that actually matters, so a failure here just leaves phoneNumber unset.
+        try {
+            Send-CdpMessage $client @{ id = 3; method = "Runtime.evaluate"; params = @{ expression = "window.localStorage.getItem('serviceNo')"; returnByValue = $true } }
+            $evalMsg = $null
+            $evalDeadline = (Get-Date).AddSeconds(5)
+            while ((Get-Date) -lt $evalDeadline -and -not $evalMsg) {
+                $m = Receive-CdpMessage $client 2000
+                if ($m -and $m.id -eq 3) { $evalMsg = $m }
+            }
+            if ($evalMsg -and $evalMsg.result -and $evalMsg.result.result -and $evalMsg.result.result.value) {
+                $raw = [string]$evalMsg.result.result.value
+                if ($raw.Length -ge 9) { $du.phoneNumber = "+971" + $raw.Substring(2, 2) + $raw.Substring(4, 3) + $raw.Substring(7) }
+            }
+        } catch {}
+
+        return $du
+    } catch {
+        return $null
+    } finally {
+        if ($client) { try { $client.Dispose() } catch {} }
+        if ($proc) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {} }
+        Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# The original method - headless Edge/Chrome's --dump-dom flag, then keyword-proximity text parsing
+# (looks for a number near "used"/"left"/"total" etc) since the exact page layout isn't something we
+# have visibility into ahead of time. Kept as a fallback for whenever the network-based method above
+# doesn't pan out (browser too old to support the DevTools Protocol flags used there, a redirect or
+# different response shape than expected, etc.) rather than replaced outright.
+function Get-DuDataUsageViaDom {
     $browserPaths = @(
         "$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe",
         "\${env:ProgramFiles(x86)}\\Microsoft\\Edge\\Application\\msedge.exe",
