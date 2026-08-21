@@ -934,7 +934,7 @@ function buildWorkspaceDirectoryAgentScript(secret, uninstallPasswordHash) {
 # reach a specific PC sooner than its next 6-hourly cycle is -PollOnce below, which checks in
 # completely silently.
 
-param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce)
+param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce, [string]$RunCommandFile)
 
 $CheckinUrl = "${checkinUrl}"
 $CollectorUrl = "${collectorUrl}"
@@ -958,7 +958,7 @@ $UninstallPasswordHash = "${uninstallHash}"
 # run FROM an already-SYSTEM-elevated scheduled task, so re-elevating would pop a UAC prompt on a
 # signage screen for no reason (there's no interactive user to click through it anyway).
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $Once -and -not $PollOnce -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+if (-not $Once -and -not $PollOnce -and -not $RunCommandFile -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $reElevateArgs = "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`""
     if ($Uninstall) { $reElevateArgs += " -Uninstall" }
     Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs
@@ -998,6 +998,34 @@ if ($Uninstall) {
     Invoke-UninstallCleanup
     Write-Host "Jstar Agent uninstalled from this PC (scheduled tasks removed, local state deleted)." -ForegroundColor Green
     Write-Host "Note: this PC's row on the dashboard is left as-is (last known state) - remove it there separately if needed."
+    exit 0
+}
+
+# The actual body of a queued Run Command - split out from Invoke-PendingCommand below and run in a
+# SEPARATE CHILD process specifically so that function can enforce a hard timeout on it (see there
+# for why). $RunCommandFile holds the command TEXT itself, not the command inline as a command-line
+# argument - a ::BATCH command can contain literal newlines a raw argument can't safely carry through
+# process creation, and this sidesteps command-line quoting entirely.
+if ($RunCommandFile) {
+    $command = Get-Content -Path $RunCommandFile -Raw -ErrorAction SilentlyContinue
+    if ($null -eq $command) { $command = '' }
+    $isBatch = $command -match '^\s*::BATCH\r?\n'
+    try {
+        if ($isBatch) {
+            $batchBody = $command -replace '^\s*::BATCH\r?\n', ''
+            New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-Content -Path $PendingBatchFile -Value $batchBody -Encoding ascii
+            $output = & cmd.exe /c "\`"$PendingBatchFile\`"" 2>&1 | Out-String
+            Remove-Item -Path $PendingBatchFile -Force -ErrorAction SilentlyContinue
+        } else {
+            $output = Invoke-Expression $command 2>&1 | Out-String
+        }
+    } catch {
+        $output = "ERROR: $($_.Exception.Message)"
+    }
+    New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+    @{ output = $output.Substring(0, [Math]::Min(8000, $output.Length)); ranAt = (Get-Date).ToString("o") } |
+        ConvertTo-Json | Set-Content -Path $PendingResultFile -Encoding utf8
     exit 0
 }
 
@@ -1084,23 +1112,39 @@ function Invoke-PendingCommand($command) {
         } catch {}
         exit 0
     }
-    $isBatch = $command -match '^\s*::BATCH\r?\n'
+    # Runs the actual command in a SEPARATE CHILD process (re-invoking this same script file with
+    # -RunCommandFile, see that branch above) with a hard timeout, rather than inline here - a
+    # command that launches a browser (Get-DuDataUsage) can take long enough that something else
+    # (the scheduled task's own runtime limit, Windows itself) kills this whole process before it
+    # ever writes its cached result, which then silently re-queues the exact same command forever
+    # since the dashboard never hears back either way (confirmed on a real device: the same
+    # Get-DuDataUsage command re-ran identically across three separate check-in cycles with no
+    # result ever reported). Killing the CHILD after a bound instead means SOMETHING - even just
+    # "timed out" - always makes it into $PendingResultFile.
+    $timeoutMs = 3 * 60 * 1000
+    $inputFile = Join-Path $StateDir "pending-command-input.txt"
     try {
-        if ($isBatch) {
-            $batchBody = $command -replace '^\s*::BATCH\r?\n', ''
-            New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-Content -Path $PendingBatchFile -Value $batchBody -Encoding ascii
-            $output = & cmd.exe /c "\`"$PendingBatchFile\`"" 2>&1 | Out-String
-            Remove-Item -Path $PendingBatchFile -Force -ErrorAction SilentlyContinue
-        } else {
-            $output = Invoke-Expression $command 2>&1 | Out-String
+        New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-Content -Path $inputFile -Value $command -Encoding utf8 -NoNewline
+        # $PSCommandPath/$inputFile are individually double-quoted here (not just passed as plain
+        # array elements) - Start-Process -ArgumentList does NOT auto-quote elements containing
+        # spaces, and BOTH of these are real-world paths that commonly do (this repo's own path has
+        # one) - confirmed live: without the explicit quotes, Windows silently truncates the path at
+        # its first space and the child process fails immediately with a bogus ".ps1 extension"
+        # error, which would have made every Run Command mysteriously do nothing forever on any PC
+        # whose install path has a space in it.
+        $proc = Start-Process powershell.exe -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "\`"$PSCommandPath\`"", "-RunCommandFile", "\`"$inputFile\`"") -PassThru -WindowStyle Hidden
+        if (-not $proc.WaitForExit($timeoutMs)) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            @{ output = "Command timed out after $([int]($timeoutMs / 1000)) seconds and was terminated."; ranAt = (Get-Date).ToString("o") } |
+                ConvertTo-Json | Set-Content -Path $PendingResultFile -Encoding utf8
         }
     } catch {
-        $output = "ERROR: $($_.Exception.Message)"
+        @{ output = "Failed to launch command: $($_.Exception.Message)"; ranAt = (Get-Date).ToString("o") } |
+            ConvertTo-Json | Set-Content -Path $PendingResultFile -Encoding utf8
+    } finally {
+        Remove-Item -Path $inputFile -Force -ErrorAction SilentlyContinue
     }
-    New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
-    @{ output = $output.Substring(0, [Math]::Min(8000, $output.Length)); ranAt = (Get-Date).ToString("o") } |
-        ConvertTo-Json | Set-Content -Path $PendingResultFile -Encoding utf8
 }
 
 # Scrapes mydata.du.ae once a day for this SIM's own carrier-reported number/usage, as an

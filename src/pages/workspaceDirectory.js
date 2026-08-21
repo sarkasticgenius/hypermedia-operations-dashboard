@@ -360,7 +360,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
     <td style="white-space:nowrap;">
       <button class="btn-sm" onclick="App.openWorkspaceDetailsModal('${d.id}')">Details</button>
       ${editOk ? `<button class="btn-sm" onclick="App.openWorkspaceEditModal('${d.id}')">Edit</button>` : ''}
-      ${editOk && !d.force_checkin_requested ? `<button class="btn-sm" title="${d.pending_command ? 'Push the queued Run Command to this PC now' : 'Pull fresh inventory from this PC now'} - within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force</button>` : ''}
+      ${editOk ? `<button class="btn-sm" title="${d.force_checkin_requested ? 'Already requested and still pending - click to re-request' : (d.pending_command ? 'Push the queued Run Command to this PC now' : 'Pull fresh inventory from this PC now')} - within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force${d.force_checkin_requested ? ' Again' : ''}</button>` : ''}
       ${deleteOk ? `<button class="btn-sm" onclick="App.removeWorkspaceDevice('${d.id}')">Delete</button>` : ''}
     </td>
   </tr>`;
