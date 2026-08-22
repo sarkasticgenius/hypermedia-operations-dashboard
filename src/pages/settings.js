@@ -928,13 +928,14 @@ function buildWorkspaceDirectoryAgentScript(secret, uninstallPasswordHash) {
 # itself never needs to change or be re-installed to pick up a new field. Re-run this script any
 # time to update the install (e.g. after rotating the secret).
 #
-# Fully headless by design - these PCs drive signage screens, so nothing here may ever show a
-# window, tray icon, or notification (an earlier version had a "Jstar" tray status app; removed
-# since any visible UI on a signage PC would show up over the content on screen). The only way to
-# reach a specific PC sooner than its next 6-hourly cycle is -PollOnce below, which checks in
-# completely silently.
+# The 6-hourly and 20-minute cycles (-Once/-PollOnce below) are always fully headless - no window,
+# tray icon, or notification - since these PCs drive signage screens and nothing there may ever show
+# up over the content on screen. There IS a taskbar tray icon (-Tray below, in whichever user is
+# logged in) for at-a-glance status and a manual "Force Inventory Pull" button, similar to GLPI Agent
+# Monitor - but it auto-hides itself the instant Broadsign's or Grassfish's own player process is
+# actually running, so it can never appear over live public-facing content either.
 
-param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce, [string]$RunCommandFile)
+param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce, [string]$RunCommandFile, [switch]$Tray)
 
 $CheckinUrl = "${checkinUrl}"
 $CollectorUrl = "${collectorUrl}"
@@ -944,6 +945,7 @@ $AgentSecret = "${secret}"
 $AnonKey = "${anonKey}"
 $TaskName = "WorkspaceDirectoryAgent"
 $PollTaskName = "WorkspaceDirectoryAgentPoll"
+$TrayTaskName = "WorkspaceDirectoryAgentTray"
 $StateDir = "$env:ProgramData\\WorkspaceDirectoryAgent"
 $InstalledScriptPath = Join-Path $StateDir "Install-JstarAgent.ps1"
 $PendingResultFile = Join-Path $StateDir "pending-command-result.json"
@@ -957,9 +959,12 @@ $UninstallPasswordHash = "${uninstallHash}"
 # Self-elevate if not already running as Administrator (needed to register/unregister the
 # SYSTEM-level task either way, install OR uninstall). Skipped for -Once/-PollOnce - both only ever
 # run FROM an already-SYSTEM-elevated scheduled task, so re-elevating would pop a UAC prompt on a
-# signage screen for no reason (there's no interactive user to click through it anyway).
+# signage screen for no reason (there's no interactive user to click through it anyway). Also skipped
+# for -Tray: that one needs to stay running AS the logged-in user in their own interactive desktop
+# session so its icon can actually appear - elevating it would either fail silently (Session 0
+# isolation) or, if it somehow succeeded, run it as a different, non-visible session instead.
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $Once -and -not $PollOnce -and -not $RunCommandFile -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+if (-not $Once -and -not $PollOnce -and -not $RunCommandFile -and -not $Tray -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $reElevateArgs = "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`""
     if ($Uninstall) { $reElevateArgs += " -Uninstall" }
     Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs
@@ -990,12 +995,112 @@ if ($PSCommandPath -and $PSCommandPath -ne $InstalledScriptPath) {
     }
 }
 
+# A small GLPI-Agent-Monitor-style taskbar icon: a status window on double-click (last check-in
+# time/result), "Force Inventory Pull" and "View Agent Logs" on the context menu. Runs as the
+# logged-in user (see the AtLogOn task registered below, and -Tray excluded from self-elevation
+# above), NOT as SYSTEM - a SYSTEM-run task executes in the non-interactive Session 0 and can never
+# show a window or tray icon on anyone's actual desktop.
+#
+# Auto-hides itself whenever Broadsign's or Grassfish's own player process is actually running (a
+# timer re-checks every 30 seconds, so it disappears/reappears live as playback starts and stops) -
+# this can NEVER show up on top of live public-facing signage content, which is exactly why an
+# earlier "Jstar tray status app" was removed outright (see the header at the top of this file). On a
+# back-office PC with no player at all, or a signage PC between content-player restarts, it stays
+# visible the whole time.
+if ($Tray) {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $Script:SignagePlayerProcessNames = @('bsp', 'gfplayer')
+
+    function Test-SignagePlayerRunning {
+        foreach ($procName in $Script:SignagePlayerProcessNames) {
+            if (Get-Process -Name $procName -ErrorAction SilentlyContinue) { return $true }
+        }
+        return $false
+    }
+
+    function Get-TrayStatusText {
+        if (-not (Test-Path $StatusFile)) { return "No check-in recorded yet." }
+        try {
+            $status = Get-Content -Path $StatusFile -Raw | ConvertFrom-Json
+            $lastCheckin = try { [DateTime]::Parse($status.lastCheckin).ToLocalTime().ToString("g") } catch { $status.lastCheckin }
+            "Last check-in: $lastCheckin\`nResult: $(if ($status.success) { 'OK' } else { 'Failed' })\`n$($status.message)"
+        } catch {
+            "Could not read status: $($_.Exception.Message)"
+        }
+    }
+
+    $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+    $notifyIcon.Icon = [System.Drawing.SystemIcons]::Application
+    $notifyIcon.Text = "Jstar Agent"
+    $notifyIcon.Visible = -not (Test-SignagePlayerRunning)
+
+    $menu = New-Object System.Windows.Forms.ContextMenuStrip
+    $menuForce = $menu.Items.Add("Force Inventory Pull")
+    $menuLogs = $menu.Items.Add("View Agent Logs")
+    $menu.Items.Add("-") | Out-Null
+    $menuExit = $menu.Items.Add("Close")
+    $notifyIcon.ContextMenuStrip = $menu
+
+    # Runs the SAME installed script (not a re-implementation of Invoke-Checkin here) as a plain child
+    # process, deliberately without -Verb RunAs - a repeated UAC prompt on every button click would be
+    # worse UX than the (rare) admin-only step inside it - registry/task-registration - silently no-op
+    # skipping this one time via its own existing try/catch, same as it already does if that step ever
+    # fails for any other reason. The actual check-in POST itself needs no special privilege.
+    $menuForce.add_Click({
+        try {
+            Start-Process powershell.exe -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "\`"$InstalledScriptPath\`"", "-Once") -WindowStyle Hidden
+            $notifyIcon.ShowBalloonTip(4000, "Jstar Agent", "Forcing a check-in now...", [System.Windows.Forms.ToolTipIcon]::Info)
+        } catch {
+            $notifyIcon.ShowBalloonTip(4000, "Jstar Agent", "Could not start check-in: $($_.Exception.Message)", [System.Windows.Forms.ToolTipIcon]::Error)
+        }
+    })
+    $menuLogs.add_Click({
+        if (Test-Path $LogFile) {
+            Start-Process notepad.exe -ArgumentList "\`"$LogFile\`""
+        } else {
+            $notifyIcon.ShowBalloonTip(4000, "Jstar Agent", "No log file yet.", [System.Windows.Forms.ToolTipIcon]::Info)
+        }
+    })
+    $menuExit.add_Click({ $notifyIcon.Visible = $false; [System.Windows.Forms.Application]::Exit() })
+
+    $notifyIcon.add_DoubleClick({
+        [System.Windows.Forms.MessageBox]::Show((Get-TrayStatusText), "Jstar Agent Monitor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+    })
+
+    $visibilityTimer = New-Object System.Windows.Forms.Timer
+    $visibilityTimer.Interval = 30000
+    $visibilityTimer.add_Tick({ $notifyIcon.Visible = -not (Test-SignagePlayerRunning) })
+    $visibilityTimer.Start()
+
+    [System.Windows.Forms.Application]::Run()
+    $notifyIcon.Visible = $false
+    $notifyIcon.Dispose()
+    exit 0
+}
+
+# The taskbar tray icon (see the -Tray branch above) is a separate, always-running process in
+# whichever user is logged in, not covered by the fire-once-and-exit main/poll tasks, so it
+# needs its own explicit stop here rather than just relying on the scheduled task being gone.
+# Best-effort only: if it can't be found/killed for some reason, uninstall still proceeds - a leftover
+# tray process is harmless (it'll exit at the next logoff either way) compared to blocking removal.
+function Stop-TrayProcesses {
+    try {
+        Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match '-Tray\b' } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    } catch {}
+}
+
 # Shared by both uninstall paths below: the interactive -Uninstall (password-gated) and the
 # dashboard's remote "Uninstall Agent" button on a removed-but-still-reporting device (::UNINSTALL
 # pending command, see Invoke-PendingCommand) - same cleanup either way, just gated differently.
 function Invoke-UninstallCleanup {
     Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
     Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    Get-ScheduledTask -TaskName $TrayTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    Stop-TrayProcesses
     Remove-Item -Path $StateDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
@@ -1692,6 +1797,33 @@ try {
     Write-Host "Scheduled task '$PollTaskName' installed (checks every 20 minutes, no UI)." -ForegroundColor Green
 } catch {
     Write-Warning "Could not register the poll task: $($_.Exception.Message)"
+}
+
+# Registers the taskbar tray icon (see the -Tray branch far above) to start automatically whenever
+# ANYONE logs into this PC's desktop - unlike the two tasks above, this one must run AS the logged-in
+# user (BUILTIN\Users, not SYSTEM), since only a task running in that interactive session can ever
+# show a window or tray icon there. ExecutionTimeLimit of zero means "no limit" in Task Scheduler's
+# own convention (unlike the empty-string convention used for -RepetitionDuration above) - this task
+# is meant to keep running for the entire logon session, not exit and re-fire on an interval like the
+# other two.
+try {
+    $TrayAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$InstalledScriptPath\`" -Tray"
+    $TrayTrigger = New-ScheduledTaskTrigger -AtLogOn
+    $TrayPrincipal = New-ScheduledTaskPrincipal -GroupId "BUILTIN\Users" -RunLevel Limited
+    $TraySettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    if (Get-ScheduledTask -TaskName $TrayTaskName -ErrorAction SilentlyContinue) {
+        Set-ScheduledTask -TaskName $TrayTaskName -Action $TrayAction -Trigger $TrayTrigger -Principal $TrayPrincipal -Settings $TraySettings | Out-Null
+    } else {
+        Register-ScheduledTask -TaskName $TrayTaskName -Action $TrayAction -Trigger $TrayTrigger -Principal $TrayPrincipal -Settings $TraySettings -Description "Shows a taskbar status icon for the Jstar Agent in the logged-in user's session - hidden automatically while Broadsign/Grassfish is playing content." | Out-Null
+    }
+    # Also starts it for whoever's ALREADY logged in right now, rather than waiting for their next
+    # logon - the common case when this runs during a fresh interactive install or right after
+    # publishing this change to an existing device. IgnoreNew above means this is a harmless no-op if
+    # an instance from an earlier logon is already running.
+    Start-ScheduledTask -TaskName $TrayTaskName -ErrorAction SilentlyContinue
+    Write-Host "Scheduled task '$TrayTaskName' installed (taskbar icon, auto-hidden during signage playback)." -ForegroundColor Green
+} catch {
+    Write-Warning "Could not register the tray task: $($_.Exception.Message)"
 }
 
 # Every 20-minute poll checks in - lightly (see Invoke-Checkin's -Light handling above) unless a
