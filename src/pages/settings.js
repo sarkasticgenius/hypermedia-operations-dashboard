@@ -945,6 +945,7 @@ $AnonKey = "${anonKey}"
 $TaskName = "WorkspaceDirectoryAgent"
 $PollTaskName = "WorkspaceDirectoryAgentPoll"
 $StateDir = "$env:ProgramData\\WorkspaceDirectoryAgent"
+$InstalledScriptPath = Join-Path $StateDir "Install-JstarAgent.ps1"
 $PendingResultFile = Join-Path $StateDir "pending-command-result.json"
 $StatusFile = Join-Path $StateDir "status.json"
 $LogFile = Join-Path $StateDir "agent.log"
@@ -963,6 +964,30 @@ if (-not $Once -and -not $PollOnce -and -not $RunCommandFile -and -not $currentP
     if ($Uninstall) { $reElevateArgs += " -Uninstall" }
     Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs
     exit
+}
+
+# Copies the running script into a protected, permanent location the FIRST time it's needed - every
+# scheduled task, self-update, and Run Command from here on operates on THIS copy (see
+# $InstalledScriptPath above), never on wherever the installer .ps1/.bat happened to be downloaded
+# and double-clicked from (Desktop, Downloads, a USB stick...). Without this, deleting those original
+# files after a successful install - which looks like harmless cleanup - silently breaks every future
+# check-in: the scheduled tasks would keep pointing at a file that no longer exists, fail at the OS
+# level before this script can even run, and never report anything back to the dashboard to explain
+# why. A no-op on every run after the first, since the scheduled tasks below are registered to invoke
+# $InstalledScriptPath directly, so $PSCommandPath already matches it from then on. Skipped for
+# -RunCommandFile's own child process for the same reason - it's spawned via $InstalledScriptPath by
+# its parent, so it's already running from there. Not skipped for -Uninstall: relocating first is
+# harmless (Invoke-UninstallCleanup deletes $StateDir - and this copy along with it - moments later
+# anyway), and keeping this check unconditional means one code path instead of a special case.
+if ($PSCommandPath -and $PSCommandPath -ne $InstalledScriptPath) {
+    try {
+        New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+        Copy-Item -Path $PSCommandPath -Destination $InstalledScriptPath -Force
+        & $InstalledScriptPath @PSBoundParameters
+        exit
+    } catch {
+        Write-Warning "Could not relocate to a protected install location, continuing from the current path instead: $($_.Exception.Message)"
+    }
 }
 
 # Shared by both uninstall paths below: the interactive -Uninstall (password-gated) and the
@@ -1027,17 +1052,17 @@ function Write-AgentStatus($success, $message) {
 # worked this way; this is what extends the same idea to the shell itself. Line-ending differences
 # are normalized before comparing so a whitespace-only mismatch can't cause a self-update loop.
 function Invoke-SelfUpdate {
-    if (-not $PSCommandPath -or -not (Test-Path $PSCommandPath)) { return }
+    if (-not (Test-Path $InstalledScriptPath)) { return }
     try {
         $resp = Invoke-RestMethod -Method Get -Uri $AgentShellUrl -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
         if (-not $resp -or -not $resp.script) { return }
         $normalize = { param($t) $t -replace "\`r\`n", "\`n" -replace "\`r", "\`n" }
-        $current = & $normalize (Get-Content -Path $PSCommandPath -Raw)
+        $current = & $normalize (Get-Content -Path $InstalledScriptPath -Raw)
         $incoming = & $normalize $resp.script
         if ($incoming -ne $current) {
-            Set-Content -Path $PSCommandPath -Value $resp.script -Encoding utf8 -NoNewline
+            Set-Content -Path $InstalledScriptPath -Value $resp.script -Encoding utf8 -NoNewline
             Write-AgentLog "Agent updated to a newly published version - re-running with the new logic now."
-            & $PSCommandPath @PSBoundParameters
+            & $InstalledScriptPath @PSBoundParameters
             exit
         }
     } catch {
@@ -1098,14 +1123,14 @@ function Invoke-PendingCommand($command) {
     try {
         New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
         Set-Content -Path $inputFile -Value $command -Encoding utf8 -NoNewline
-        # $PSCommandPath/$inputFile are individually double-quoted here (not just passed as plain
-        # array elements) - Start-Process -ArgumentList does NOT auto-quote elements containing
+        # $InstalledScriptPath/$inputFile are individually double-quoted here (not just passed as
+        # plain array elements) - Start-Process -ArgumentList does NOT auto-quote elements containing
         # spaces, and BOTH of these are real-world paths that commonly do (this repo's own path has
         # one) - confirmed live: without the explicit quotes, Windows silently truncates the path at
         # its first space and the child process fails immediately with a bogus ".ps1 extension"
         # error, which would have made every Run Command mysteriously do nothing forever on any PC
         # whose install path has a space in it.
-        $proc = Start-Process powershell.exe -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "\`"$PSCommandPath\`"", "-RunCommandFile", "\`"$inputFile\`"") -PassThru -WindowStyle Hidden
+        $proc = Start-Process powershell.exe -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "\`"$InstalledScriptPath\`"", "-RunCommandFile", "\`"$inputFile\`"") -PassThru -WindowStyle Hidden
         if (-not $proc.WaitForExit($timeoutMs)) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
             @{ output = "Command timed out after $([int]($timeoutMs / 1000)) seconds and was terminated."; ranAt = (Get-Date).ToString("o") } |
@@ -1586,7 +1611,7 @@ if ($RunCommandFile) {
 # physical reinstall. Register-/Set-ScheduledTask are idempotent and cheap, so running this every
 # cycle costs nothing and means any future task-level fix (like the ExecutionTimeLimit below)
 # actually reaches the whole fleet within one 6-hour cycle of publishing, same as everything else.
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -Once"
+$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File \`"$InstalledScriptPath\`" -Once"
 # [TimeSpan]::MaxValue as -RepetitionDuration overflows Task Scheduler's XML duration format on
 # some Windows builds ("The task XML contains a value which is incorrectly formatted or out of
 # range", confirmed live) - Task Scheduler's own convention for "repeat indefinitely" is an
@@ -1650,7 +1675,7 @@ if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
 # fresh at 20-minute resolution without resending the installed-software list every time. Up to
 # ~20 minutes' latency and a small request are an easy trade for both of those.
 try {
-    $PollAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -PollOnce"
+    $PollAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$InstalledScriptPath\`" -PollOnce"
     $PollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 20)
     $PollTrigger.Repetition.Duration = ""
     # Tighter bound than the main task's - a poll cycle is either a light check-in or, at worst,
