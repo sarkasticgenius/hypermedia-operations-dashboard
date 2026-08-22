@@ -1578,75 +1578,95 @@ if ($RunCommandFile) {
     exit 0
 }
 
-if (-not $Once) {
-    $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -Once"
-    # [TimeSpan]::MaxValue as -RepetitionDuration overflows Task Scheduler's XML duration format on
-    # some Windows builds ("The task XML contains a value which is incorrectly formatted or out of
-    # range", confirmed live) - Task Scheduler's own convention for "repeat indefinitely" is an
-    # EMPTY Duration, not the largest representable one, so that's set directly on the trigger
-    # object instead of passed as a constructor value.
-    $RepeatTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
-    $RepeatTrigger.Repetition.Duration = ""
-    # Also fire once right after boot (a couple minutes' random delay so a fleet of PCs rebooting
-    # together - e.g. after a power cut at a venue - doesn't all hit the checkin endpoint in the
-    # same instant), on TOP of the every-6-hours repeat above, not instead of it - a task's trigger
-    # list can hold both and each fires independently. Without this, a PC that reboots mid-cycle
-    # (or was off across its next scheduled time) sits "stale" until the following 6-hour mark
-    # instead of checking in - and reporting back in - as soon as it's back up.
-    $StartupTrigger = New-ScheduledTaskTrigger -AtStartup -RandomDelay (New-TimeSpan -Minutes 2)
-    $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
-    try {
-        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-            Set-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($RepeatTrigger, $StartupTrigger) -Principal $Principal | Out-Null
-        } else {
-            Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($RepeatTrigger, $StartupTrigger) -Principal $Principal -Description "Reports this PC's inventory to the Hypermedia Operations Dashboard." | Out-Null
-        }
-        Write-Host "Scheduled task '$TaskName' installed (runs on startup and every 6 hours)." -ForegroundColor Green
-    } catch {
-        Write-Warning "Could not register the scheduled task: $($_.Exception.Message)"
+# Re-registers both scheduled tasks (and bootstraps Chocolatey) on EVERY real run - a fresh manual
+# install AND every recurring 6-hourly -Once cycle - not just at first install. This used to be
+# gated behind "if (-not $Once)", which only a flagless run satisfies - meaning a change to the
+# TASKS' OWN settings/actions (as opposed to a change to what Invoke-Checkin etc. do, which every
+# cycle already picks up via self-update) could NEVER reach an already-installed device short of a
+# physical reinstall. Register-/Set-ScheduledTask are idempotent and cheap, so running this every
+# cycle costs nothing and means any future task-level fix (like the ExecutionTimeLimit below)
+# actually reaches the whole fleet within one 6-hour cycle of publishing, same as everything else.
+$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -Once"
+# [TimeSpan]::MaxValue as -RepetitionDuration overflows Task Scheduler's XML duration format on
+# some Windows builds ("The task XML contains a value which is incorrectly formatted or out of
+# range", confirmed live) - Task Scheduler's own convention for "repeat indefinitely" is an
+# EMPTY Duration, not the largest representable one, so that's set directly on the trigger
+# object instead of passed as a constructor value.
+$RepeatTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
+$RepeatTrigger.Repetition.Duration = ""
+# Also fire once right after boot (a couple minutes' random delay so a fleet of PCs rebooting
+# together - e.g. after a power cut at a venue - doesn't all hit the checkin endpoint in the
+# same instant), on TOP of the every-6-hours repeat above, not instead of it - a task's trigger
+# list can hold both and each fires independently. Without this, a PC that reboots mid-cycle
+# (or was off across its next scheduled time) sits "stale" until the following 6-hour mark
+# instead of checking in - and reporting back in - as soon as it's back up.
+$StartupTrigger = New-ScheduledTaskTrigger -AtStartup -RandomDelay (New-TimeSpan -Minutes 2)
+$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+# Without an explicit ExecutionTimeLimit, Task Scheduler's own default is 3 days - and since
+# neither task allows overlapping instances (the default MultipleInstances policy is IgnoreNew),
+# a SINGLE hung run - whatever the cause, now or in some future code change - silently blocks
+# every subsequent trigger for up to 3 days with nothing forcing it to die. Confirmed live: a PC
+# showed "Running" in Task Scheduler for 22+ hours straight on what should be a 20-minute cycle,
+# which had also left it wrongly flagged Offline on the dashboard that whole time. These bounds
+# are deliberately generous relative to what a normal run should ever need (a full 6-hourly
+# check-in with a queued Run Command's own 3-minute child-process timeout baked in) while still
+# guaranteeing the fleet self-heals from any hang within well under a day rather than up to 3.
+$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew
+try {
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        Set-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($RepeatTrigger, $StartupTrigger) -Principal $Principal -Settings $Settings | Out-Null
+    } else {
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($RepeatTrigger, $StartupTrigger) -Principal $Principal -Settings $Settings -Description "Reports this PC's inventory to the Hypermedia Operations Dashboard." | Out-Null
     }
+    Write-Host "Scheduled task '$TaskName' installed (runs on startup and every 6 hours)." -ForegroundColor Green
+} catch {
+    Write-Warning "Could not register the scheduled task: $($_.Exception.Message)"
+}
 
-    # Chocolatey is bootstrapped at install time (not on every 6-hourly -Once run) so a Run Command
-    # queued from the dashboard - or a future bulk deployment - can always reach for "choco install
-    # -y <pkg>" and expect it to work, without depending on winget/App Installer already being
-    # present (it isn't on every Windows 10 build these back-office/kiosk PCs run, whereas
-    # Chocolatey's own bootstrapper is just this one self-contained script). Skipped entirely if
-    # choco.exe is already on PATH, so a re-run of the installer (e.g. after a secret rotation)
-    # doesn't reinstall it every time.
-    if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
-        try {
-            Write-Host "Installing Chocolatey (package manager used by queued Run Commands)..."
-            Set-ExecutionPolicy Bypass -Scope Process -Force
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-            Write-Host "Chocolatey installed." -ForegroundColor Green
-        } catch {
-            Write-Warning "Could not install Chocolatey - choco-based Run Commands won't work on this PC until it's installed manually: $($_.Exception.Message)"
-        }
-    }
-
-    # Runs -PollOnce every 20 minutes, entirely headless as SYSTEM (no tray icon, no window, no
-    # notification - these PCs drive signage screens, so nothing may ever pop up on top of the
-    # content). Does double duty: it's the ONLY way a dashboard "Force Inventory Pull" click can
-    # reach a specific PC sooner than its next scheduled cycle (these PCs are on metered SIMs behind
-    # NAT/cellular routers with no inbound reachability; the dashboard can never push to them, only
-    # they can poll out) - AND, on every cycle that isn't a force, it sends a light check-in
-    # (see Invoke-Checkin's -Light handling) so Online/Offline status, Issues, and Remote Access stay
-    # fresh at 20-minute resolution without resending the installed-software list every time. Up to
-    # ~20 minutes' latency and a small request are an easy trade for both of those.
+# Chocolatey's bootstrapper is skipped entirely once choco.exe is already on PATH, so re-checking
+# every 6-hourly cycle (rather than fresh-install only) is cheap and self-heals if it's ever removed -
+# lets a Run Command queued from the dashboard, or a future bulk deployment, always reach for
+# "choco install -y <pkg>" without depending on winget/App Installer already being present (it isn't
+# on every Windows 10 build these back-office/kiosk PCs run).
+if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
     try {
-        $PollAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -PollOnce"
-        $PollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 20)
-        $PollTrigger.Repetition.Duration = ""
-        if (Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue) {
-            Set-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal | Out-Null
-        } else {
-            Register-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Description "Checks every 20 minutes for a Force Inventory Pull request from the dashboard - runs fully hidden, no UI." | Out-Null
-        }
-        Write-Host "Scheduled task '$PollTaskName' installed (checks every 20 minutes, no UI)." -ForegroundColor Green
+        Write-Host "Installing Chocolatey (package manager used by queued Run Commands)..."
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        Write-Host "Chocolatey installed." -ForegroundColor Green
     } catch {
-        Write-Warning "Could not register the poll task: $($_.Exception.Message)"
+        Write-Warning "Could not install Chocolatey - choco-based Run Commands won't work on this PC until it's installed manually: $($_.Exception.Message)"
     }
+}
+
+# Runs -PollOnce every 20 minutes, entirely headless as SYSTEM (no tray icon, no window, no
+# notification - these PCs drive signage screens, so nothing may ever pop up on top of the
+# content). Does double duty: it's the ONLY way a dashboard "Force Inventory Pull" click can
+# reach a specific PC sooner than its next scheduled cycle (these PCs are on metered SIMs behind
+# NAT/cellular routers with no inbound reachability; the dashboard can never push to them, only
+# they can poll out) - AND, on every cycle that isn't a force, it sends a light check-in
+# (see Invoke-Checkin's -Light handling) so Online/Offline status, Issues, and Remote Access stay
+# fresh at 20-minute resolution without resending the installed-software list every time. Up to
+# ~20 minutes' latency and a small request are an easy trade for both of those.
+try {
+    $PollAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" -PollOnce"
+    $PollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 20)
+    $PollTrigger.Repetition.Duration = ""
+    # Tighter bound than the main task's - a poll cycle is either a light check-in or, at worst,
+    # a forced full one with a single queued command (already capped at 3 minutes by
+    # Invoke-PendingCommand's own child-process timeout), so it should never legitimately run
+    # anywhere near this long. Bounding it well under the 20-minute repeat interval means a hang
+    # here self-heals in time for the VERY NEXT scheduled trigger, not just "eventually."
+    $PollSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
+    if (Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue) {
+        Set-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Settings $PollSettings | Out-Null
+    } else {
+        Register-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Settings $PollSettings -Description "Checks every 20 minutes for a Force Inventory Pull request from the dashboard - runs fully hidden, no UI." | Out-Null
+    }
+    Write-Host "Scheduled task '$PollTaskName' installed (checks every 20 minutes, no UI)." -ForegroundColor Green
+} catch {
+    Write-Warning "Could not register the poll task: $($_.Exception.Message)"
 }
 
 # Every 20-minute poll checks in - lightly (see Invoke-Checkin's -Light handling above) unless a
