@@ -1001,34 +1001,6 @@ if ($Uninstall) {
     exit 0
 }
 
-# The actual body of a queued Run Command - split out from Invoke-PendingCommand below and run in a
-# SEPARATE CHILD process specifically so that function can enforce a hard timeout on it (see there
-# for why). $RunCommandFile holds the command TEXT itself, not the command inline as a command-line
-# argument - a ::BATCH command can contain literal newlines a raw argument can't safely carry through
-# process creation, and this sidesteps command-line quoting entirely.
-if ($RunCommandFile) {
-    $command = Get-Content -Path $RunCommandFile -Raw -ErrorAction SilentlyContinue
-    if ($null -eq $command) { $command = '' }
-    $isBatch = $command -match '^\s*::BATCH\r?\n'
-    try {
-        if ($isBatch) {
-            $batchBody = $command -replace '^\s*::BATCH\r?\n', ''
-            New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-Content -Path $PendingBatchFile -Value $batchBody -Encoding ascii
-            $output = & cmd.exe /c "\`"$PendingBatchFile\`"" 2>&1 | Out-String
-            Remove-Item -Path $PendingBatchFile -Force -ErrorAction SilentlyContinue
-        } else {
-            $output = Invoke-Expression $command 2>&1 | Out-String
-        }
-    } catch {
-        $output = "ERROR: $($_.Exception.Message)"
-    }
-    New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
-    @{ output = $output.Substring(0, [Math]::Min(8000, $output.Length)); ranAt = (Get-Date).ToString("o") } |
-        ConvertTo-Json | Set-Content -Path $PendingResultFile -Encoding utf8
-    exit 0
-}
-
 # Appends one line per attempt (capped to the last 200) and refreshes status.json - a plain text/
 # JSON trail on disk for remote troubleshooting (queue "Get-Content $env:ProgramData\WorkspaceDirectoryAgent\agent.log"
 # as a Run Command to read it back) since there's no on-screen status window on these signage PCs.
@@ -1564,6 +1536,46 @@ function Invoke-Checkin([switch]$Light) {
         Write-AgentLog "Check-in FAILED: $($_.Exception.Message)"
         Write-AgentStatus $false $_.Exception.Message
     }
+}
+
+# The actual body of a queued Run Command - split out from Invoke-PendingCommand above and run in a
+# SEPARATE CHILD process specifically so that function can enforce a hard timeout on it (see there
+# for why). $RunCommandFile holds the command TEXT itself, not the command inline as a command-line
+# argument - a ::BATCH command can contain literal newlines a raw argument can't safely carry through
+# process creation, and this sidesteps command-line quoting entirely.
+#
+# Placed HERE - after every function this command could possibly call (Get-DuDataUsage,
+# Get-UnexpectedWindows, Invoke-Checkin, etc.) is already defined - rather than near the top of the
+# script alongside -Uninstall. PowerShell does NOT hoist function definitions to the top of a script;
+# a "function Foo { ... }" statement only becomes callable once the interpreter's linear top-to-bottom
+# pass actually executes that line. Invoke-Checkin (defined earlier) can already call Get-DuDataUsage
+# (defined later) because Invoke-Checkin itself isn't CALLED until the bottom of the script, by which
+# point every function has been passed through - but this block runs immediately as soon as the
+# interpreter reaches it, so placing it before those definitions made every single Run Command fail
+# with "the term 'Get-DuDataUsage' is not recognized" (confirmed on a real device). Also must stay
+# ABOVE the task-registration block right below - $RunCommandFile invocations never pass -Once, so
+# without exiting first they'd re-register the scheduled tasks on every single queued command.
+if ($RunCommandFile) {
+    $command = Get-Content -Path $RunCommandFile -Raw -ErrorAction SilentlyContinue
+    if ($null -eq $command) { $command = '' }
+    $isBatch = $command -match '^\s*::BATCH\r?\n'
+    try {
+        if ($isBatch) {
+            $batchBody = $command -replace '^\s*::BATCH\r?\n', ''
+            New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-Content -Path $PendingBatchFile -Value $batchBody -Encoding ascii
+            $output = & cmd.exe /c "\`"$PendingBatchFile\`"" 2>&1 | Out-String
+            Remove-Item -Path $PendingBatchFile -Force -ErrorAction SilentlyContinue
+        } else {
+            $output = Invoke-Expression $command 2>&1 | Out-String
+        }
+    } catch {
+        $output = "ERROR: $($_.Exception.Message)"
+    }
+    New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+    @{ output = $output.Substring(0, [Math]::Min(8000, $output.Length)); ranAt = (Get-Date).ToString("o") } |
+        ConvertTo-Json | Set-Content -Path $PendingResultFile -Encoding utf8
+    exit 0
 }
 
 if (-not $Once) {
