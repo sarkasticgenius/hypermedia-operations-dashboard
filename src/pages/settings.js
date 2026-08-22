@@ -1809,12 +1809,21 @@ try {
 try {
     $TrayAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$InstalledScriptPath\`" -Tray"
     $TrayTrigger = New-ScheduledTaskTrigger -AtLogOn
-    $TrayPrincipal = New-ScheduledTaskPrincipal -GroupId "BUILTIN\Users" -RunLevel Limited
+    # The well-known SID for BUILTIN\Users, not the name string - confirmed live that "BUILTIN\Users"
+    # fails on a real device with "No mapping between account names and security IDs was done"
+    # (HRESULT 0x80070534, ERROR_NONE_MAPPED) even though the group obviously exists - a known quirk
+    # of Register-ScheduledTask's underlying CIM call doing its own name-to-SID lookup, which the
+    # well-known SID form sidesteps entirely since it needs no lookup at all.
+    $TrayPrincipal = New-ScheduledTaskPrincipal -GroupId "S-1-5-32-545" -RunLevel Limited
     $TraySettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    # -ErrorAction Stop on both: Register-/Set-ScheduledTask surface a failed underlying CIM call as a
+    # NON-terminating error by default, which a bare try/catch does not catch - confirmed live, this
+    # let a real registration failure fall straight through to the unconditional "installed" success
+    # message below, masking the exact error above it in the very same log.
     if (Get-ScheduledTask -TaskName $TrayTaskName -ErrorAction SilentlyContinue) {
-        Set-ScheduledTask -TaskName $TrayTaskName -Action $TrayAction -Trigger $TrayTrigger -Principal $TrayPrincipal -Settings $TraySettings | Out-Null
+        Set-ScheduledTask -TaskName $TrayTaskName -Action $TrayAction -Trigger $TrayTrigger -Principal $TrayPrincipal -Settings $TraySettings -ErrorAction Stop | Out-Null
     } else {
-        Register-ScheduledTask -TaskName $TrayTaskName -Action $TrayAction -Trigger $TrayTrigger -Principal $TrayPrincipal -Settings $TraySettings -Description "Shows a taskbar status icon for the Jstar Agent in the logged-in user's session - hidden automatically while Broadsign/Grassfish is playing content." | Out-Null
+        Register-ScheduledTask -TaskName $TrayTaskName -Action $TrayAction -Trigger $TrayTrigger -Principal $TrayPrincipal -Settings $TraySettings -Description "Shows a taskbar status icon for the Jstar Agent in the logged-in user's session - hidden automatically while Broadsign/Grassfish is playing content." -ErrorAction Stop | Out-Null
     }
     # Also starts it for whoever's ALREADY logged in right now, rather than waiting for their next
     # logon - the common case when this runs during a fresh interactive install or right after
