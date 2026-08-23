@@ -1,15 +1,25 @@
 // Serves the current outer-shell script body (self-elevate, scheduled-task registration, remote-
-// command runner, tray icon install, self-update check itself) to every installed agent, each
-// check-in run. Until this existed, that shell was the one part of the Digital Directory Agent that
-// required physically re-running the installer on every PC to change - the Data Collector Script
+// command runner, tray icon install, self-update check itself) to installed agents. Until this
+// existed, that shell was the one part of the Digital Directory Agent that required physically
+// re-running the installer on every PC to change - the Data Collector Script
 // (workspace-directory-collector) already worked this way for what gets collected, but not for the
 // shell logic around it. Several of these PCs are in remote locations with no one available to
-// manually re-install, so the shell's own Invoke-SelfUpdate function fetches from here on every run
-// and overwrites+re-execs itself if different - see buildWorkspaceDirectoryAgentScript in
-// src/pages/settings.js for that logic and for how "Publish Latest Agent Version" writes here.
+// manually re-install, so the shell's own Invoke-SelfUpdate function checks here and
+// overwrites+re-execs itself when a newer version exists - see buildWorkspaceDirectoryAgentScript
+// in src/pages/settings.js for that logic and for how "Publish Latest Agent Version" writes here.
+//
+// TWO RESPONSE MODES, because these agents run on metered cellular SIMs and the shell script is
+// ~100KB:
+//   - "?meta=1"  -> { version } only, a couple of dozen bytes. This is what an agent asks for on
+//                   every run, just to find out whether it already has the current version.
+//   - no param   -> { script, version }, the full body. Only fetched on the rare run where the
+//                   version actually differs from what the agent already has on disk.
+// Before the meta mode existed every agent downloaded the entire ~100KB shell on every 20-minute
+// poll purely to discover nothing had changed - roughly 211MB per device per month, on the very
+// data plan this whole feature exists to measure and conserve.
 //
 // Same shared-secret auth as workspace-directory-checkin (x-agent-secret), not a user session.
-// GET only, no request body - just returns { script, version }.
+// GET only, no request body.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
@@ -36,7 +46,10 @@ Deno.serve(async (req) => {
     const script = shellRow?.value?.script || '';
     const version = shellRow?.value?.version || 0;
 
-    return new Response(JSON.stringify({ script, version }), {
+    const metaOnly = new URL(req.url).searchParams.get('meta') === '1';
+    const body = metaOnly ? { version } : { script, version };
+
+    return new Response(JSON.stringify(body), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,
     });
   } catch (err) {

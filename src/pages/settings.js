@@ -956,6 +956,9 @@ $DuScrapeStateFile = Join-Path $StateDir "du-scrape-last.txt"
 $PopupStateFile = Join-Path $StateDir "last-unexpected-windows.txt"
 $ModerateSnapshotFile = Join-Path $StateDir "last-moderate-snapshot.json"
 $HeavySnapshotFile = Join-Path $StateDir "last-heavy-snapshot.json"
+$ShellVersionFile = Join-Path $StateDir "installed-shell-version.txt"
+$CollectorCacheFile = Join-Path $StateDir "collector-cache.ps1"
+$CollectorVersionFile = Join-Path $StateDir "collector-cache-version.txt"
 $UninstallPasswordHash = "${uninstallHash}"
 
 # Self-elevate if not already running as Administrator (needed to register/unregister the
@@ -1170,14 +1173,37 @@ function Write-AgentStatus($success, $message) {
 function Invoke-SelfUpdate($OriginalArgs) {
     if (-not (Test-Path $InstalledScriptPath)) { return }
     try {
-        $resp = Invoke-RestMethod -Method Get -Uri $AgentShellUrl -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
+        # VERSION FIRST, script only if it actually differs. The shell body is ~100KB and this runs
+        # on every single cycle, so unconditionally downloading it just to discover it was
+        # byte-identical cost roughly 211MB per device per month - on the very metered SIM plan this
+        # whole feature exists to measure. The "?meta=1" response is a couple of dozen bytes.
+        $metaResp = Invoke-RestMethod -Method Get -Uri ($AgentShellUrl + "?meta=1") -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
+        if (-not $metaResp -or $null -eq $metaResp.version) { return }
+        $publishedVersion = [string]$metaResp.version
+        $installedVersion = if (Test-Path $ShellVersionFile) { (Get-Content -Path $ShellVersionFile -Raw -ErrorAction SilentlyContinue).Trim() } else { $null }
+
+        # Matching versions means the script on disk is already the published one - nothing to
+        # download. The version file is only ever written after a successful overwrite below (or on
+        # the first run, once the content comparison has confirmed they match), so it can't claim to
+        # be current when it isn't.
+        if ($installedVersion -and $installedVersion -eq $publishedVersion) { return }
+
+        # Either a genuinely new version, or this agent has no version file yet (a fresh install, or
+        # one upgrading from a build that predates version tracking). Both need the full body: the
+        # first to apply it, the second to establish the baseline. This is the ONLY path that
+        # downloads ~100KB, and after it runs once the check above short-circuits every later cycle.
+        $resp = Invoke-RestMethod -Method Get -Uri $AgentShellUrl -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 30
         if (-not $resp -or -not $resp.script) { return }
         $normalize = { param($t) $t -replace "\`r\`n", "\`n" -replace "\`r", "\`n" }
         $current = & $normalize (Get-Content -Path $InstalledScriptPath -Raw)
         $incoming = & $normalize $resp.script
+        New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
         if ($incoming -ne $current) {
             Set-Content -Path $InstalledScriptPath -Value $resp.script -Encoding utf8 -NoNewline
-            Write-AgentLog "Agent updated to a newly published version - re-running with the new logic now."
+            # Written BEFORE the re-exec, so the child process sees the new version as already
+            # installed and skips straight past its own self-update instead of fetching again.
+            Set-Content -Path $ShellVersionFile -Value $publishedVersion -Encoding utf8 -NoNewline
+            Write-AgentLog "Agent updated to published version $publishedVersion - re-running with the new logic now."
             if ($OriginalArgs -and $OriginalArgs.Count -gt 0) {
                 & $InstalledScriptPath @OriginalArgs
             } else {
@@ -1185,6 +1211,9 @@ function Invoke-SelfUpdate($OriginalArgs) {
             }
             exit
         }
+        # Content already matched despite no/stale version file - just record the baseline so this
+        # agent never pays for the full download again.
+        Set-Content -Path $ShellVersionFile -Value $publishedVersion -Encoding utf8 -NoNewline
     } catch {
         Write-Warning "Self-update check failed, continuing with the currently-installed version: $($_.Exception.Message)"
     }
@@ -1195,12 +1224,53 @@ function Invoke-DefaultCollector {
 ${indented}
 }
 
+# Same version-first treatment as Invoke-SelfUpdate above, except this script is actually NEEDED on
+# every run (it's what gathers the data), so instead of just skipping the download it's kept in a
+# local cache file and re-read from disk whenever the published version still matches. The collector
+# is ~11KB and changes maybe a few times a year, so re-downloading it on every 20-minute poll was
+# ~22MB per device per month of pure waste on a metered plan.
+#
+# Falls back to a full fetch whenever anything is off - no version file, no cache file, a version
+# mismatch, or an unreadable cache - so a corrupted or half-written cache can never leave the agent
+# running stale collection logic. Returns $null on total failure, which makes Invoke-Checkin use the
+# built-in Invoke-DefaultCollector instead, exactly as before.
 function Get-RemoteCollectorScript {
     try {
-        $resp = Invoke-RestMethod -Method Get -Uri $CollectorUrl -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
-        if ($resp -and $resp.script) { return $resp.script }
+        $metaResp = Invoke-RestMethod -Method Get -Uri ($CollectorUrl + "?meta=1") -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
+        $publishedVersion = if ($metaResp -and $null -ne $metaResp.version) { [string]$metaResp.version } else { $null }
+
+        if ($publishedVersion) {
+            $cachedVersion = if (Test-Path $CollectorVersionFile) { (Get-Content -Path $CollectorVersionFile -Raw -ErrorAction SilentlyContinue).Trim() } else { $null }
+            if ($cachedVersion -eq $publishedVersion -and (Test-Path $CollectorCacheFile)) {
+                $cached = Get-Content -Path $CollectorCacheFile -Raw -ErrorAction SilentlyContinue
+                if (-not [string]::IsNullOrWhiteSpace($cached)) { return $cached }
+            }
+        }
+
+        $resp = Invoke-RestMethod -Method Get -Uri $CollectorUrl -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 30
+        if ($resp -and $resp.script) {
+            try {
+                New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+                Set-Content -Path $CollectorCacheFile -Value $resp.script -Encoding utf8 -NoNewline
+                # Version written only AFTER the body is safely on disk, so an interrupted write can
+                # never leave a version file pointing at a truncated cache.
+                if ($null -ne $resp.version) { Set-Content -Path $CollectorVersionFile -Value ([string]$resp.version) -Encoding utf8 -NoNewline }
+            } catch { Write-AgentLog "Could not cache the collector script locally: $($_.Exception.Message)" }
+            return $resp.script
+        }
     } catch {
-        Write-Warning "Could not fetch remote collector script, using built-in default: $($_.Exception.Message)"
+        Write-Warning "Could not fetch remote collector script: $($_.Exception.Message)"
+        # Network failed, but a previously cached copy is still better than falling all the way back
+        # to the built-in default - it's whatever was last published, just not re-verified today.
+        try {
+            if (Test-Path $CollectorCacheFile) {
+                $cached = Get-Content -Path $CollectorCacheFile -Raw -ErrorAction SilentlyContinue
+                if (-not [string]::IsNullOrWhiteSpace($cached)) {
+                    Write-AgentLog "Using the locally cached collector script after a failed fetch."
+                    return $cached
+                }
+            }
+        } catch {}
     }
     return $null
 }
