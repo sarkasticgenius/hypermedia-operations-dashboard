@@ -632,8 +632,10 @@ export function renderWorkspaceDirectory() {
       <div style="overflow-x:auto;">
         <!-- text-align:center on the table itself rather than per-cell: text-align inherits, so one
              declaration centres every header and every body cell together and they can't drift out
-             of step as columns are added later. Volume is wider than the others so its stacked
-             drive bars have room to read as bars rather than slivers.
+             of step as columns are added later. Volume is 21ch against Data Usage's 18ch on purpose,
+             not by accident: its cell also carries a "C:"/"D:" label and gap (~15.6px measured),
+             which comes straight off the bar's width. The extra 3ch buys that back so both columns'
+             bars render at the same size instead of Volume's looking squashed beside it.
              No max-height/vertical scroll any more: with 25 rows to a page the table is a bounded
              length on its own, and an inner scrollbar on top of pagination means two competing ways
              to move through the same list. -->
@@ -641,7 +643,7 @@ export function renderWorkspaceDirectory() {
           <thead><tr>
             ${editOk ? `<th style="width:24px;"><input type="checkbox" ${allSelected ? 'checked' : ''} onchange='App.toggleWorkspaceSelectAll(this.checked, ${jsonAttr(sortedIds)})' title="Select all shown"></th>` : ''}
             ${sortTh('workspaceDevices', 'hostname', 'Hostname', 22, 'center')}
-            ${sortTh('workspaceDevices', 'volume', 'Volume', 18, 'center')}
+            ${sortTh('workspaceDevices', 'volume', 'Volume', 21, 'center')}
             ${sortTh('workspaceDevices', 'location', 'Location', 14, 'center')}
             ${sortTh('workspaceDevices', 'ip', 'IP', 15, 'center')}
             <th style="width:15ch;">Remote Access</th>
