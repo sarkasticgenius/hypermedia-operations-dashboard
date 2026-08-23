@@ -384,11 +384,11 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
   return `<tr>
     ${editOk ? `<td style="width:24px;"><input type="checkbox" ${(selectedIds || new Set()).has(d.id) ? 'checked' : ''} onchange="App.toggleWorkspaceSelection('${d.id}', this.checked)"></td>` : ''}
     <td><b>${esc(d.hostname)}</b></td>
+    <td>${volumeCellHtml(d)}</td>
     <td class="small">${esc(d.location || '-')}</td>
     <td class="small" style="white-space:nowrap;">${esc(d.ip_address || '-')}</td>
     <td>${remoteAccessButtonHtml(d)}</td>
     <td>${dataUsageCellHtml(d, sim)}</td>
-    <td>${volumeCellHtml(d)}</td>
     <td style="white-space:nowrap;">${statusDotHtml(online, true)}</td>
     <td>${matchedScreenHtml(matchedScreenFor(d, assetInventory))}</td>
     <td class="small">${esc(d.os_name || '-')}${d.os_version ? ` <span class="muted">${esc(d.os_version)}</span>` : ''}</td>
@@ -575,11 +575,11 @@ export function renderWorkspaceDirectory() {
           <thead><tr>
             ${editOk ? `<th style="width:24px;"><input type="checkbox" ${allSelected ? 'checked' : ''} onchange='App.toggleWorkspaceSelectAll(this.checked, ${jsonAttr(sortedIds)})' title="Select all shown"></th>` : ''}
             ${sortTh('workspaceDevices', 'hostname', 'Hostname', 14, 'center')}
+            ${sortTh('workspaceDevices', 'volume', 'Volume', 18, 'center')}
             ${sortTh('workspaceDevices', 'location', 'Location', 12, 'center')}
             ${sortTh('workspaceDevices', 'ip', 'IP', 15, 'center')}
             <th style="width:15ch;">Remote Access</th>
             ${sortTh('workspaceDevices', 'dataUsage', 'Data Usage', 18, 'center')}
-            ${sortTh('workspaceDevices', 'volume', 'Volume', 18, 'center')}
             ${sortTh('workspaceDevices', 'status', 'Status', 13, 'center')}
             ${sortTh('workspaceDevices', 'screen', 'Matched Screen', 20, 'center')}
             ${sortTh('workspaceDevices', 'os', 'OS', 16, 'center')}
