@@ -393,13 +393,17 @@ function dataUsageCellHtml(d, sim) {
 function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
   const online = isOnline(d);
   const problemCount = visibleProblems(d).length;
-  return `<tr>
+  // The whole row opens Details. Handled on the <tr> rather than by styling the hostname as a link,
+  // so the name keeps its plain bold treatment and the target is the entire row instead of a few
+  // characters of text. The handler ignores clicks that landed on a control (see
+  // openWorkspaceDetailsFromRow) so the checkbox and the row's own buttons still do their own jobs.
+  return `<tr style="cursor:pointer;" onclick="App.openWorkspaceDetailsFromRow(event, '${d.id}')">
     ${editOk ? `<td style="width:24px;"><input type="checkbox" ${(selectedIds || new Set()).has(d.id) ? 'checked' : ''} onchange="App.toggleWorkspaceSelection('${d.id}', this.checked)"></td>` : ''}
     <!-- nowrap because these names are full of hyphens and browsers treat a hyphen as a legal
          break point - "DRAGONMART-FOOD" was splitting across two lines purely on that, making
          rows taller and the column ragged. Ellipsis + title keeps an unusually long name from
          spilling into the next column while still being readable on hover. -->
-    <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><button type="button" class="link-btn" title="${esc(d.hostname)} - click for full details" style="font-weight:700;font-size:inherit;padding:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" onclick="App.openWorkspaceDetailsModal('${d.id}')">${esc(d.hostname)}</button></td>
+    <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(d.hostname)}"><b>${esc(d.hostname)}</b></td>
     <td>${volumeCellHtml(d)}</td>
     <td class="small">${esc(d.location || '-')}</td>
     <td class="small" style="white-space:nowrap;">${esc(d.ip_address || '-')}</td>
@@ -639,7 +643,7 @@ export function renderWorkspaceDirectory() {
              No max-height/vertical scroll any more: with 25 rows to a page the table is a bounded
              length on its own, and an inner scrollbar on top of pagination means two competing ways
              to move through the same list. -->
-        <table style="${FIXED_TABLE_STYLE}text-align:center;">
+        <table class="zebra" style="${FIXED_TABLE_STYLE}text-align:center;">
           <thead><tr>
             ${editOk ? `<th style="width:24px;"><input type="checkbox" ${allSelected ? 'checked' : ''} onchange='App.toggleWorkspaceSelectAll(this.checked, ${jsonAttr(sortedIds)})' title="Select all shown"></th>` : ''}
             ${sortTh('workspaceDevices', 'hostname', 'Hostname', 22, 'center')}
@@ -745,6 +749,18 @@ export async function saveWorkspaceEditForm(event, deviceId) {
     toast(pendingCommand ? 'Device updated - command will run on its next check-in.' : 'Device updated');
     setState({});
   } catch (e) { toast(e.message || 'Failed to update device', 'error'); }
+}
+
+// Row-level click-through to Details. Anything the user aimed at a real control - the select
+// checkbox, Details/Edit/Rename/Force/Delete, a Remote Access link, the copy-ID button inside the
+// remote chips - must keep doing only its own thing, so those are filtered out before opening.
+// Text selection is also respected: dragging to highlight a hostname or IP shouldn't be punished
+// with a modal on mouse-up.
+export function openWorkspaceDetailsFromRow(event, deviceId) {
+  if (event.target.closest('button, a, input, select, textarea, label')) return;
+  const selection = window.getSelection();
+  if (selection && String(selection).length > 0) return;
+  openModal('workspaceDetails', { deviceId });
 }
 
 export function openWorkspaceRenameModal(deviceId) {
