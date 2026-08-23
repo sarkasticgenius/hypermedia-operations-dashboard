@@ -212,8 +212,21 @@ table{width:100%;border-collapse:collapse;font-size:13px;}
 th{text-align:center;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-dim);padding:9px 10px;border-bottom:1px solid var(--border);font-weight:700;}
 td{padding:10px 10px;border-bottom:1px solid var(--border);text-align:center;}
 tr:hover td{background:var(--row-hover);}
-.tright{text-align:center;}
-.tcenter{text-align:center;}
+
+/* ...except the first column, which stays left. It is almost always the row's identity - an asset
+   name, a hostname, a site - and is both the longest text in the row and often carries a second
+   line beneath it. Centred, those ragged multi-line names read as though they are drifting; against
+   a left edge they line up and scan straight down. */
+th:first-child,td:first-child{text-align:left;}
+/* When the first column is nothing but a select-all checkbox, the column that actually carries the
+   row's identity is the second one, so the left edge moves there instead. */
+thead tr:has(> th:first-child input[type=checkbox]) > th:nth-child(2),
+tbody tr:has(> td:first-child input[type=checkbox]) > td:nth-child(2){text-align:left;}
+
+/* Written as th./td. rather than bare classes so they outrank the :first-child rules above - a
+   column that explicitly asks to be centred still gets centred even when it is first. */
+th.tright,td.tright{text-align:center;}
+th.tcenter,td.tcenter{text-align:center;}
 
 /* Alternating light-blue/white row banding for Reporting page tables - opt-in via .zebra on the
    <table> so it doesn't change every other table in the app. Set on <tr> (not <td>) so an
