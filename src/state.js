@@ -81,10 +81,42 @@ export function onAfterRender(fn) {
 // snapshot, silently reverting every other field the user had already typed into. Fixed the same
 // way as focus/scroll above: snapshot every field's live value by id right before the innerHTML
 // replace, then write it back afterwards for any id that still exists in the new markup.
+// Every render() replaces the whole page with a fresh HTML string, which destroys whatever element
+// had focus - so anything the user is typing into has to be found again afterwards. Matching on id
+// alone was not enough: most inputs in this app (every search box, for one) carry no id at all, so
+// focus was silently dropped on the FIRST keystroke and the caret jumped out of the field. Since
+// oninput calls setState on every character, that made those boxes impossible to type more than one
+// character into.
+//
+// Falls back to locating the element structurally: same tag, same position among elements of that
+// tag, verified by placeholder where there is one. That holds because render() rebuilds the page
+// from the same deterministic template, so the replacement input lands in the same place as the one
+// it replaced.
+function describeFocus(el) {
+  if (!el || !el.matches || !el.matches('input, textarea, select')) return null;
+  if (el.id) return { by: 'id', id: el.id };
+  const tag = el.tagName.toLowerCase();
+  const idx = [...document.querySelectorAll(tag)].indexOf(el);
+  if (idx === -1) return null;
+  return { by: 'position', tag, idx, placeholder: el.getAttribute('placeholder') };
+}
+
+function findFocus(desc) {
+  if (!desc) return null;
+  if (desc.by === 'id') return document.getElementById(desc.id);
+  const all = [...document.querySelectorAll(desc.tag)];
+  const atIndex = all[desc.idx];
+  // Position is the primary signal; placeholder guards against a layout shift silently handing
+  // focus to a different field than the one the user was in.
+  if (atIndex && (!desc.placeholder || atIndex.getAttribute('placeholder') === desc.placeholder)) return atIndex;
+  if (desc.placeholder) return all.find((e) => e.getAttribute('placeholder') === desc.placeholder) || null;
+  return atIndex || null;
+}
+
 export function render() {
   if (!renderFn || !rootEl) return;
   const active = document.activeElement;
-  const activeId = active && active.id ? active.id : null;
+  const focusDesc = describeFocus(active);
   const hasSelection = active && 'selectionStart' in active;
   const selStart = hasSelection ? active.selectionStart : null;
   const selEnd = hasSelection ? active.selectionEnd : null;
@@ -116,13 +148,13 @@ export function render() {
     else el.value = snap.value;
   }
 
-  if (activeId) {
-    const restored = document.getElementById(activeId);
-    if (restored) {
-      restored.focus();
-      if (selStart != null && restored.setSelectionRange) {
-        try { restored.setSelectionRange(selStart, selEnd); } catch (e) { /* not a text input */ }
-      }
+  const restored = findFocus(focusDesc);
+  if (restored) {
+    restored.focus();
+    if (selStart != null && restored.setSelectionRange) {
+      // Caret position matters as much as focus here - without it the caret snaps to the start of
+      // the field, so typing mid-word would scatter characters backwards.
+      try { restored.setSelectionRange(selStart, selEnd); } catch (e) { /* not a text input */ }
     }
   }
   if (modalScroll != null) {
