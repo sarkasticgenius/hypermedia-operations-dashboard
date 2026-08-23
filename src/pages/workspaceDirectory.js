@@ -360,12 +360,18 @@ function dataUsageCellHtml(d, sim) {
   // rather than a real figure) - exactly the case where seeing the number matters most.
   const phoneHtml = phone ? `<div class="small muted" style="white-space:nowrap;line-height:1.3;">${esc(phone)}</div>` : '';
   if (!allocGb) {
-    // Named rather than left as a bare dash. No phone number at all means the scrape found no SIM
-    // behind this PC's connection - mydata.du.ae identifies the subscriber from the connection
-    // itself, so a PC reaching the internet over Wi-Fi or LAN has genuinely nothing to report and
-    // no amount of retrying will produce a figure. A dash read like missing/failed data; saying
-    // "Wi-Fi / LAN" says it is a different kind of connection, which is the actual fact.
-    return phoneHtml || '<span class="small muted" title="No SIM behind this PC - it reaches the internet over Wi-Fi/LAN, so du has no carrier data to report for it.">Wi-Fi / LAN</span>';
+    // Two very different situations both end up here, and they must not be labelled the same way:
+    //   - The scrape RAN and found no SIM behind the connection (du identifies the subscriber from
+    //     the connection itself, so a Wi-Fi/LAN machine genuinely has nothing to report, ever).
+    //   - The scrape has never successfully run at all, so nothing is known either way.
+    // du_scraped_at is what separates them: it is only ever set when a scrape actually reported
+    // something. Calling the second case "Wi-Fi / LAN" would be a confident claim about a device we
+    // know nothing about - and was wrong in practice on a real device that turned out to have a
+    // perfectly good SIM, it just had not scraped yet.
+    if (d.du_scraped_at) {
+      return phoneHtml || '<span class="small muted" title="No SIM behind this PC - the scrape ran and du had no carrier data for this connection, so it reaches the internet over Wi-Fi/LAN.">Wi-Fi / LAN</span>';
+    }
+    return phoneHtml || '<span class="small muted" title="No DU scrape has completed on this PC yet - it runs once a day, anchored to 08:00 local time.">Not scraped yet</span>';
   }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
   const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
@@ -571,7 +577,7 @@ export function renderWorkspaceDirectory() {
             ${sortTh('workspaceDevices', 'location', 'Location', 12, 'center')}
             ${sortTh('workspaceDevices', 'ip', 'IP', 15, 'center')}
             <th style="width:15ch;">Remote Access</th>
-            ${sortTh('workspaceDevices', 'dataUsage', 'Data Usage', 14, 'center')}
+            ${sortTh('workspaceDevices', 'dataUsage', 'Data Usage', 18, 'center')}
             ${sortTh('workspaceDevices', 'volume', 'Volume', 18, 'center')}
             ${sortTh('workspaceDevices', 'status', 'Status', 13, 'center')}
             ${sortTh('workspaceDevices', 'screen', 'Matched Screen', 20, 'center')}
