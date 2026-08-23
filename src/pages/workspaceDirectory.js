@@ -284,9 +284,14 @@ function matchedScreenHtml(matched) {
 // A diagonally-striped fill with the percentage centered inside the bar itself, rather than as
 // separate text next to a plain fill - used everywhere a single at-a-glance percentage matters
 // (a volume's free space, data used vs. plan) so Volumes/Data Usage/Status read consistently.
+// min-width is deliberately small (just enough for the "NN%" label to stay legible) rather than a
+// comfortable bar width. It used to be 90px, which a fixed-layout table column can't honour: the
+// bar sits in a flex row next to a "C:"/"D:" label inside a ~92px cell, so 90px + label + gap
+// overflowed by roughly 24px and painted over the neighbouring Status column - a stray green sliver
+// next to the Online dot. Callers that have room give the bar a flexible wrapper to fill instead.
 function stripedBarHtml(pct, color) {
   const clamped = Math.max(0, Math.min(100, pct));
-  return `<div style="position:relative;height:20px;border-radius:5px;overflow:hidden;background:var(--bg);border:1px solid var(--border);min-width:90px;">
+  return `<div style="position:relative;height:20px;border-radius:5px;overflow:hidden;background:var(--bg);border:1px solid var(--border);min-width:34px;">
     <div style="width:${clamped.toFixed(1)}%;height:100%;background-color:${color};background-image:repeating-linear-gradient(45deg, rgba(255,255,255,.28) 0, rgba(255,255,255,.28) 5px, transparent 5px, transparent 10px);"></div>
     <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.55);">${clamped.toFixed(0)}%</div>
   </div>`;
@@ -328,8 +333,11 @@ function volumeCellHtml(d) {
     // the free percentage instead reads backwards, since a mostly-full green bar looked like
     // "consuming a lot of space" when it actually meant the opposite (mostly free). Danger color
     // thresholds still key off free space, unchanged.
+    // The bar goes in a flexible, shrinkable wrapper (min-width:0 is what actually lets a flex item
+    // shrink below its content size) so it fills whatever the label leaves and never spills out of
+    // the fixed-width column.
     return `<div style="display:flex;align-items:center;gap:6px;" title="${esc(v.drive)}${v.label ? ` (${esc(v.label)})` : ''} - ${v.freeGb} of ${v.sizeGb} GB free">
-      <span class="small muted" style="flex:none;">${esc(v.drive)}</span>${stripedBarHtml(100 - freePct, color)}
+      <span class="small muted" style="flex:none;">${esc(v.drive)}</span><div style="flex:1;min-width:0;">${stripedBarHtml(100 - freePct, color)}</div>
     </div>`;
   }).join('');
   return `<div style="display:flex;flex-direction:column;gap:4px;">${rows}</div>`;
