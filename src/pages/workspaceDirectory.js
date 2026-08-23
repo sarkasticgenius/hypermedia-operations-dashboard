@@ -340,7 +340,7 @@ function dataUsageCellHtml(d, sim) {
     return phone ? `<span class="small muted">${esc(phone)}</span>` : '<span class="small muted">-</span>';
   }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
-  const color = pct >= 90 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
+  const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
   return `<div title="${usedGb.toFixed(2)} of ${allocGb} GB used${haveDu ? ' (DU)' : ''}">${stripedBarHtml(pct, color)}</div>`;
 }
 
@@ -389,7 +389,7 @@ function dataUsageTile(d, sim) {
   const { haveDu, allocGb, usedGb, leftGb, phone } = duUsageInfo(d, sim);
   const last24hGb = (d.data_used_mb_last_24h || 0) / 1024;
   const pct = allocGb ? Math.min(100, (usedGb / allocGb) * 100) : 0;
-  const color = pct >= 90 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
+  const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
   return `<div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
       <div>
@@ -442,6 +442,28 @@ export function renderWorkspaceDirectory() {
   const tiles = locations.map((loc) => locationTile(loc, byLocation.get(loc))).join('');
 
   const dataDevices = devices.filter((d) => d.sim_card_id || d.du_scraped_at);
+
+  // One summary banner, not a tile per over-limit device - a screen close to running out of SIM
+  // data is the kind of thing that needs to be seen the moment the page loads, not discovered by
+  // scrolling through every tile in the grid below. Same 80% threshold as dataUsageCellHtml/
+  // dataUsageTile's own red coloring, computed once here from the same duUsageInfo() both of those
+  // already use, so all three agree on what counts as "over".
+  const overLimitDevices = dataDevices
+    .map((d) => {
+      const { allocGb, usedGb } = duUsageInfo(d, simById.get(d.sim_card_id));
+      return { device: d, pct: allocGb ? (usedGb / allocGb) * 100 : 0 };
+    })
+    .filter((x) => x.pct >= 80)
+    .sort((a, b) => b.pct - a.pct);
+  const overLimitBannerHtml = overLimitDevices.length
+    ? `<div class="banner" style="background:#c0392b;color:#fff;border-color:#c0392b;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <div style="flex:1;min-width:220px;">
+          <b>${overLimitDevices.length} device${overLimitDevices.length === 1 ? '' : 's'} over 80% of its SIM data plan</b>
+          <div class="small" style="opacity:.9;margin-top:2px;">${overLimitDevices.map((x) => `${esc(x.device.hostname)} (${x.pct.toFixed(0)}%)`).join(', ')}</div>
+        </div>
+      </div>`
+    : '';
+
   const dataTilesHtml = dataDevices.length
     ? `<div class="card">
         <div class="card-head"><h3>SIM Data Usage</h3><div class="desc">Devices linked to a SIM Card record (Edit &gt; Linked SIM Card), or that have their own DU scrape. A tile marked <span style="color:#1f9d55;">DU</span> is showing du's own carrier-reported figures (scraped from mydata.du.ae once a day, no login - works when that PC's internet actually goes out over the SIM); otherwise Total/Used/Left fall back to an estimate from the PC's network adapter counters against the linked SIM Card's plan size. Last 24h is always the counter-based estimate, recomputed about once a day even though the agent itself checks in every 6 hours. Comments shown below a tile come from that device's Notes (Edit).</div></div>
@@ -476,6 +498,7 @@ export function renderWorkspaceDirectory() {
 
   return `
     ${ghostHtml}
+    ${overLimitBannerHtml}
     <div class="kpi-row" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Total Devices</div><div class="value">${devices.length}</div></div>
       <div class="kpi"><div class="label">Online</div><div class="value" style="color:#1f9d55;">${online}</div></div>
@@ -498,7 +521,7 @@ export function renderWorkspaceDirectory() {
     </div>` : ''}
     <div class="card">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES}+ minutes (a light check-in runs every 20 minutes; the heavier full inventory only every 6 hours).${editOk ? ' Tick devices below to deploy a command (install/uninstall software, etc.) to several at once.' : ''}</div></div>
+        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES}+ minutes (a light check-in runs every 20 minutes; remote-access/OS/antivirus info updates roughly every 6 hours when changed; software/hardware/disk info and the DU data-usage scrape update once a day at 8 AM).${editOk ? ' Tick devices below to deploy a command (install/uninstall software, etc.) to several at once.' : ''}</div></div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <input placeholder="Search hostname, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
           <button class="btn-sm" title="Reload this page's data without refreshing the whole app" onclick="App.refreshWorkspaceDirectory()">&#8635; Refresh</button>
@@ -810,7 +833,7 @@ registerModal('workspaceDetails', (data) => {
   const sim = simCards.find((s) => s.id === d.sim_card_id);
   const { haveDu, allocGb, usedGb, leftGb, phone } = duUsageInfo(d, sim);
   const usagePct = allocGb ? Math.min(100, (usedGb / allocGb) * 100) : 0;
-  const usageColor = usagePct >= 90 ? '#c0392b' : usagePct >= 70 ? '#e07a2c' : '#1f9d55';
+  const usageColor = usagePct >= 80 ? '#c0392b' : usagePct >= 70 ? '#e07a2c' : '#1f9d55';
   const dataUsageHtml = !phone && !allocGb
     ? '<div class="empty">No data usage reported yet.</div>'
     : `<div class="small" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;">

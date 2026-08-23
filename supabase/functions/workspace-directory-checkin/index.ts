@@ -13,9 +13,20 @@
 // by whatever the current collector script (see workspace-directory-collector) produces, not fixed
 // here - this function just stores whatever comes in, defensively capped/typed.
 //
-// The check-in itself runs every 6 hours (see the agent script) - frequent enough that Online/
-// Offline status and general metadata stay fresh, cheap enough (a few KB per call) to not matter on
-// a metered cellular SIM. Two things happen here beyond the plain upsert:
+// The agent itself checks in on three different cadences to keep a metered cellular SIM cheap,
+// deciding locally what to include each time (see Invoke-Checkin's tiering in the agent script):
+//   - Every ~20 minutes: hostname, problems (Issues tile), a couple of tiny counters - this alone
+//     is what keeps Online/Offline and Issues fresh at 20-minute resolution.
+//   - Every ~6 hours: adds ip/remote-access-IDs/OS/logged-in-user/antivirus, but ONLY when the
+//     agent's own local diff says something in that group actually changed since it last sent it -
+//     otherwise that cycle is just the same minimal payload as a 20-minute one.
+//   - Once a day, anchored to 8 AM local time (bundled with the DU data-usage scrape): adds
+//     volumes/hardware components/the installed-software list, again only if changed.
+// Each of those fields is therefore only PRESENT in the request body on the cycles that actually
+// have something new to say - so every one of them is written into `row` conditionally (`body.x
+// !== undefined`), sticky rather than wiped, exactly like `software` already was before this
+// three-tier scheme existed. A cycle that omits a field leaves the dashboard's last-known value
+// alone instead of blanking it out.
 //  - Network usage: the agent reports networkBytesTotal on EVERY check-in, but this function only
 //    actually diffs it against the previous reading and folds the delta (in MB) into
 //    data_used_mb_period/data_used_mb_last_24h roughly once a day (gated by data_usage_computed_at,
@@ -65,13 +76,6 @@ Deno.serve(async (req) => {
     const hostname = String(body.hostname || '').trim();
     if (!hostname) throw new Error('hostname is required.');
 
-    // A light check-in (the 20-minute poll cycle, see Invoke-Checkin's -Light handling in the agent
-    // script) deliberately omits software - by far the largest field here (up to 2000 Add/Remove
-    // Programs entries) - to keep that frequent cycle cheap on a metered cellular SIM. Sticky rather
-    // than wiped: `software` is only included in the upsert row at all when this ISN'T a light
-    // check-in, so a 20-minute poll leaves whatever the last full (6-hourly) check-in reported
-    // untouched instead of clearing it to empty.
-    const isLight = body.light === true;
     // Software list is capped defensively - a machine with an unusually bloated Add/Remove
     // Programs list (thousands of entries from some install tooling) shouldn't be able to bloat a
     // single jsonb row without bound. uninstallString (the registry's own QuietUninstallString/
@@ -104,23 +108,15 @@ Deno.serve(async (req) => {
     const components = (body.components && typeof body.components === 'object') ? body.components : {};
 
     const { data: existing } = await adminClient.from('workspace_devices')
-      .select('network_bytes_total, data_used_mb_period, data_usage_computed_at').eq('hostname', hostname).maybeSingle();
+      .select('network_bytes_total, data_used_mb_period, data_usage_computed_at, du_data_used_gb, du_data_total_gb').eq('hostname', hostname).maybeSingle();
 
+    // Base fields: present on literally every check-in, light or not (see the header comment for
+    // the three-tier cadence) - hostname/agent_version/last_seen/force_checkin_requested are
+    // trivially small, and `problems` (the Issues tile) is deliberately sent every single cycle so
+    // it stays fresh at 20-minute resolution even though the raw data it's computed FROM
+    // (antivirus/volumes/remote-IDs) mostly isn't transmitted that often - see below.
     const row: Record<string, unknown> = {
       hostname,
-      ip_address: body.ip ? String(body.ip).slice(0, 100) : null,
-      anydesk_id: body.anydeskId ? String(body.anydeskId).slice(0, 50) : null,
-      teamviewer_id: body.teamviewerId ? String(body.teamviewerId).slice(0, 50) : null,
-      other_remote_ids: otherRemoteIds,
-      broadsign_player_id: body.broadsignPlayerId ? String(body.broadsignPlayerId).slice(0, 100) : null,
-      grassfish_box_id: body.grassfishBoxId ? String(body.grassfishBoxId).slice(0, 100) : null,
-      os_name: body.os ? String(body.os).slice(0, 200) : null,
-      os_version: body.osVersion ? String(body.osVersion).slice(0, 100) : null,
-      logged_in_user: body.loggedInUser ? String(body.loggedInUser).slice(0, 200) : null,
-      ...(isLight ? {} : { software }),
-      volumes,
-      components,
-      antivirus,
       problems,
       agent_version: body.agentVersion ? String(body.agentVersion).slice(0, 50) : null,
       last_seen: new Date().toISOString(),
@@ -130,6 +126,25 @@ Deno.serve(async (req) => {
       // since a stray still-true flag would otherwise force every future check-in.
       force_checkin_requested: false,
     };
+
+    // Moderate (~6-hourly, if changed) and heavy (once-daily at 8am, if changed) fields - each one
+    // is only written into the upsert row when the agent actually INCLUDED it this cycle
+    // (`body.x !== undefined`), sticky rather than wiped, so a cycle that skips them (by design,
+    // per the agent's own local diff-check - see the header comment) leaves the dashboard's
+    // last-known value alone instead of blanking it to empty/null.
+    if (body.ip !== undefined) row.ip_address = body.ip ? String(body.ip).slice(0, 100) : null;
+    if (body.anydeskId !== undefined) row.anydesk_id = body.anydeskId ? String(body.anydeskId).slice(0, 50) : null;
+    if (body.teamviewerId !== undefined) row.teamviewer_id = body.teamviewerId ? String(body.teamviewerId).slice(0, 50) : null;
+    if (body.otherRemoteIds !== undefined) row.other_remote_ids = otherRemoteIds;
+    if (body.broadsignPlayerId !== undefined) row.broadsign_player_id = body.broadsignPlayerId ? String(body.broadsignPlayerId).slice(0, 100) : null;
+    if (body.grassfishBoxId !== undefined) row.grassfish_box_id = body.grassfishBoxId ? String(body.grassfishBoxId).slice(0, 100) : null;
+    if (body.os !== undefined) row.os_name = body.os ? String(body.os).slice(0, 200) : null;
+    if (body.osVersion !== undefined) row.os_version = body.osVersion ? String(body.osVersion).slice(0, 100) : null;
+    if (body.loggedInUser !== undefined) row.logged_in_user = body.loggedInUser ? String(body.loggedInUser).slice(0, 200) : null;
+    if (body.antivirus !== undefined) row.antivirus = antivirus;
+    if (body.volumes !== undefined) row.volumes = volumes;
+    if (body.components !== undefined) row.components = components;
+    if (body.software !== undefined) row.software = software;
 
     const newCounter = Number.isFinite(Number(body.networkBytesTotal)) ? Number(body.networkBytesTotal) : null;
     const lastUsageAt = existing?.data_usage_computed_at ? new Date(existing.data_usage_computed_at).getTime() : 0;
@@ -163,9 +178,38 @@ Deno.serve(async (req) => {
       row.du_scraped_at = new Date().toISOString();
     }
 
+    // Slack-worthy the moment a FRESH DU reading (this check-in, not a stale earlier one) crosses
+    // 80% - compared against what was stored before this same upsert, so it only fires once per
+    // crossing rather than every day the figure stays over 80% (the next day's oldPct is already
+    // >=80, so the condition below is false again). Computed here, before the upsert, since both
+    // the old (from `existing`, fetched above) and new (about to be written) values are on hand;
+    // the actual Slack call happens AFTER the upsert succeeds, so a failed write can't still result
+    // in a notification about data that was never actually saved.
+    const newUsedGb = Number(row.du_data_used_gb ?? existing?.du_data_used_gb);
+    const newTotalGb = Number(row.du_data_total_gb ?? existing?.du_data_total_gb);
+    const oldUsedGb = Number(existing?.du_data_used_gb);
+    const oldTotalGb = Number(existing?.du_data_total_gb);
+    const newPct = newTotalGb > 0 ? (newUsedGb / newTotalGb) * 100 : null;
+    const oldPct = oldTotalGb > 0 ? (oldUsedGb / oldTotalGb) * 100 : null;
+    const crossed80 = row.du_data_used_gb !== undefined && newPct !== null && newPct >= 80 && (oldPct === null || oldPct < 80);
+
     const { data: saved, error } = await adminClient.from('workspace_devices')
       .upsert(row, { onConflict: 'hostname' }).select('pending_command').single();
     if (error) throw error;
+
+    if (crossed80) {
+      try {
+        const cronRes = await adminClient.from('app_settings').select('value').eq('key', '_cronSecret').single();
+        const cronSecret = cronRes.data?.value?.secret;
+        const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
+        const text = `${hostname} has used ${newPct!.toFixed(0)}% of its SIM data plan (${newUsedGb.toFixed(2)} of ${newTotalGb.toFixed(2)} GB).`;
+        await fetch(`${supabaseUrl}/functions/v1/slack-notify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'apikey': anonKey, 'Authorization': `Bearer ${anonKey}`, 'x-cron-secret': cronSecret || '' },
+          body: JSON.stringify({ text }),
+        });
+      } catch { /* best-effort - the check-in itself already succeeded above regardless */ }
+    }
 
     return new Response(JSON.stringify({ ok: true, pendingCommand: saved?.pending_command || null }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,

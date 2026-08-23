@@ -954,6 +954,8 @@ $LogFile = Join-Path $StateDir "agent.log"
 $PendingBatchFile = Join-Path $StateDir "pending-command.bat"
 $DuScrapeStateFile = Join-Path $StateDir "du-scrape-last.txt"
 $PopupStateFile = Join-Path $StateDir "last-unexpected-windows.txt"
+$ModerateSnapshotFile = Join-Path $StateDir "last-moderate-snapshot.json"
+$HeavySnapshotFile = Join-Path $StateDir "last-heavy-snapshot.json"
 $UninstallPasswordHash = "${uninstallHash}"
 
 # Self-elevate if not already running as Administrator (needed to register/unregister the
@@ -1156,7 +1158,16 @@ function Write-AgentStatus($success, $message) {
 # a physical reinstall for a shell-level change again - only the Data Collector Script above already
 # worked this way; this is what extends the same idea to the shell itself. Line-ending differences
 # are normalized before comparing so a whitespace-only mismatch can't cause a self-update loop.
-function Invoke-SelfUpdate {
+# $OriginalArgs is passed in from the CALL SITE below rather than read here, because
+# $PSBoundParameters inside a function refers to THAT FUNCTION's own bound parameters - and this
+# function declares none, so it was always an empty hashtable. Splatting it re-ran the updated
+# script with no switches at all: a "-PollOnce" cycle that happened to self-update came back as a
+# flagless full run, sailing past the "if ($PollOnce) { ...; exit }" guard into task re-registration
+# and a full heavyweight check-in. Confirmed live in the agent log - the tell was
+# "Applied signage notification-suppression policy" (a line only a flagless run can reach) appearing
+# on 20-minute poll cycles right after each "Agent updated..." entry. At the top-level script scope
+# where it is now read, $PSBoundParameters is the SCRIPT's own switches, which is what was intended.
+function Invoke-SelfUpdate($OriginalArgs) {
     if (-not (Test-Path $InstalledScriptPath)) { return }
     try {
         $resp = Invoke-RestMethod -Method Get -Uri $AgentShellUrl -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
@@ -1167,14 +1178,18 @@ function Invoke-SelfUpdate {
         if ($incoming -ne $current) {
             Set-Content -Path $InstalledScriptPath -Value $resp.script -Encoding utf8 -NoNewline
             Write-AgentLog "Agent updated to a newly published version - re-running with the new logic now."
-            & $InstalledScriptPath @PSBoundParameters
+            if ($OriginalArgs -and $OriginalArgs.Count -gt 0) {
+                & $InstalledScriptPath @OriginalArgs
+            } else {
+                & $InstalledScriptPath
+            }
             exit
         }
     } catch {
         Write-Warning "Self-update check failed, continuing with the currently-installed version: $($_.Exception.Message)"
     }
 }
-Invoke-SelfUpdate
+Invoke-SelfUpdate $PSBoundParameters
 
 function Invoke-DefaultCollector {
 ${indented}
@@ -1257,16 +1272,255 @@ function Invoke-PendingCommand($command) {
 # "Get-DuDataUsage | ConvertTo-Json" as a Run Command from the dashboard to see the raw result for
 # tuning either method below.
 #
-# Tries the network-based method first (reads the page's own underlying API response directly - see
-# Get-DuDataUsageViaNetwork below), falling back to the older DOM-text method only if that comes back
-# empty. EXPERIMENTAL: the network method is unverified against a real account as of this writing -
-# this dispatcher exists specifically so a PC where it doesn't pan out is no worse off than before,
-# not silently stuck on a method that never works for it.
+# Tries three methods in order, each one only reached if the previous came back with no usable
+# GB figures - a PC where an earlier method doesn't pan out is no worse off than before:
+#   1. Get-DuDataUsageViaSelenium - a real WebDriver session (see below), which can actually WAIT
+#      for the page's async data to finish rendering instead of guessing a fixed timing budget or
+#      racing a raw CDP network event. Most reliable when it can find/fetch a matching driver.
+#   2. Get-DuDataUsageViaNetwork - reads the page's own underlying API response directly over a
+#      hand-rolled CDP WebSocket connection. No driver executable needed, but the timing around
+#      catching the right network event has proven flaky on real devices.
+#   3. Get-DuDataUsageViaDom - the original --dump-dom + keyword-proximity text scan. Least
+#      reliable (a single fixed --virtual-time-budget guess for when the async JS is "done"), kept
+#      only as a last resort.
 function Get-DuDataUsage {
+    $viaSelenium = $null
+    try { $viaSelenium = Get-DuDataUsageViaSelenium } catch { Write-AgentLog "DU Selenium-based scrape failed: $($_.Exception.Message)" }
+    if ($viaSelenium -and ($null -ne $viaSelenium.dataUsedGb -or $null -ne $viaSelenium.dataTotalGb)) { return $viaSelenium }
+
     $viaNetwork = $null
     try { $viaNetwork = Get-DuDataUsageViaNetwork } catch { Write-AgentLog "DU network-based scrape failed: $($_.Exception.Message)" }
     if ($viaNetwork -and ($null -ne $viaNetwork.dataUsedGb -or $null -ne $viaNetwork.dataTotalGb)) { return $viaNetwork }
+
     return Get-DuDataUsageViaDom
+}
+
+# ---------------------------------------------------------------------------------------------
+# Get-DuDataUsageViaSelenium - a real WebDriver session, spoken over the standard W3C WebDriver
+# HTTP protocol (the same protocol Selenium's own client libraries use under the hood) via plain
+# Invoke-RestMethod calls, rather than pulling in Python/Selenium itself (not something this
+# PowerShell-only agent can assume is installed). This is what actually earns the name "Selenium
+# based": a managed browser session with real navigation/wait/script-execution primitives, not
+# hand-rolled DevTools Protocol message-watching (see Get-DuDataUsageViaNetwork) or a fixed-budget
+# DOM dump (see Get-DuDataUsageViaDom). Tried FIRST because it can genuinely WAIT for the page's
+# async data call to finish - polling the live page's own rendered text on an interval - instead
+# of guessing a timing budget or racing to catch one specific network event within a window.
+#
+# Chrome-only, and strictly opportunistic: it uses a Chrome+chromedriver pair that is already on
+# the PC and never installs or downloads either one. See the comment on Get-DuDataUsageViaSelenium
+# below for the real-device evidence behind that (short version: the Chocolatey route was tried,
+# and proved both expensive and incapable of producing a version-matched driver).
+# ---------------------------------------------------------------------------------------------
+
+# Locates an already-present Chrome + chromedriver pair whose major versions match - a mismatch
+# fails every WebDriver session-create call outright, so a pair that doesn't line up is treated the
+# same as no pair at all. Pure disk inspection: no network, no installs, nothing that costs metered
+# SIM data, so this is cheap enough to just run on every scrape.
+function Test-DuDriverVersionMatch($chromePath, $driverPath) {
+    try {
+        $chromeMajor = ((Get-Item $chromePath).VersionInfo.ProductVersion -split '\\.')[0]
+        $verOutput = & $driverPath --version 2>$null
+        return ($verOutput -match "(\\d+)\\.\\d+\\.\\d+\\.\\d+" -and $matches[1] -eq $chromeMajor)
+    } catch { return $false }
+}
+
+function Find-DuChromeAndDriver {
+    $chromePath = "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe"
+    if (-not (Test-Path $chromePath)) { $chromePath = "\${env:ProgramFiles(x86)}\\Google\\Chrome\\Application\\chrome.exe" }
+    if (-not (Test-Path $chromePath)) { return $null }
+
+    # Chocolatey shims every package's exe into its own bin folder - that shim is normally on PATH,
+    # but PATH as this already-running process sees it can be stale right after a fresh choco
+    # install in the SAME run, so the well-known shim path is checked directly first rather than
+    # trusting Get-Command alone. Falls back to searching the package's own tools folder (where the
+    # real, unshimmed exe lives) for whenever the shim itself is missing for some reason.
+    $driverPath = "$env:ProgramData\\chocolatey\\bin\\chromedriver.exe"
+    if (-not (Test-Path $driverPath)) {
+        $driverPath = Get-ChildItem -Path "$env:ProgramData\\chocolatey\\lib\\selenium-chrome-driver" -Filter "chromedriver.exe" -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $driverPath -or -not (Test-Path $driverPath)) { return $null }
+
+    if (-not (Test-DuDriverVersionMatch $chromePath $driverPath)) { return $null }
+    return [ordered]@{ browser = $chromePath; driver = $driverPath }
+}
+
+# NOTHING is downloaded or installed to make this tier work - it runs only when a matching
+# Chrome+chromedriver pair ALREADY exists on the PC (see Find-DuChromeAndDriver above), and is
+# skipped entirely otherwise, falling through to the Network/DOM tiers which need no driver at all.
+# Two findings on real devices, in order, led here:
+#   1. "choco install googlechrome" burns a large amount of data (close to 300MB on one real
+#      device) even when Chrome is ALREADY present, because Chocolatey tracks "installed" via its
+#      OWN local package database, not by checking whether chrome.exe exists on disk - a Chrome
+#      that got onto the PC some other way (manually, by IT, pre-imaged) isn't in that database,
+#      so choco doesn't recognize it and re-downloads the full installer every single time.
+#   2. Chocolatey's chromedriver package can't satisfy this tier anyway. Confirmed live: it reports
+#      "selenium-chrome-driver v114.0.5735.90 already installed" while placing no chromedriver.exe
+#      on disk at all - and even if it had, v114 against the Chrome 151 actually installed on that
+#      same PC fails Test-DuDriverVersionMatch outright. That package trails Chrome by years and
+#      Chrome auto-updates itself, so the gap only ever widens; no amount of retrying makes it fit.
+# So the install attempt was removed rather than kept "just in case": on a METERED cellular SIM -
+# the very thing this feature exists to measure - a daily subprocess that provably cannot produce a
+# usable driver is pure cost. The tier stays because a matching driver may legitimately already be
+# present from the separate GLPI/Selenium-wire agent on some of these same PCs (Selenium Manager
+# caches one, which Find-DuChromeAndDriver's search paths cover), in which case this runs and is
+# the most reliable of the three. Pointing this at Google's own Chrome-for-Testing CDN would make
+# it work everywhere for ~10MB per Chrome version, if that trade is ever wanted.
+function Get-DuDataUsageViaSelenium {
+    $chromeAndDriver = Find-DuChromeAndDriver
+    if (-not $chromeAndDriver) { return $null }
+    $driverPath = $chromeAndDriver.driver
+
+    $port = Get-Random -Minimum 9900 -Maximum 10299
+    $tempProfile = Join-Path $env:TEMP ("du-scrape-wd-" + [guid]::NewGuid().ToString("N"))
+    $driverProc = $null
+    $sessionId = $null
+    $base = "http://127.0.0.1:$port"
+    try {
+        $driverProc = Start-Process -FilePath $driverPath -ArgumentList @("--port=$port") -PassThru -WindowStyle Hidden
+
+        $ready = $false
+        $startDeadline = (Get-Date).AddSeconds(8)
+        while ((Get-Date) -lt $startDeadline -and -not $ready) {
+            Start-Sleep -Milliseconds 300
+            try { Invoke-RestMethod -Uri "$base/status" -TimeoutSec 2 | Out-Null; $ready = $true } catch {}
+        }
+        if (-not $ready) { return $null }
+
+        # A fresh --user-data-dir every run, same reasoning as the other two methods: no chance a
+        # cookie/session from a previous scrape (or a different SIM that used to be in this PC)
+        # lingers and shows stale or wrong-account data. binary explicitly points at the Chocolatey-
+        # installed Chrome found above, rather than trusting chromedriver to locate one on its own.
+        $newSessionBody = @{
+            capabilities = @{
+                alwaysMatch = @{
+                    browserName = "chrome"
+                    "goog:chromeOptions" = @{
+                        binary = $chromeAndDriver.browser
+                        args = @("--headless=new", "--disable-gpu", "--incognito", "--no-first-run", "--disable-extensions", "--user-data-dir=$tempProfile")
+                    }
+                }
+            }
+        } | ConvertTo-Json -Depth 6
+        $session = Invoke-RestMethod -Uri "$base/session" -Method Post -Body $newSessionBody -ContentType "application/json" -TimeoutSec 20
+        $sessionId = $session.value.sessionId
+        if (-not $sessionId) { return $null }
+
+        Invoke-RestMethod -Uri "$base/session/$sessionId/url" -Method Post -Body (@{ url = "http://mydata.du.ae/" } | ConvertTo-Json) -ContentType "application/json" -TimeoutSec 20 | Out-Null
+
+        # Polls the LIVE page for up to 25s instead of guessing a fixed render budget - the page's
+        # own async data call finishes whenever it finishes, and this just keeps checking rather
+        # than picking a number and hoping it was long enough.
+        $bodyText = $null
+        $pollDeadline = (Get-Date).AddSeconds(25)
+        while ((Get-Date) -lt $pollDeadline) {
+            try {
+                $exec = Invoke-RestMethod -Uri "$base/session/$sessionId/execute/sync" -Method Post -Body (@{ script = "return document.body.innerText;"; args = @() } | ConvertTo-Json) -ContentType "application/json" -TimeoutSec 10
+                $bodyText = $exec.value
+                # Same broadened "up to 12 non-digit characters between the two GBs" match as
+                # Get-DuUsageFromLines below, for the same reason - kept consistent so this early-
+                # exit check and the actual parsing agree on what counts as "the data is ready" (a
+                # real innerText newline is \s-matched fine either way, so this specific check
+                # likely still worked with the old strict pattern, but there's no reason for it to
+                # drift from the one pattern that's actually confirmed against the real page).
+                if ($bodyText -match '\\d+(?:\\.\\d+)?\\s*GB[^0-9]{1,12}\\d+(?:\\.\\d+)?\\s*GB') { break }
+            } catch {}
+            Start-Sleep -Milliseconds 750
+        }
+        if (-not $bodyText) { return $null }
+
+        $lines = $bodyText -split "\`n" | ForEach-Object { ($_ -replace '\\s+', ' ').Trim() } | Where-Object { $_ }
+        $usage = Get-DuUsageFromLines $lines
+
+        # Same source the reference script uses for the phone number - the page's own localStorage
+        # - rather than regexing it out of visible text. Best-effort: the GB figures above are the
+        # part that actually matters, so a failure here just leaves phoneNumber unset.
+        $phoneNumber = $null
+        try {
+            $phoneExec = Invoke-RestMethod -Uri "$base/session/$sessionId/execute/sync" -Method Post -Body (@{ script = "return window.localStorage.getItem('serviceNo');"; args = @() } | ConvertTo-Json) -ContentType "application/json" -TimeoutSec 10
+            $phoneNumber = ConvertTo-DuPhoneNumber $phoneExec.value
+        } catch {}
+
+        return [ordered]@{
+            phoneNumber = $phoneNumber
+            dataUsedGb  = $usage.dataUsedGb
+            dataLeftGb  = $usage.dataLeftGb
+            dataTotalGb = $usage.dataTotalGb
+            rawSnippet  = $usage.rawSnippet
+        }
+    } catch {
+        return $null
+    } finally {
+        if ($sessionId) { try { Invoke-RestMethod -Uri "$base/session/$sessionId" -Method Delete -TimeoutSec 5 | Out-Null } catch {} }
+        if ($driverProc) { try { Stop-Process -Id $driverProc.Id -Force -ErrorAction SilentlyContinue } catch {} }
+        Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Turns the raw digits DU stores in the page's own localStorage ('serviceNo') into a normal
+# display format. Shared by both methods that read localStorage directly (Selenium and Network) -
+# the DOM-dump method instead regexes a phone number straight out of visible page text, a
+# different source entirely, so it doesn't go through this.
+function ConvertTo-DuPhoneNumber($rawServiceNo) {
+    if (-not $rawServiceNo) { return $null }
+    $raw = [string]$rawServiceNo
+    if ($raw.Length -lt 9) { return $null }
+    return "+971" + $raw.Substring(2, 2) + $raw.Substring(4, 3) + $raw.Substring(7)
+}
+
+# Given the page's rendered text broken into one "line" per element/block, extracts the used/
+# total/left GB figures. Shared by both methods that parse rendered text (Selenium and DOM-dump)
+# so a layout-parsing fix made for one doesn't silently drift out of sync with the other.
+function Get-DuUsageFromLines($lines) {
+    if (-not $lines) { return [ordered]@{ dataUsedGb = $null; dataLeftGb = $null; dataTotalGb = $null; rawSnippet = $null } }
+    $joined = $lines -join ' | '
+
+    # The real mydata.du.ae "Your Data usage" row renders as a single "X GB / Y GB" (used/total)
+    # value, not separate used/left/total labels - confirmed against a live account page. Tried
+    # first since it's an exact match for the real markup; the keyword-proximity scan below is
+    # kept only as a fallback for account states that might render differently (e.g. a different
+    # plan type), so a layout change degrades gracefully instead of returning nothing.
+    #
+    # The gap between the two "GB"s is matched as "up to 12 non-digit characters", not a literal
+    # "/" with optional whitespace - confirmed live on a real account, "4.67 GB" / "/" / "6.00 GB"
+    # render as three SEPARATE block elements, which the line-joining logic above (both here and in
+    # Get-DuDataUsageViaDom) turns into "4.67 GB | / | 6.00 GB", not "4.67 GB / 6.00 GB" - the old
+    # "\s*/\s*" pattern doesn't match a literal "|" character, so it silently never matched at all
+    # on the real page, no matter how the DOM/Selenium capture itself was done. This was confirmed
+    # to be the actual reason usage figures were never being read even when the raw page text
+    # plainly contained them.
+    $used = $null
+    $total = $null
+    if ($joined -match '(\\d+(?:\\.\\d+)?)\\s*GB[^0-9]{1,12}(\\d+(?:\\.\\d+)?)\\s*GB') {
+        $used = [double]$matches[1]
+        $total = [double]$matches[2]
+    }
+
+    function Find-GbNear($lines, $keywords) {
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $isLabel = $false
+            foreach ($kw in $keywords) { if ($lines[$i] -match "(?i)$kw") { $isLabel = $true; break } }
+            if (-not $isLabel) { continue }
+            foreach ($idx in @($i, ($i + 1), ($i - 1))) {
+                if ($idx -ge 0 -and $idx -lt $lines.Count -and $lines[$idx] -match '(\\d+(?:\\.\\d+)?)\\s*GB') { return [double]$matches[1] }
+            }
+        }
+        return $null
+    }
+    $left = Find-GbNear $lines @('left', 'remaining', 'balance')
+    if (-not $used) { $used = Find-GbNear $lines @('used', 'consumed') }
+    if (-not $total) { $total = Find-GbNear $lines @('total', 'allocat', 'plan', 'bundle') }
+    # "Data available" (what's left to use) isn't shown on the real page at all - only used and
+    # total are - so it's always computed from those two rather than scraped directly.
+    if (-not $left -and $used -and $total) { $left = [math]::Round($total - $used, 2) }
+    if (-not $total -and $used -and $left) { $total = [math]::Round($used + $left, 2) }
+
+    return [ordered]@{
+        dataUsedGb  = $used
+        dataLeftGb  = $left
+        dataTotalGb = $total
+        rawSnippet  = if (-not $used -or -not $total) { $joined.Substring(0, [Math]::Min(1500, $joined.Length)) } else { $null }
+    }
 }
 
 # Modeled on a working reference script (Python + Selenium-wire, already deployed via a separate
@@ -1397,8 +1651,7 @@ function Get-DuDataUsageViaNetwork {
                 if ($m -and $m.id -eq 3) { $evalMsg = $m }
             }
             if ($evalMsg -and $evalMsg.result -and $evalMsg.result.result -and $evalMsg.result.result.value) {
-                $raw = [string]$evalMsg.result.result.value
-                if ($raw.Length -ge 9) { $du.phoneNumber = "+971" + $raw.Substring(2, 2) + $raw.Substring(4, 3) + $raw.Substring(7) }
+                $du.phoneNumber = ConvertTo-DuPhoneNumber $evalMsg.result.result.value
             }
         } catch {}
 
@@ -1433,10 +1686,32 @@ function Get-DuDataUsageViaDom {
     # brand-new profile directory removes any doubt, and it's deleted again right after since
     # nothing here needs to persist between runs anyway.
     $tempProfile = Join-Path $env:TEMP ("du-scrape-" + [guid]::NewGuid().ToString("N"))
+    $dumpFile = Join-Path $env:TEMP ("du-dump-" + [guid]::NewGuid().ToString("N") + ".html")
+    $dumpErrFile = "$dumpFile.err"
     try {
-        $dumpArgs = @("--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=$tempProfile", "--no-first-run", "--disable-extensions", "--virtual-time-budget=10000", "--dump-dom", "http://mydata.du.ae/")
-        $html = & $browser @dumpArgs 2>$null | Out-String
-        if ([string]::IsNullOrWhiteSpace($html)) { return $null }
+        # Bounded via Start-Process/WaitForExit rather than the call operator. "& \$browser ..."
+        # blocks for however long the browser takes with no ceiling at all, and this function runs
+        # unattended as SYSTEM in a non-interactive session (Session 0), where a headless browser
+        # launch can stall in ways it simply doesn't in a signed-in desktop session - the identical
+        # scrape run by hand under a real user account on the same PC returns in seconds. A stall
+        # there wedges this function past the point where ANY result, even a failure message, could
+        # be written or reported, which is exactly the shape of "works when I run it, silent when
+        # the schedule runs it". Every other external call in this file is already bounded; this was
+        # the last one that wasn't. Output goes to a file because --dump-dom writes the page to
+        # stdout, which Start-Process can only capture by redirecting it.
+        $dumpArgs = @("--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=\`"$tempProfile\`"", "--no-first-run", "--disable-extensions", "--virtual-time-budget=10000", "--dump-dom", "http://mydata.du.ae/")
+        $bp = Start-Process -FilePath $browser -ArgumentList $dumpArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $dumpFile -RedirectStandardError $dumpErrFile
+        if (-not $bp.WaitForExit(60000)) {
+            Stop-Process -Id $bp.Id -Force -ErrorAction SilentlyContinue
+            Write-AgentLog "DU DOM dump did not finish within 60s and was killed."
+        }
+        # The redirected file handle is released a moment after the process itself exits.
+        Start-Sleep -Milliseconds 400
+        $html = Get-Content -Path $dumpFile -Raw -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($html)) {
+            Write-AgentLog "DU DOM dump produced no HTML (browser exited without writing a page)."
+            return $null
+        }
 
         # Breaks the DOM into one "line" per block-level element (rather than one flattened blob)
         # before matching - a label and its value are almost always in the same or an adjacent
@@ -1451,54 +1726,20 @@ function Get-DuDataUsageViaDom {
         $phone = $null
         if ($joined -match '(?:\\+?971|0)5\\d{8}') { $phone = $matches[0] }
 
-        # The real mydata.du.ae "Your Data usage" row renders as a single "X GB / Y GB" (used/total)
-        # value, not separate used/left/total labels - confirmed against a live account page. Tried
-        # first since it's an exact match for the real markup; the keyword-proximity scan below is
-        # kept only as a fallback for account states that might render differently (e.g. a different
-        # plan type), so a layout change degrades gracefully instead of returning nothing.
-        $used = $null
-        $total = $null
-        if ($joined -match '(\\d+(?:\\.\\d+)?)\\s*GB\\s*/\\s*(\\d+(?:\\.\\d+)?)\\s*GB') {
-            $used = [double]$matches[1]
-            $total = [double]$matches[2]
-        }
-
-        function Find-GbNear($lines, $keywords) {
-            for ($i = 0; $i -lt $lines.Count; $i++) {
-                $isLabel = $false
-                foreach ($kw in $keywords) { if ($lines[$i] -match "(?i)$kw") { $isLabel = $true; break } }
-                if (-not $isLabel) { continue }
-                foreach ($idx in @($i, ($i + 1), ($i - 1))) {
-                    if ($idx -ge 0 -and $idx -lt $lines.Count -and $lines[$idx] -match '(\\d+(?:\\.\\d+)?)\\s*GB') { return [double]$matches[1] }
-                }
-            }
-            return $null
-        }
-        $left = Find-GbNear $lines @('left', 'remaining', 'balance')
-        if (-not $used) { $used = Find-GbNear $lines @('used', 'consumed') }
-        if (-not $total) { $total = Find-GbNear $lines @('total', 'allocat', 'plan', 'bundle') }
-        # "Data available" (what's left to use) isn't shown on the real page at all - only used and
-        # total are - so it's always computed from those two rather than scraped directly.
-        if (-not $left -and $used -and $total) { $left = [math]::Round($total - $used, 2) }
-        if (-not $total -and $used -and $left) { $total = [math]::Round($used + $left, 2) }
-
-        # Included whenever the GB figures specifically are incomplete, not just when EVERYTHING
-        # failed - a real account was seen where the phone number scraped fine (it's in the static
-        # header) but used/left/total came back null, which the old "only if phone AND used AND left
-        # AND total are all missing" condition would hide the raw page text for entirely, since one
-        # piece succeeding was enough to suppress it - exactly the case that most needs to be seen to
-        # debug why the usage figure itself didn't match.
+        $usage = Get-DuUsageFromLines $lines
         [ordered]@{
             phoneNumber = $phone
-            dataUsedGb  = $used
-            dataLeftGb  = $left
-            dataTotalGb = $total
-            rawSnippet  = if (-not $used -or -not $total) { $joined.Substring(0, [Math]::Min(1500, $joined.Length)) } else { $null }
+            dataUsedGb  = $usage.dataUsedGb
+            dataLeftGb  = $usage.dataLeftGb
+            dataTotalGb = $usage.dataTotalGb
+            rawSnippet  = $usage.rawSnippet
         }
     } catch {
         return $null
     } finally {
         Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $dumpFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $dumpErrFile -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1566,6 +1807,31 @@ function Get-UnexpectedWindows {
     return $found
 }
 
+# Compares a group of fields against what was last actually SENT to the server (a local JSON
+# snapshot file, not just the freshly-collected value) - used to gate the moderate (6-hourly) and
+# heavy (8am-anchored) payload tiers below, so a check-in only pays the bytes for them when
+# something in the group has genuinely changed, rather than resending the same antivirus/remote-ID/
+# software/volumes data every time that tier's schedule comes around regardless of whether anything
+# is actually different.
+#
+# Deliberately PURE - it only reads and compares, never writes. Committing the new snapshot is a
+# separate step (Save-AgentSnapshot, called only after the check-in POST actually succeeds): an
+# earlier version wrote the snapshot here, at comparison time, which meant a check-in that FAILED
+# to send - the normal case on a flaky cellular SIM, which is exactly what these PCs are on - still
+# left the agent believing the server had received that data. The fields would then be omitted from
+# every subsequent cycle (nothing "changed" any more) and the dashboard would keep showing the
+# older values until something happened to change them again.
+function Test-AgentSnapshotChanged($current, $stateFile) {
+    $currentJson = $current | ConvertTo-Json -Compress -Depth 6
+    $previousJson = if (Test-Path $stateFile) { Get-Content -Path $stateFile -Raw -ErrorAction SilentlyContinue } else { $null }
+    return ($currentJson -ne $previousJson)
+}
+
+function Save-AgentSnapshot($current, $stateFile) {
+    New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+    ($current | ConvertTo-Json -Compress -Depth 6) | Set-Content -Path $stateFile -Encoding utf8 -NoNewline
+}
+
 function Invoke-Checkin([switch]$Light) {
     $remoteScript = Get-RemoteCollectorScript
     $data = $null
@@ -1577,20 +1843,23 @@ function Invoke-Checkin([switch]$Light) {
         }
     }
     if (-not $data) { $data = Invoke-DefaultCollector }
+    if ($Light) { $data.light = $true }
 
-    # -Light (the 20-minute poll cycle, see -PollOnce below) still collects everything locally -
-    # that costs CPU time, not metered SIM data - but drops the one field that's actually large
-    # enough to matter for bandwidth before it's ever sent: "software" (up to 2000 Add/Remove
-    # Programs entries). Everything else here (volumes, antivirus, problems, remote-access IDs,
-    # logged-in user) is at most a few hundred bytes combined, so it stays on every cycle - that's
-    # what keeps Online/Offline, Issues, and Remote Access fresh every 20 minutes instead of every 6
-    # hours. Software rarely changes minute-to-minute anyway, so it only needs the full 6-hourly
-    # cycle. workspace-directory-checkin leaves the stored software list untouched (sticky) whenever
-    # this flag is set, rather than wiping it to empty.
-    if ($Light) {
-        $data.software = @()
-        $data.light = $true
-    }
+    # Three payload tiers, all collected locally on EVERY cycle regardless (that only costs CPU/
+    # WMI/registry time, not metered SIM data) but transmitted on different schedules:
+    #   - Identity + Issues (hostname, problems, networkBytesTotal, agentVersion): every cycle,
+    #     including the 20-minute poll - this is what keeps Online/Offline and the Issues tile
+    #     fresh at 20-minute resolution. Never stripped below.
+    #   - Moderate (ip, remote-access IDs, OS info, logged-in user, antivirus): only on a full
+    #     (non-Light) check-in, and even then only if something in the group actually changed since
+    #     the last time it was SENT - a 6-hourly cycle with nothing new still checks in (Online/
+    #     Offline/Issues above still go out), it just omits these specific fields that cycle.
+    #   - Heavy (volumes, hardware components, the installed-software list): gated purely by the
+    #     SAME 8 AM boundary as the DU scrape below, independent of Light/full - whichever check-in
+    #     first crosses 8 AM carries them (if changed), same as it carries that day's DU numbers,
+    #     rather than these waiting on the separately-timed 6-hourly schedule.
+    $moderateFields = @('ip', 'anydeskId', 'teamviewerId', 'otherRemoteIds', 'broadsignPlayerId', 'grassfishBoxId', 'os', 'osVersion', 'loggedInUser', 'antivirus')
+    $heavyFields = @('volumes', 'components', 'software')
 
     # Only reported when the detected set actually CHANGES from last time (a local state file
     # tracks the last-reported titles) - the same stray Windows Update prompt sitting there for
@@ -1625,11 +1894,21 @@ function Invoke-Checkin([switch]$Light) {
         } catch { Write-Warning "Could not read cached command result: $($_.Exception.Message)" }
     }
 
-    # Launching a browser is slow, so this is gated to about once a day (independent of the
-    # 6-hourly check-in cadence) via a local timestamp file, same idea as the server-side gate on
-    # the network-counter usage figure. The gate advances on every ATTEMPT, not just success, so a
-    # temporarily-unreachable page retries tomorrow rather than every 6 hours.
-    $duDue = (-not (Test-Path $DuScrapeStateFile)) -or (((Get-Date) - [datetime](Get-Content -Path $DuScrapeStateFile -Raw -ErrorAction SilentlyContinue)).TotalHours -ge 20)
+    # Launching a browser is slow, so this only runs once a day, anchored to a fixed 8:00 AM local
+    # clock time rather than "N hours since the last attempt" - a rolling window drifts earlier
+    # every day it's checked slightly early (a PollOnce cycle that happens to land at, say, 19:55
+    # would push the next day's scrape to 15:55, then 11:55, and so on), which stops lining up with
+    # a predictable time of day to look at the numbers. Comparing against the most recent 8 AM
+    # boundary instead means it fires within one ~20-minute poll cycle after 8 AM every day, no
+    # matter how the exact check-in timing has wandered. On a brand-new install (no state file yet)
+    # this is due immediately, same as before - the first-ever check-in already collects a baseline
+    # reading rather than waiting for the next 8 AM. The gate still advances on every ATTEMPT, not
+    # just success, so a temporarily-unreachable page retries at tomorrow's 8 AM rather than looping
+    # every cycle for the rest of today.
+    $lastDuAttempt = if (Test-Path $DuScrapeStateFile) { [datetime](Get-Content -Path $DuScrapeStateFile -Raw -ErrorAction SilentlyContinue) } else { $null }
+    $todayEightAm = Get-Date -Hour 8 -Minute 0 -Second 0 -Millisecond 0
+    $lastEightAmBoundary = if ((Get-Date) -lt $todayEightAm) { $todayEightAm.AddDays(-1) } else { $todayEightAm }
+    $duDue = (-not $lastDuAttempt) -or ($lastDuAttempt -lt $lastEightAmBoundary)
     if ($duDue) {
         New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
         Set-Content -Path $DuScrapeStateFile -Value (Get-Date).ToString("o") -Encoding utf8
@@ -1649,6 +1928,38 @@ function Invoke-Checkin([switch]$Light) {
         }
     }
 
+    # Now that $duDue is known, actually apply the moderate/heavy tiering decided above - removing
+    # a key entirely (not just nulling it) so ConvertTo-Json omits it from the payload altogether,
+    # which is what tells workspace-directory-checkin to leave that field's stored value untouched
+    # rather than overwriting it with an empty one.
+    # Snapshots of whatever tiers this payload ends up carrying, held here and only written to disk
+    # AFTER the POST below actually succeeds (see Test-AgentSnapshotChanged for why that ordering
+    # matters) - a failed check-in must leave the previous snapshot intact so the same data is
+    # retried on the next cycle rather than being silently considered delivered.
+    $snapshotsToCommit = New-Object System.Collections.Generic.List[object]
+    if ($Light) {
+        foreach ($f in $moderateFields) { $data.Remove($f) }
+    } else {
+        $moderateSnapshot = [ordered]@{}
+        foreach ($f in $moderateFields) { $moderateSnapshot[$f] = $data[$f] }
+        if (Test-AgentSnapshotChanged $moderateSnapshot $ModerateSnapshotFile) {
+            $snapshotsToCommit.Add(@{ data = $moderateSnapshot; file = $ModerateSnapshotFile })
+        } else {
+            foreach ($f in $moderateFields) { $data.Remove($f) }
+        }
+    }
+    if ($duDue) {
+        $heavySnapshot = [ordered]@{}
+        foreach ($f in $heavyFields) { $heavySnapshot[$f] = $data[$f] }
+        if (Test-AgentSnapshotChanged $heavySnapshot $HeavySnapshotFile) {
+            $snapshotsToCommit.Add(@{ data = $heavySnapshot; file = $HeavySnapshotFile })
+        } else {
+            foreach ($f in $heavyFields) { $data.Remove($f) }
+        }
+    } else {
+        foreach ($f in $heavyFields) { $data.Remove($f) }
+    }
+
     $payload = $data | ConvertTo-Json -Depth 6 -Compress
     try {
         $response = Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body $payload -ContentType "application/json" \`
@@ -1656,10 +1967,34 @@ function Invoke-Checkin([switch]$Light) {
         Write-Host "Checked in successfully."
         Write-AgentLog "Check-in succeeded."
         Write-AgentStatus $true "Checked in successfully."
+        # Only NOW is it true that the server has this data - see Test-AgentSnapshotChanged.
+        foreach ($snap in $snapshotsToCommit) { Save-AgentSnapshot $snap.data $snap.file }
         if ($response -and $response.pendingCommand) {
             Write-Host "Running queued command..."
             Write-AgentLog "Running queued command: $($response.pendingCommand)"
             Invoke-PendingCommand $response.pendingCommand
+            # Reports the result via an immediate follow-up POST right now, instead of only caching
+            # it for the dashboard to pick up on the NEXT scheduled check-in (~20 minutes later,
+            # same idea as the ::UNINSTALL branch's own immediate POST above). By this point
+            # Invoke-PendingCommand has ALREADY finished - it blocks until the child process exits
+            # or its own timeout fires - so $PendingResultFile is already sitting there fully
+            # written; the old code just left it for the NEXT cycle's "read cached result" step at
+            # the top of this function to pick up, which meant every single Run Command took two
+            # full poll cycles end-to-end (one to dispatch, one just to report) even though the
+            # actual work was done after the first. Best-effort: only removed from disk once this
+            # immediate report actually succeeds, so a dropped connection here still falls back to
+            # the existing next-cycle path rather than losing the result.
+            if (Test-Path $PendingResultFile) {
+                try {
+                    $justRan = Get-Content -Path $PendingResultFile -Raw | ConvertFrom-Json
+                    if ($justRan.output) {
+                        $followUpPayload = @{ hostname = $env:COMPUTERNAME; light = $true; commandOutput = $justRan.output } | ConvertTo-Json -Compress
+                        Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body $followUpPayload -ContentType "application/json" -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15 | Out-Null
+                        Remove-Item -Path $PendingResultFile -Force -ErrorAction SilentlyContinue
+                        Write-AgentLog "Reported queued command's result immediately instead of waiting for the next check-in."
+                    }
+                } catch { Write-AgentLog "Immediate command-result report failed, will report on next check-in instead: $($_.Exception.Message)" }
+            }
         }
     } catch {
         Write-Warning "Check-in failed: $($_.Exception.Message)"
@@ -1701,6 +2036,17 @@ if ($RunCommandFile) {
         }
     } catch {
         $output = "ERROR: $($_.Exception.Message)"
+    }
+    # A command that returns nothing (a function whose result was $null - "$null | Out-String" is an
+    # EMPTY string, not "null") gets an explicit placeholder rather than being stored as "". Both
+    # readers of this file downstream guard with a plain truthiness test - "if ($cached.output)" and
+    # "if ($justRan.output)" - which an empty string fails, so an empty result was silently dropped:
+    # never POSTed, so the server never cleared pending_command, so the SAME command re-ran on every
+    # single cycle forever with no trace of why. Confirmed live on a real device: an agent log full of
+    # "Running queued command: Get-DuDataUsageViaDom" every 20 minutes for hours, and not one result.
+    # That silence also masked the real finding underneath it - that the command was returning $null.
+    if ([string]::IsNullOrWhiteSpace($output)) {
+        $output = "(command completed but produced no output)"
     }
     New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
     @{ output = $output.Substring(0, [Math]::Min(8000, $output.Length)); ranAt = (Get-Date).ToString("o") } |
