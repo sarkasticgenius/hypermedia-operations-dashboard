@@ -360,12 +360,12 @@ function dataUsageCellHtml(d, sim) {
   // rather than a real figure) - exactly the case where seeing the number matters most.
   const phoneHtml = phone ? `<div class="small muted" style="white-space:nowrap;line-height:1.3;">${esc(phone)}</div>` : '';
   if (!allocGb) {
-    // A bare dash is the normal, expected state for a PC that reaches the internet over Wi-Fi or
-    // LAN rather than through its DU SIM: mydata.du.ae identifies the subscriber from the
-    // connection itself, so off-SIM there is genuinely nothing to read and no amount of retrying
-    // will produce a figure. Kept as a dash rather than an error, with the reason in a tooltip so
-    // the mark doesn't read as a fault.
-    return phoneHtml || '<span class="small muted" title="No DU data - this PC reaches the internet over Wi-Fi/LAN rather than its SIM, so the carrier page has nothing to report for it.">-</span>';
+    // Named rather than left as a bare dash. No phone number at all means the scrape found no SIM
+    // behind this PC's connection - mydata.du.ae identifies the subscriber from the connection
+    // itself, so a PC reaching the internet over Wi-Fi or LAN has genuinely nothing to report and
+    // no amount of retrying will produce a figure. A dash read like missing/failed data; saying
+    // "Wi-Fi / LAN" says it is a different kind of connection, which is the actual fact.
+    return phoneHtml || '<span class="small muted" title="No SIM behind this PC - it reaches the internet over Wi-Fi/LAN, so du has no carrier data to report for it.">Wi-Fi / LAN</span>';
   }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
   const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
@@ -498,6 +498,26 @@ export function renderWorkspaceDirectory() {
     user: (d) => d.logged_in_user || '',
     problems: (d) => (d.problems || []).length,
     lastSeen: (d) => d.last_seen || '',
+    // Offline sorts ahead of online ascending, so one click on Status brings whatever needs
+    // attention to the top rather than burying it under the healthy majority.
+    status: (d) => (isOnline(d) ? 1 : 0),
+    // Sorted by percentage consumed, not raw GB - the whole point is finding SIMs close to their
+    // limit, and a 5GB-of-6GB plan matters far more than 80GB of a petabyte. A device with no plan
+    // figure at all sorts to the bottom rather than pretending to be 0%.
+    dataUsage: (d) => {
+      const { allocGb, usedGb } = duUsageInfo(d, simById.get(d.sim_card_id));
+      return allocGb ? (usedGb / allocGb) * 100 : -1;
+    },
+    // Same idea for disks: the fullest drive on each PC drives its sort position.
+    volume: (d) => {
+      const vols = d.volumes || [];
+      if (!vols.length) return -1;
+      return Math.max(...vols.map((v) => (v.sizeGb > 0 ? ((v.sizeGb - v.freeGb) / v.sizeGb) * 100 : 0)));
+    },
+    screen: (d) => {
+      const m = matchedScreenFor(d, assetInventory);
+      return m ? `${m.name || ''} ${m.venue || ''}`.trim() : '';
+    },
   });
 
   const editOk = canEdit('workspaceDirectory');
@@ -551,10 +571,10 @@ export function renderWorkspaceDirectory() {
             ${sortTh('workspaceDevices', 'location', 'Location', 12, 'center')}
             ${sortTh('workspaceDevices', 'ip', 'IP', 15, 'center')}
             <th style="width:15ch;">Remote Access</th>
-            <th style="width:14ch;">Data Usage</th>
-            <th style="width:18ch;">Volume</th>
-            <th style="width:13ch;">Status</th>
-            <th style="width:20ch;">Matched Screen</th>
+            ${sortTh('workspaceDevices', 'dataUsage', 'Data Usage', 14, 'center')}
+            ${sortTh('workspaceDevices', 'volume', 'Volume', 18, 'center')}
+            ${sortTh('workspaceDevices', 'status', 'Status', 13, 'center')}
+            ${sortTh('workspaceDevices', 'screen', 'Matched Screen', 20, 'center')}
             ${sortTh('workspaceDevices', 'os', 'OS', 16, 'center')}
             ${sortTh('workspaceDevices', 'user', 'Logged-in User', 19, 'center')}
             ${sortTh('workspaceDevices', 'problems', 'Issues', 10, 'center')}
