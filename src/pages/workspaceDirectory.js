@@ -297,17 +297,21 @@ function stripedBarHtml(pct, color) {
   </div>`;
 }
 
-// Same green/red-dot-plus-word convention everywhere a device's reachability is shown, instead of
-// each place inventing its own Online/Offline treatment.
+// Same green/red dot everywhere a device's reachability is shown, instead of each place inventing
+// its own Online/Offline treatment. Deliberately dot-only, no word beside it: the colour already
+// carries the whole meaning, and in the All Devices table the label was repeating the same two
+// words down every row for no added information. The state stays available as a tooltip and to
+// screen readers via title, so dropping the visible text loses nothing.
 function statusDotHtml(online, labelled) {
   const color = online ? '#1f9d55' : '#c0392b';
-  // Bigger + a labeled text alongside when this is going in the busy All Devices table (labelled)
-  // than the SIM Data Usage tile above (bare) - a plain 10px dot easily gets lost among everything
-  // else in a dense table row, even though it's the exact same dot either way.
+  // Bigger in the busy All Devices table (labelled) than on the SIM Data Usage tile above - a plain
+  // 10px dot easily gets lost among everything else in a dense table row.
   const size = labelled ? 13 : 10;
   const dot = `<span title="${online ? 'Online' : 'Offline'}" style="display:inline-block;width:${size}px;height:${size}px;border-radius:50%;background:${color};box-shadow:0 0 0 3px ${online ? 'rgba(31,157,85,.2)' : 'rgba(192,57,43,.2)'};flex:none;"></span>`;
   if (!labelled) return dot;
-  return `<span style="display:inline-flex;align-items:center;gap:7px;">${dot}<span class="small" style="color:${color};font-weight:700;">${online ? 'Online' : 'Offline'}</span></span>`;
+  // Centred in its column, so a scan down the Status column reads as one clean line of dots rather
+  // than left-ragged marks. The header cell is centred to match (see the Status th).
+  return `<span style="display:flex;justify-content:center;align-items:center;">${dot}</span>`;
 }
 
 // Same striped-bar treatment as the Details modal's Volumes table (see registerModal
@@ -356,7 +360,12 @@ function dataUsageCellHtml(d, sim) {
   // rather than a real figure) - exactly the case where seeing the number matters most.
   const phoneHtml = phone ? `<div class="small muted" style="white-space:nowrap;line-height:1.3;">${esc(phone)}</div>` : '';
   if (!allocGb) {
-    return phoneHtml || '<span class="small muted">-</span>';
+    // A bare dash is the normal, expected state for a PC that reaches the internet over Wi-Fi or
+    // LAN rather than through its DU SIM: mydata.du.ae identifies the subscriber from the
+    // connection itself, so off-SIM there is genuinely nothing to read and no amount of retrying
+    // will produce a figure. Kept as a dash rather than an error, with the reason in a tooltip so
+    // the mark doesn't read as a fault.
+    return phoneHtml || '<span class="small muted" title="No DU data - this PC reaches the internet over Wi-Fi/LAN rather than its SIM, so the carrier page has nothing to report for it.">-</span>';
   }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
   const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
@@ -570,7 +579,7 @@ export function renderWorkspaceDirectory() {
             <th style="width:15ch;">Remote Access</th>
             <th style="width:14ch;">Data Usage</th>
             <th style="width:14ch;">Volume</th>
-            <th style="width:13ch;">Status</th>
+            <th style="width:13ch;text-align:center;">Status</th>
             <th style="width:20ch;">Matched Screen</th>
             ${sortTh('workspaceDevices', 'os', 'OS', 16)}
             ${sortTh('workspaceDevices', 'user', 'Logged-in User', 19)}
