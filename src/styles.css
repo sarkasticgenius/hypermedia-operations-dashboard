@@ -202,10 +202,17 @@ input,select,textarea{font-family:inherit;}
 .bento-stat .stat-sub{font-size:11.5px;color:rgba(255,255,255,0.78);}
 
 table{width:100%;border-collapse:collapse;font-size:13px;}
-th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-dim);padding:9px 10px;border-bottom:1px solid var(--border);font-weight:700;}
-td{padding:10px 10px;border-bottom:1px solid var(--border);}
+/* Every table column reads centred, header and body cell together, across the whole app.
+   Previously headers defaulted to left while numeric columns opted into .tright, so a column like
+   Hardware Inventory's "AVAILABLE (SPARE)" had its label hard against the left edge and its figures
+   hard against the right - the two never lined up with each other.
+   .tright is deliberately neutralised here rather than removed from the ~68 call sites that use it:
+   one rule keeps every table consistent, and restoring right-aligned numerics later is a one-line
+   change here instead of an edit per page. */
+th{text-align:center;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-dim);padding:9px 10px;border-bottom:1px solid var(--border);font-weight:700;}
+td{padding:10px 10px;border-bottom:1px solid var(--border);text-align:center;}
 tr:hover td{background:var(--row-hover);}
-.tright{text-align:right;}
+.tright{text-align:center;}
 .tcenter{text-align:center;}
 
 /* Alternating light-blue/white row banding for Reporting page tables - opt-in via .zebra on the
