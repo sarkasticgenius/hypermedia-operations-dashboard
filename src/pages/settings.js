@@ -1306,49 +1306,82 @@ function Get-DuDataUsage {
 # async data call to finish - polling the live page's own rendered text on an interval - instead
 # of guessing a timing budget or racing to catch one specific network event within a window.
 #
-# Chrome-only, and strictly opportunistic: it uses a Chrome+chromedriver pair that is already on
-# the PC and never installs or downloads either one. See the comment on Get-DuDataUsageViaSelenium
-# below for the real-device evidence behind that (short version: the Chocolatey route was tried,
-# and proved both expensive and incapable of producing a version-matched driver).
+# Edge OR Chrome, whichever already has a version-matched driver sitting on the PC - mirroring the
+# Edge-then-Chrome preference the Network/DOM tiers below already use (Edge ships with Windows by
+# default, so it's the more universally available of the two; Chrome only enters the picture on a
+# PC where it happens to already be installed, e.g. TOTEM-8). Strictly opportunistic either way:
+# nothing is ever installed or downloaded to make this tier work. See the comment on
+# Get-DuDataUsageViaSelenium below for the real-device evidence behind that (short version: the
+# Chocolatey route was tried, and proved both expensive and incapable of producing a matched driver).
 # ---------------------------------------------------------------------------------------------
 
-# Locates an already-present Chrome + chromedriver pair whose major versions match - a mismatch
-# fails every WebDriver session-create call outright, so a pair that doesn't line up is treated the
-# same as no pair at all. Pure disk inspection: no network, no installs, nothing that costs metered
-# SIM data, so this is cheap enough to just run on every scrape.
-function Test-DuDriverVersionMatch($chromePath, $driverPath) {
+# Locates an already-present browser + driver pair whose major versions match - a mismatch fails
+# every WebDriver session-create call outright, so a pair that doesn't line up is treated the same
+# as no pair at all. Pure disk inspection: no network, no installs, nothing that costs metered SIM
+# data, so this is cheap enough to just run on every scrape.
+function Test-DuDriverVersionMatch($browserPath, $driverPath) {
     try {
-        $chromeMajor = ((Get-Item $chromePath).VersionInfo.ProductVersion -split '\\.')[0]
+        $browserMajor = ((Get-Item $browserPath).VersionInfo.ProductVersion -split '\\.')[0]
         $verOutput = & $driverPath --version 2>$null
-        return ($verOutput -match "(\\d+)\\.\\d+\\.\\d+\\.\\d+" -and $matches[1] -eq $chromeMajor)
+        return ($verOutput -match "(\\d+)\\.\\d+\\.\\d+\\.\\d+" -and $matches[1] -eq $browserMajor)
     } catch { return $false }
 }
 
-function Find-DuChromeAndDriver {
+# Chocolatey shims every package's exe into its own bin folder - that shim is normally on PATH, but
+# PATH as this already-running process sees it can be stale right after a fresh choco install in
+# the SAME run, so the well-known shim path is checked directly first rather than trusting
+# Get-Command alone. Falls back to the package's own tools folder, then to wherever Selenium
+# Manager caches a driver (used by modern Selenium/Python installs, including the reference GLPI
+# script mentioned above - it may already have left a matching one there).
+function Find-DuChromedriverPath {
+    $shim = "$env:ProgramData\\chocolatey\\bin\\chromedriver.exe"
+    if (Test-Path $shim) { return $shim }
+    $found = Get-ChildItem -Path "$env:ProgramData\\chocolatey\\lib\\selenium-chrome-driver" -Filter "chromedriver.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { return $found.FullName }
+    foreach ($base in @($env:USERPROFILE, "$env:SystemRoot\\System32\\config\\systemprofile")) {
+        $found = Get-ChildItem -Path (Join-Path $base ".cache\\selenium\\chromedriver") -Filter "chromedriver.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+    return $null
+}
+
+# Same idea as Find-DuChromedriverPath, for Edge's driver - no Chocolatey package involved (there
+# isn't a usable one - see settings.js history), so this only ever finds one via Selenium Manager's
+# own cache.
+function Find-DuEdgedriverPath {
+    foreach ($base in @($env:USERPROFILE, "$env:SystemRoot\\System32\\config\\systemprofile")) {
+        $found = Get-ChildItem -Path (Join-Path $base ".cache\\selenium\\edgedriver") -Filter "msedgedriver.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+    return $null
+}
+
+function Find-DuBrowserAndDriver {
+    $edgePath = "$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe"
+    if (-not (Test-Path $edgePath)) { $edgePath = "\${env:ProgramFiles(x86)}\\Microsoft\\Edge\\Application\\msedge.exe" }
+    if (Test-Path $edgePath) {
+        $edgeDriver = Find-DuEdgedriverPath
+        if ($edgeDriver -and (Test-DuDriverVersionMatch $edgePath $edgeDriver)) {
+            return [ordered]@{ browser = $edgePath; driver = $edgeDriver; browserName = 'MicrosoftEdge'; optionsKey = 'ms:edgeOptions' }
+        }
+    }
+
     $chromePath = "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe"
     if (-not (Test-Path $chromePath)) { $chromePath = "\${env:ProgramFiles(x86)}\\Google\\Chrome\\Application\\chrome.exe" }
-    if (-not (Test-Path $chromePath)) { return $null }
-
-    # Chocolatey shims every package's exe into its own bin folder - that shim is normally on PATH,
-    # but PATH as this already-running process sees it can be stale right after a fresh choco
-    # install in the SAME run, so the well-known shim path is checked directly first rather than
-    # trusting Get-Command alone. Falls back to searching the package's own tools folder (where the
-    # real, unshimmed exe lives) for whenever the shim itself is missing for some reason.
-    $driverPath = "$env:ProgramData\\chocolatey\\bin\\chromedriver.exe"
-    if (-not (Test-Path $driverPath)) {
-        $driverPath = Get-ChildItem -Path "$env:ProgramData\\chocolatey\\lib\\selenium-chrome-driver" -Filter "chromedriver.exe" -Recurse -ErrorAction SilentlyContinue |
-            Select-Object -First 1 -ExpandProperty FullName
+    if (Test-Path $chromePath) {
+        $chromeDriver = Find-DuChromedriverPath
+        if ($chromeDriver -and (Test-DuDriverVersionMatch $chromePath $chromeDriver)) {
+            return [ordered]@{ browser = $chromePath; driver = $chromeDriver; browserName = 'chrome'; optionsKey = 'goog:chromeOptions' }
+        }
     }
-    if (-not $driverPath -or -not (Test-Path $driverPath)) { return $null }
 
-    if (-not (Test-DuDriverVersionMatch $chromePath $driverPath)) { return $null }
-    return [ordered]@{ browser = $chromePath; driver = $driverPath }
+    return $null
 }
 
 # NOTHING is downloaded or installed to make this tier work - it runs only when a matching
-# Chrome+chromedriver pair ALREADY exists on the PC (see Find-DuChromeAndDriver above), and is
-# skipped entirely otherwise, falling through to the Network/DOM tiers which need no driver at all.
-# Two findings on real devices, in order, led here:
+# browser+driver pair ALREADY exists on the PC (see Find-DuBrowserAndDriver above), and is skipped
+# entirely otherwise, falling through to the Network/DOM tiers which need no driver at all. Two
+# findings on real devices, in order, led to this being opportunistic-only rather than self-installing:
 #   1. "choco install googlechrome" burns a large amount of data (close to 300MB on one real
 #      device) even when Chrome is ALREADY present, because Chocolatey tracks "installed" via its
 #      OWN local package database, not by checking whether chrome.exe exists on disk - a Chrome
@@ -1359,15 +1392,17 @@ function Find-DuChromeAndDriver {
 #      on disk at all - and even if it had, v114 against the Chrome 151 actually installed on that
 #      same PC fails Test-DuDriverVersionMatch outright. That package trails Chrome by years and
 #      Chrome auto-updates itself, so the gap only ever widens; no amount of retrying makes it fit.
+#      There is no equivalent Chocolatey package for Edge's driver at all (see settings.js history),
+#      so Edge was never a candidate for a self-install approach to begin with.
 # So the install attempt was removed rather than kept "just in case": on a METERED cellular SIM -
 # the very thing this feature exists to measure - a daily subprocess that provably cannot produce a
 # usable driver is pure cost. The tier stays because a matching driver may legitimately already be
-# present from the separate GLPI/Selenium-wire agent on some of these same PCs (Selenium Manager
-# caches one, which Find-DuChromeAndDriver's search paths cover), in which case this runs and is
-# the most reliable of the three. Pointing this at Google's own Chrome-for-Testing CDN would make
-# it work everywhere for ~10MB per Chrome version, if that trade is ever wanted.
+# present from the separate GLPI/Selenium-wire agent on some of these same PCs, in which case this
+# runs and is the most reliable of the three. Pointing this at Google's/Microsoft's own official
+# per-version driver CDN would make it work everywhere for a small download per browser version, if
+# that trade is ever wanted.
 function Get-DuDataUsageViaSelenium {
-    $chromeAndDriver = Find-DuChromeAndDriver
+    $chromeAndDriver = Find-DuBrowserAndDriver
     if (-not $chromeAndDriver) { return $null }
     $driverPath = $chromeAndDriver.driver
 
@@ -1389,15 +1424,20 @@ function Get-DuDataUsageViaSelenium {
 
         # A fresh --user-data-dir every run, same reasoning as the other two methods: no chance a
         # cookie/session from a previous scrape (or a different SIM that used to be in this PC)
-        # lingers and shows stale or wrong-account data. binary explicitly points at the Chocolatey-
-        # installed Chrome found above, rather than trusting chromedriver to locate one on its own.
+        # lingers and shows stale or wrong-account data. binary explicitly points at the browser
+        # Find-DuBrowserAndDriver found above, rather than trusting the driver to locate one on its
+        # own. The capability key and private-browsing flag both depend on which browser this
+        # actually is - Edge uses "ms:edgeOptions"/--inprivate, Chrome uses
+        # "goog:chromeOptions"/--incognito - so both are read from what was already detected rather
+        # than assumed.
+        $privateFlag = if ($chromeAndDriver.browserName -eq 'MicrosoftEdge') { '--inprivate' } else { '--incognito' }
         $newSessionBody = @{
             capabilities = @{
                 alwaysMatch = @{
-                    browserName = "chrome"
-                    "goog:chromeOptions" = @{
+                    browserName = $chromeAndDriver.browserName
+                    "$($chromeAndDriver.optionsKey)" = @{
                         binary = $chromeAndDriver.browser
-                        args = @("--headless=new", "--disable-gpu", "--incognito", "--no-first-run", "--disable-extensions", "--user-data-dir=$tempProfile")
+                        args = @("--headless=new", "--disable-gpu", $privateFlag, "--no-first-run", "--disable-extensions", "--user-data-dir=$tempProfile")
                     }
                 }
             }
