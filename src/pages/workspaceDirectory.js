@@ -371,7 +371,7 @@ function dataUsageCellHtml(d, sim) {
     if (d.du_scraped_at) {
       return phoneHtml || '<span class="small muted" title="No SIM behind this PC - the scrape ran and du had no carrier data for this connection, so it reaches the internet over Wi-Fi/LAN.">Wi-Fi / LAN</span>';
     }
-    return phoneHtml || '<span class="small muted" title="No DU scrape has completed on this PC yet - it runs once a day, anchored to 08:00 local time.">Not scraped yet</span>';
+    return phoneHtml || '<span class="small muted" title="This PC has not been checked for a SIM yet - the scrape runs once a day, anchored to 08:00 local time. Once it has run, this becomes either a usage bar or Wi-Fi / LAN.">Not checked</span>';
   }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
   const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
@@ -398,6 +398,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
     <td style="white-space:nowrap;">
       <button class="btn-sm" onclick="App.openWorkspaceDetailsModal('${d.id}')">Details</button>
       ${editOk ? `<button class="btn-sm" onclick="App.openWorkspaceEditModal('${d.id}')">Edit</button>` : ''}
+      ${editOk ? `<button class="btn-sm" title="Rename the Windows computer name on this PC - it applies the change and restarts itself" onclick="App.openWorkspaceRenameModal('${d.id}')">Rename</button>` : ''}
       ${editOk ? `<button class="btn-sm" title="${d.force_checkin_requested ? 'Already requested and still pending - click to re-request' : (d.pending_command ? 'Push the queued Run Command to this PC now' : 'Pull fresh inventory from this PC now')} - within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force${d.force_checkin_requested ? ' Again' : ''}</button>` : ''}
       ${deleteOk ? `<button class="btn-sm" onclick="App.removeWorkspaceDevice('${d.id}')">Delete</button>` : ''}
     </td>
@@ -671,6 +672,48 @@ export async function saveWorkspaceEditForm(event, deviceId) {
     toast(pendingCommand ? 'Device updated - command will run on its next check-in.' : 'Device updated');
     setState({});
   } catch (e) { toast(e.message || 'Failed to update device', 'error'); }
+}
+
+export function openWorkspaceRenameModal(deviceId) {
+  openModal('workspaceRename', { deviceId });
+}
+
+// Windows computer-name rules, checked here so an invalid name is refused before it is ever queued
+// rather than failing minutes later on the device: 1-15 characters, letters/digits/hyphens only,
+// and never entirely numeric. The agent re-checks all of this independently before touching the
+// machine - this copy exists to give immediate feedback, not to be the only guard.
+function invalidComputerNameReason(name) {
+  if (!name) return 'Enter a name.';
+  if (name.length > 15) return `Windows allows at most 15 characters - this is ${name.length}.`;
+  if (!/^[A-Za-z0-9-]+$/.test(name)) return 'Only letters, digits and hyphens are allowed.';
+  if (/^[0-9]+$/.test(name)) return 'A computer name cannot be entirely numeric.';
+  return null;
+}
+
+export async function saveWorkspaceRename(event, deviceId) {
+  event.preventDefault();
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const device = devices.find((d) => d.id === deviceId);
+  if (!device) { toast('Device not found', 'error'); return; }
+  const newName = (document.getElementById('wd-rename-name').value || '').trim();
+  const problem = invalidComputerNameReason(newName);
+  if (problem) { toast(problem, 'error'); return; }
+  if (newName.toUpperCase() === (device.hostname || '').toUpperCase()) {
+    toast('That is already this PC\'s name.', 'error');
+    return;
+  }
+  if (devices.some((d) => d.id !== deviceId && (d.hostname || '').toUpperCase() === newName.toUpperCase())) {
+    toast(`Another device is already called "${newName}" - pick a different name.`, 'error');
+    return;
+  }
+  try {
+    await updateWorkspaceDevice(deviceId, { pending_command: `::RENAME ${newName}` });
+    await logAudit('Rename workspace device', `${device.hostname} -> ${newName}`);
+    invalidate('workspaceDevices');
+    closeModal();
+    toast(`Rename to "${newName}" queued - the PC applies it and restarts on its next check-in.`);
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to queue the rename', 'error'); }
 }
 
 export async function clearWorkspacePendingCommand(deviceId) {
@@ -981,6 +1024,31 @@ registerModal('workspaceDetails', (data) => {
 
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
   `;
+});
+
+registerModal('workspaceRename', (data) => {
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const device = devices.find((d) => d.id === data.deviceId);
+  if (!device) return `<div class="empty">Device not found.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
+  return `
+    <h3>Rename PC - ${esc(device.hostname)}</h3>
+    <form onsubmit="App.saveWorkspaceRename(event, '${device.id}')">
+      <div class="field">
+        <label>New computer name</label>
+        <input id="wd-rename-name" value="${esc(device.hostname || '')}" maxlength="15" autocomplete="off" spellcheck="false" required>
+        <div class="small muted" style="margin-top:4px;">Up to 15 characters. Letters, digits and hyphens only, and not all digits - these are Windows' own rules for a computer name.</div>
+      </div>
+      <div class="small" style="border-left:3px solid #e07a2c;padding:8px 12px;margin:12px 0;background:var(--bg);">
+        This renames Windows itself on that PC, not just the label here. The agent applies the
+        rename and then <b>restarts the PC</b> to make it take effect - nothing is shown on the
+        screen while it happens. Expect that device to drop off and come back under its new name a
+        few minutes later, keeping its Location, Notes, linked SIM Card and history.
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+        <button type="submit" class="btn-sm">Queue rename &amp; restart</button>
+      </div>
+    </form>`;
 });
 
 registerModal('workspaceEdit', (data) => {

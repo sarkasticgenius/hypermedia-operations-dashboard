@@ -76,6 +76,29 @@ Deno.serve(async (req) => {
     const hostname = String(body.hostname || '').trim();
     if (!hostname) throw new Error('hostname is required.');
 
+    // A PC renamed from the dashboard (see the ::RENAME handler in the agent) reports what it used
+    // to be called on its first check-in under the new name. Because every row here is keyed by
+    // hostname, without this the upsert below would insert a SECOND row and leave the original
+    // stranded - taking its Location, Notes, linked SIM Card, DU history and Broadsign match with
+    // it. Renaming the existing row instead keeps all of that attached to the device it belongs to.
+    //
+    // Skipped if a row already exists under the new name: that would mean two machines answering to
+    // the same hostname, and quietly deleting one to make room for the other is not a decision this
+    // function should make on its own. The upsert then just updates whatever is there, and the old
+    // row is left for an admin to look at rather than destroyed.
+    const previousHostname = String(body.previousHostname || '').trim();
+    if (previousHostname && previousHostname !== hostname) {
+      const { data: existingNew } = await adminClient.from('workspace_devices')
+        .select('hostname').eq('hostname', hostname).maybeSingle();
+      if (!existingNew) {
+        const { error: renameErr } = await adminClient.from('workspace_devices')
+          .update({ hostname }).eq('hostname', previousHostname);
+        if (renameErr) console.error('rename migration failed', renameErr.message);
+      } else {
+        console.warn(`rename migration skipped: a row for "${hostname}" already exists, leaving "${previousHostname}" in place`);
+      }
+    }
+
     // Software list is capped defensively - a machine with an unusually bloated Add/Remove
     // Programs list (thousands of entries from some install tooling) shouldn't be able to bloat a
     // single jsonb row without bound. uninstallString (the registry's own QuietUninstallString/

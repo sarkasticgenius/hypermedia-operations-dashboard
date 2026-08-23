@@ -1,5 +1,36 @@
-// Ephemeral UI/session state - never persisted. Mirrors the original app's STATE object;
-// actual data now lives in Supabase, not here. STATE.user/permissions are populated by auth.js.
+// Which bit of STATE survives a browser refresh. Navigation lives entirely in memory here (there
+// is no URL routing in this app), so before this a plain F5 dropped whoever was mid-task on some
+// page back onto the default one - losing their place with no way to get back except re-navigating.
+// Only the "where was I" keys are kept: not `modal` (a refresh should not reopen a dialog), not
+// `pageData` (that is a cache with its own TTL), and nothing about the signed-in user.
+//
+// sessionStorage rather than localStorage, deliberately - it is per-tab and dies with the tab, so a
+// refresh keeps your place while a brand-new tab still starts clean at the default page.
+const NAV_PERSIST_KEY = 'hmops.nav';
+const NAV_PERSIST_KEYS = ['page', 'activeDashSection', 'activeDashboard', 'activeClientId', 'settingsTab', 'trafficSheetLocation'];
+
+function loadPersistedNav() {
+  try {
+    const raw = sessionStorage.getItem(NAV_PERSIST_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
+
+function persistNav() {
+  try {
+    const out = {};
+    for (const k of NAV_PERSIST_KEYS) {
+      if (STATE[k] !== undefined && STATE[k] !== null) out[k] = STATE[k];
+    }
+    sessionStorage.setItem(NAV_PERSIST_KEY, JSON.stringify(out));
+  } catch { /* private browsing / storage disabled - navigation just stops surviving refresh */ }
+}
+
+// Ephemeral UI/session state. Mirrors the original app's STATE object; actual data now lives in
+// Supabase, not here. STATE.user/permissions are populated by auth.js. The nav keys above are
+// restored over the defaults so a refresh lands back where the user was.
 export const STATE = {
   page: 'dashboard',
   modal: null,
@@ -11,6 +42,7 @@ export const STATE = {
   loading: false,
   toasts: [],
   pageData: {},
+  ...loadPersistedNav(),
 };
 
 let rootEl = null;
@@ -107,6 +139,9 @@ export function render() {
 
 export function setState(patch) {
   Object.assign(STATE, patch);
+  // Every navigation goes through setState, so this is the one place that needs to record where the
+  // user is - see NAV_PERSIST_KEYS above for what is kept and why.
+  persistNav();
   render();
 }
 

@@ -957,6 +957,7 @@ $PopupStateFile = Join-Path $StateDir "last-unexpected-windows.txt"
 $ModerateSnapshotFile = Join-Path $StateDir "last-moderate-snapshot.json"
 $HeavySnapshotFile = Join-Path $StateDir "last-heavy-snapshot.json"
 $ShellVersionFile = Join-Path $StateDir "installed-shell-version.txt"
+$RenamedFromFile = Join-Path $StateDir "renamed-from.txt"
 $CollectorCacheFile = Join-Path $StateDir "collector-cache.ps1"
 $CollectorVersionFile = Join-Path $StateDir "collector-cache-version.txt"
 $UninstallPasswordHash = "${uninstallHash}"
@@ -1291,6 +1292,64 @@ function Invoke-PendingCommand($command) {
     # would just be unreachable anyway (this runs completely non-interactively as SYSTEM). Reports
     # success back with its own immediate POST instead of the normal cache-for-next-cycle path used
     # below, since there IS no next cycle once the scheduled tasks are gone.
+    # A dashboard-queued Windows computer rename: "::RENAME NEW-NAME". Windows only applies a rename
+    # at boot, so this reports the result FIRST and reboots afterwards - if it restarted immediately
+    # the dashboard would never learn whether the rename succeeded, and the PC would come back under
+    # a name nothing was expecting.
+    #
+    # The hostname is also the key the server upserts on, so a renamed PC checking in would look
+    # like a brand-new device and silently orphan its old row (losing its Location, Notes, linked
+    # SIM Card and history). To prevent that, the OLD name is recorded to disk here and reported
+    # once, as "previousHostname", on the first check-in after the reboot -
+    # workspace-directory-checkin uses it to rename the existing row instead of inserting a new one.
+    if ($command -like '::RENAME *') {
+        $newName = $command.Substring(9).Trim()
+        $currentName = $env:COMPUTERNAME
+        $result = $null
+        # Windows computer-name rules, enforced here as well as in the dashboard's own form: 1-15
+        # characters, letters/digits/hyphen only, not entirely numeric. An invalid name would fail
+        # at Rename-Computer anyway, but failing here gives a clear message instead of a raw
+        # .NET exception, and costs nothing.
+        if ([string]::IsNullOrWhiteSpace($newName)) {
+            $result = "ERROR: No new name supplied."
+        } elseif ($newName.Length -gt 15) {
+            $result = "ERROR: '$newName' is $($newName.Length) characters - Windows computer names are limited to 15."
+        } elseif ($newName -notmatch '^[A-Za-z0-9\\-]+$') {
+            $result = "ERROR: '$newName' contains characters Windows does not allow in a computer name (letters, digits and hyphens only)."
+        } elseif ($newName -match '^[0-9]+$') {
+            $result = "ERROR: '$newName' is all digits - Windows does not allow an entirely numeric computer name."
+        } elseif ($newName -eq $currentName) {
+            $result = "This PC is already named '$newName' - nothing to do, and no restart was triggered."
+        } else {
+            try {
+                Rename-Computer -NewName $newName -Force -ErrorAction Stop
+                New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+                # Written only AFTER the rename is accepted, so a failed rename never leaves a
+                # marker that would make the server migrate a row that never moved.
+                Set-Content -Path $RenamedFromFile -Value $currentName -Encoding utf8 -NoNewline
+                Write-AgentLog "Renamed this PC from '$currentName' to '$newName' - restarting to apply."
+                $result = "Renamed from '$currentName' to '$newName'. Restarting now to apply - this PC will check back in under its new name in a few minutes."
+            } catch {
+                $result = "ERROR: Rename to '$newName' failed: $($_.Exception.Message)"
+            }
+        }
+
+        $renameSucceeded = $result -like 'Renamed from *'
+        try {
+            $renamePayload = @{ hostname = $currentName; light = $true; commandOutput = $result } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body $renamePayload -ContentType "application/json" -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 20 | Out-Null
+        } catch { Write-AgentLog "Could not report the rename result before restarting: $($_.Exception.Message)" }
+
+        if ($renameSucceeded) {
+            # Restart-Computer rather than shutdown.exe: no countdown balloon or console message on
+            # the signage screen, which is the whole point of this agent running headless. The short
+            # sleep is only to let the POST above finish flushing before the box goes down.
+            Start-Sleep -Seconds 5
+            try { Restart-Computer -Force -ErrorAction Stop } catch { Write-AgentLog "Rename applied but the restart failed - it will apply at the next reboot: $($_.Exception.Message)" }
+        }
+        exit 0
+    }
+
     if ($command -eq '::UNINSTALL') {
         Invoke-UninstallCleanup
         try {
@@ -1478,11 +1537,17 @@ function Get-DuDataUsageViaSelenium {
 
     $port = Get-Random -Minimum 9900 -Maximum 10299
     $tempProfile = Join-Path $env:TEMP ("du-scrape-wd-" + [guid]::NewGuid().ToString("N"))
+    # Redirected for the same reason as the CDP method above: chromedriver/msedgedriver announce
+    # themselves on stdout and pass the browser's own stderr through, which would otherwise print
+    # over an interactive installer's console. Everything this method needs comes back over the
+    # WebDriver HTTP API, never from these streams.
+    $wdOut = Join-Path $env:TEMP ("du-wd-" + [guid]::NewGuid().ToString("N") + ".log")
+    $wdErr = "$wdOut.err"
     $driverProc = $null
     $sessionId = $null
     $base = "http://127.0.0.1:$port"
     try {
-        $driverProc = Start-Process -FilePath $driverPath -ArgumentList @("--port=$port") -PassThru -WindowStyle Hidden
+        $driverProc = Start-Process -FilePath $driverPath -ArgumentList @("--port=$port") -PassThru -WindowStyle Hidden -RedirectStandardOutput $wdOut -RedirectStandardError $wdErr
 
         $ready = $false
         $startDeadline = (Get-Date).AddSeconds(8)
@@ -1564,6 +1629,8 @@ function Get-DuDataUsageViaSelenium {
         if ($sessionId) { try { Invoke-RestMethod -Uri "$base/session/$sessionId" -Method Delete -TimeoutSec 5 | Out-Null } catch {} }
         if ($driverProc) { try { Stop-Process -Id $driverProc.Id -Force -ErrorAction SilentlyContinue } catch {} }
         Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $wdOut -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $wdErr -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1665,13 +1732,21 @@ function Get-DuDataUsageViaNetwork {
 
     $port = Get-Random -Minimum 9300 -Maximum 9899
     $tempProfile = Join-Path $env:TEMP ("du-scrape-cdp-" + [guid]::NewGuid().ToString("N"))
+    # Browsers write a lot of unsolicited diagnostics to stderr - "DevTools listening on ws://...",
+    # and on Edge a stream of SmartScreen DNS-resolver timeouts for whatever URL is being loaded.
+    # Without redirecting, a Start-Process child INHERITS this console, so during an interactive
+    # install those lines pour red text over the installer window and read like the agent is
+    # failing when it installed perfectly well. Captured to throwaway files instead (nothing reads
+    # them - this method takes its data over the DevTools socket, not from stdout).
+    $cdpOut = Join-Path $env:TEMP ("du-cdp-" + [guid]::NewGuid().ToString("N") + ".log")
+    $cdpErr = "$cdpOut.err"
     $proc = $null
     $client = $null
     try {
         $proc = Start-Process -FilePath $browser -ArgumentList @(
             "--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=$tempProfile",
             "--no-first-run", "--disable-extensions", "--remote-debugging-port=$port"
-        ) -PassThru -WindowStyle Hidden
+        ) -PassThru -WindowStyle Hidden -RedirectStandardOutput $cdpOut -RedirectStandardError $cdpErr
 
         # The debug port takes a moment to start listening after the process launches.
         $wsUrl = $null
@@ -1779,6 +1854,8 @@ function Get-DuDataUsageViaNetwork {
         if ($client) { try { $client.Dispose() } catch {} }
         if ($proc) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {} }
         Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $cdpOut -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $cdpErr -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1962,6 +2039,18 @@ function Invoke-Checkin([switch]$Light) {
     if (-not $data) { $data = Invoke-DefaultCollector }
     if ($Light) { $data.light = $true }
 
+    # First check-in after a dashboard-triggered rename (see the ::RENAME handler): tells the server
+    # what this PC used to be called, so it renames the existing row rather than inserting a new one
+    # under the new hostname and orphaning all the admin-curated fields attached to the old one.
+    # Sent on every check-in until one succeeds - the marker is only cleared after the POST below
+    # returns, so a failed check-in retries rather than losing the link.
+    if (Test-Path $RenamedFromFile) {
+        try {
+            $renamedFrom = (Get-Content -Path $RenamedFromFile -Raw -ErrorAction SilentlyContinue).Trim()
+            if ($renamedFrom -and $renamedFrom -ne $env:COMPUTERNAME) { $data.previousHostname = $renamedFrom }
+        } catch {}
+    }
+
     # Three payload tiers, all collected locally on EVERY cycle regardless (that only costs CPU/
     # WMI/registry time, not metered SIM data) but transmitted on different schedules:
     #   - Identity + Issues (hostname, problems, networkBytesTotal, agentVersion): every cycle,
@@ -2086,6 +2175,8 @@ function Invoke-Checkin([switch]$Light) {
         Write-AgentStatus $true "Checked in successfully."
         # Only NOW is it true that the server has this data - see Test-AgentSnapshotChanged.
         foreach ($snap in $snapshotsToCommit) { Save-AgentSnapshot $snap.data $snap.file }
+        # The rename link has been delivered and acted on, so stop resending it.
+        if ($data.previousHostname) { Remove-Item -Path $RenamedFromFile -Force -ErrorAction SilentlyContinue }
         if ($response -and $response.pendingCommand) {
             Write-Host "Running queued command..."
             Write-AgentLog "Running queued command: $($response.pendingCommand)"
