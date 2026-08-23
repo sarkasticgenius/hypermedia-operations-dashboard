@@ -306,25 +306,33 @@ function statusDotHtml(online, labelled) {
 }
 
 // Same striped-bar treatment as the Details modal's Volumes table (see registerModal
-// 'workspaceDetails' below) but collapsed to the single worst-off drive, so the main table gives an
-// at-a-glance disk-space warning without needing to open Details first.
+// 'workspaceDetails' below), one row per drive. This used to collapse to just the single worst-off
+// drive, which hid the rest entirely - a PC with a nearly-full D: alongside a healthy C: looked
+// identical to a PC that only has a C:, and there was no way to tell from the table which it was.
+// Every fixed disk the agent reported now gets its own labelled bar, stacked, since a signage PC
+// typically only has one or two and the column has room for them.
 function volumeCellHtml(d) {
   const volumes = d.volumes || [];
   if (!volumes.length) return '<span class="small muted">-</span>';
-  const worst = volumes.reduce((a, b) => {
+  // Worst-off drive first, so whatever most needs attention is the one nearest the row's baseline
+  // rather than depending on whichever order the agent happened to enumerate disks in.
+  const sorted = [...volumes].sort((a, b) => {
     const aPct = a.sizeGb > 0 ? a.freeGb / a.sizeGb : 1;
     const bPct = b.sizeGb > 0 ? b.freeGb / b.sizeGb : 1;
-    return bPct < aPct ? b : a;
+    return aPct - bPct;
   });
-  const freePct = worst.sizeGb > 0 ? (worst.freeGb / worst.sizeGb) * 100 : 0;
-  const color = freePct <= 10 ? '#c0392b' : freePct <= 25 ? '#e07a2c' : '#1f9d55';
-  // Bar fills to the CONSUMED percentage (same convention as the Data Usage bar) - filling it to the
-  // free percentage instead reads backwards, since a mostly-full green bar looked like "consuming a
-  // lot of space" when it actually meant the opposite (mostly free). Danger color thresholds still
-  // key off free space, unchanged.
-  return `<div style="display:flex;align-items:center;gap:6px;" title="${esc(worst.drive)} - ${worst.freeGb} of ${worst.sizeGb} GB free">
-    <span class="small muted">${esc(worst.drive)}</span>${stripedBarHtml(100 - freePct, color)}
-  </div>`;
+  const rows = sorted.map((v) => {
+    const freePct = v.sizeGb > 0 ? (v.freeGb / v.sizeGb) * 100 : 0;
+    const color = freePct <= 10 ? '#c0392b' : freePct <= 25 ? '#e07a2c' : '#1f9d55';
+    // Bar fills to the CONSUMED percentage (same convention as the Data Usage bar) - filling it to
+    // the free percentage instead reads backwards, since a mostly-full green bar looked like
+    // "consuming a lot of space" when it actually meant the opposite (mostly free). Danger color
+    // thresholds still key off free space, unchanged.
+    return `<div style="display:flex;align-items:center;gap:6px;" title="${esc(v.drive)}${v.label ? ` (${esc(v.label)})` : ''} - ${v.freeGb} of ${v.sizeGb} GB free">
+      <span class="small muted" style="flex:none;">${esc(v.drive)}</span>${stripedBarHtml(100 - freePct, color)}
+    </div>`;
+  }).join('');
+  return `<div style="display:flex;flex-direction:column;gap:4px;">${rows}</div>`;
 }
 
 // Same used/total percentage math as the SIM Data Usage tile above, collapsed to a single striped
@@ -333,15 +341,18 @@ function volumeCellHtml(d) {
 // out is the more time-sensitive of the two (a full disk is rarely urgent; a cut-off SIM is).
 function dataUsageCellHtml(d, sim) {
   const { haveDu, allocGb, usedGb, phone } = duUsageInfo(d, sim);
+  // The phone number is shown whenever the scrape got far enough to report one, regardless of
+  // whether a usable total came with it - previously it only appeared as a fallback for when
+  // there was NO bar at all, so it silently disappeared the moment a total showed up (including a
+  // bogus one, like an unlimited-plan account whose "total" renders as an oversized placeholder
+  // rather than a real figure) - exactly the case where seeing the number matters most.
+  const phoneHtml = phone ? `<div class="small muted" style="white-space:nowrap;line-height:1.3;">${esc(phone)}</div>` : '';
   if (!allocGb) {
-    // No total yet (the scrape hasn't parsed a usage figure, and no SIM Card's linked) - shows the
-    // phone number instead of a bare dash whenever the scrape at least got that far, rather than
-    // waiting on the full total/used pair before showing anything at all.
-    return phone ? `<span class="small muted">${esc(phone)}</span>` : '<span class="small muted">-</span>';
+    return phoneHtml || '<span class="small muted">-</span>';
   }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
   const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
-  return `<div title="${usedGb.toFixed(2)} of ${allocGb} GB used${haveDu ? ' (DU)' : ''}">${stripedBarHtml(pct, color)}</div>`;
+  return `<div title="${fmtGb(usedGb)} of ${fmtGb(allocGb)} used${haveDu ? ' (DU)' : ''}">${phoneHtml}${stripedBarHtml(pct, color)}</div>`;
 }
 
 function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
@@ -385,6 +396,20 @@ function duUsageInfo(d, sim) {
   return { haveDu, allocGb, usedGb, leftGb, phone };
 }
 
+// Plans across this fleet span five orders of magnitude - 6 GB kiosk SIMs alongside one whose plan
+// genuinely reads in the petabytes - so a fixed "N GB" label is unreadable at the top end
+// ("10239016 GB" tells nobody anything). Scales to TB/PB only once the number is large enough to
+// warrant it, leaving ordinary plan sizes displayed exactly as before.
+function fmtGb(gb) {
+  const n = Number(gb);
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)} PB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(2)} TB`;
+  // Whole numbers stay whole (a 6 GB plan reads "6 GB", not "6.00 GB"); fractional usage keeps two
+  // decimals, which is the precision the DU page itself reports.
+  return `${Number.isInteger(n) ? n : n.toFixed(2)} GB`;
+}
+
 function dataUsageTile(d, sim) {
   const { haveDu, allocGb, usedGb, leftGb, phone } = duUsageInfo(d, sim);
   const last24hGb = (d.data_used_mb_last_24h || 0) / 1024;
@@ -400,10 +425,10 @@ function dataUsageTile(d, sim) {
     </div>
     ${allocGb ? stripedBarHtml(pct, color) : '<div class="small muted">No plan size set - link a SIM Card or wait for a DU scrape.</div>'}
     <div class="small" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;">
-      <span class="muted">Total Data</span><span style="text-align:right;">${allocGb ? `${allocGb} GB` : '&mdash;'}</span>
-      <span class="muted">Data Used</span><span style="text-align:right;">${usedGb.toFixed(2)} GB</span>
-      <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? `${leftGb.toFixed(2)} GB` : '&mdash;'}</span>
-      <span class="muted">Last 24h</span><span style="text-align:right;">${last24hGb.toFixed(2)} GB</span>
+      <span class="muted">Total Data</span><span style="text-align:right;">${allocGb ? fmtGb(allocGb) : '&mdash;'}</span>
+      <span class="muted">Data Used</span><span style="text-align:right;">${fmtGb(usedGb)}</span>
+      <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? fmtGb(leftGb) : '&mdash;'}</span>
+      <span class="muted">Last 24h</span><span style="text-align:right;">${fmtGb(last24hGb)}</span>
       <span class="muted">${haveDu ? 'DU Last Update' : 'Last Update'}</span><span style="text-align:right;">${haveDu ? fmtRelativeTime(d.du_scraped_at) : (d.last_seen ? fmtRelativeTime(d.last_seen) : '&mdash;')}</span>
     </div>
     ${d.notes ? `<div class="small muted" style="border-top:1px solid var(--border);padding-top:6px;white-space:pre-wrap;">${esc(d.notes)}</div>` : ''}
@@ -838,9 +863,9 @@ registerModal('workspaceDetails', (data) => {
     ? '<div class="empty">No data usage reported yet.</div>'
     : `<div class="small" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;">
         ${phone ? `<span class="muted">Phone Number</span><span style="text-align:right;">${esc(phone)}</span>` : ''}
-        <span class="muted">Total Data</span><span style="text-align:right;">${allocGb ? `${allocGb} GB` : '&mdash;'}</span>
-        <span class="muted">Data Used</span><span style="text-align:right;">${allocGb ? `${usedGb.toFixed(2)} GB` : '&mdash;'}</span>
-        <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? `${leftGb.toFixed(2)} GB` : '&mdash;'}</span>
+        <span class="muted">Total Data</span><span style="text-align:right;">${allocGb ? fmtGb(allocGb) : '&mdash;'}</span>
+        <span class="muted">Data Used</span><span style="text-align:right;">${allocGb ? fmtGb(usedGb) : '&mdash;'}</span>
+        <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? fmtGb(leftGb) : '&mdash;'}</span>
         <span class="muted">${haveDu ? 'DU Last Update' : 'Last Update'}</span><span style="text-align:right;">${haveDu ? esc(fmtRelativeTime(d.du_scraped_at)) : (d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : '&mdash;')}</span>
       </div>
       ${allocGb ? `<div style="margin-top:8px;">${stripedBarHtml(usagePct, usageColor)}</div>` : '<div class="small muted" style="margin-top:6px;">No plan size set yet - link a SIM Card, or wait for the usage figure to finish scraping.</div>'}`;

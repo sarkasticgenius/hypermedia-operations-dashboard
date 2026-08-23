@@ -1555,6 +1555,13 @@ function Get-DuUsageFromLines($lines) {
     if (-not $left -and $used -and $total) { $left = [math]::Round($total - $used, 2) }
     if (-not $total -and $used -and $left) { $total = [math]::Round($used + $left, 2) }
 
+    # Deliberately NO plausibility ceiling on these figures. A very large total is not necessarily a
+    # misparse: the fleet genuinely includes a SIM whose plan reads in the petabytes (a real device
+    # reported 10,239,016 GB total against 87.72 GB used), alongside ordinary 6 GB kiosk SIMs.
+    # An earlier version rejected anything over 10,000 GB as nonsense, which would have thrown away
+    # that account's real data. Whatever the page reports is passed through as-is; making an
+    # enormous-but-real number readable is a display concern, handled in the dashboard's own
+    # formatting rather than by discarding it here.
     return [ordered]@{
         dataUsedGb  = $used
         dataLeftGb  = $left
