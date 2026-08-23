@@ -291,9 +291,21 @@ function matchedScreenHtml(matched) {
 // next to the Online dot. Callers that have room give the bar a flexible wrapper to fill instead.
 function stripedBarHtml(pct, color) {
   const clamped = Math.max(0, Math.min(100, pct));
+  const label = `${clamped.toFixed(0)}%`;
+  const labelBase = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;white-space:nowrap;pointer-events:none;';
+  // The label is drawn TWICE, identically positioned, and the white copy is clipped to exactly the
+  // filled region. A single white label was unreadable on any bar under ~50%: it is centred, so
+  // most of it sat over the pale unfilled track as white-on-near-white. Rather than move the label
+  // out of the bar (which costs horizontal space this table does not have), the dark copy shows
+  // through wherever the bar is empty and the white copy takes over wherever it is filled - so the
+  // digits stay legible at 5% and at 95%, in both themes. currentColor for the dark copy means it
+  // inherits the table's own text colour and follows dark mode without a second declaration.
   return `<div style="position:relative;height:20px;border-radius:5px;overflow:hidden;background:var(--bg);border:1px solid var(--border);min-width:34px;">
     <div style="width:${clamped.toFixed(1)}%;height:100%;background-color:${color};background-image:repeating-linear-gradient(45deg, rgba(255,255,255,.28) 0, rgba(255,255,255,.28) 5px, transparent 5px, transparent 10px);"></div>
-    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.55);">${clamped.toFixed(0)}%</div>
+    <div style="${labelBase}color:currentColor;">${label}</div>
+    <div style="position:absolute;inset:0;clip-path:inset(0 ${(100 - clamped).toFixed(1)}% 0 0);">
+      <div style="${labelBase}color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.45);">${label}</div>
+    </div>
   </div>`;
 }
 
@@ -383,7 +395,11 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
   const problemCount = visibleProblems(d).length;
   return `<tr>
     ${editOk ? `<td style="width:24px;"><input type="checkbox" ${(selectedIds || new Set()).has(d.id) ? 'checked' : ''} onchange="App.toggleWorkspaceSelection('${d.id}', this.checked)"></td>` : ''}
-    <td><b>${esc(d.hostname)}</b></td>
+    <!-- nowrap because these names are full of hyphens and browsers treat a hyphen as a legal
+         break point - "DRAGONMART-FOOD" was splitting across two lines purely on that, making
+         rows taller and the column ragged. Ellipsis + title keeps an unusually long name from
+         spilling into the next column while still being readable on hover. -->
+    <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(d.hostname)}"><b>${esc(d.hostname)}</b></td>
     <td>${volumeCellHtml(d)}</td>
     <td class="small">${esc(d.location || '-')}</td>
     <td class="small" style="white-space:nowrap;">${esc(d.ip_address || '-')}</td>
@@ -438,6 +454,42 @@ function fmtGb(gb) {
 // All Devices table's Data Usage column and the Details modal, so the tiles only repeated them at
 // the cost of a screen's worth of vertical space above the table. The over-80% banner still
 // surfaces the one case that genuinely needs attention without scrolling.)
+
+const WD_PAGE_SIZE = 25;
+
+// Numbered pager, rendered both above and below the table so a long page doesn't force a scroll
+// back to the top to change page. Collapses to first / last / a window around the current page once
+// there are more pages than fit comfortably, rather than printing every number.
+function wdPagerHtml(curPage, totalPages, totalRows) {
+  const summary = `<span class="small muted">${totalRows} device${totalRows === 1 ? '' : 's'}${totalPages > 1 ? ` &middot; page ${curPage} of ${totalPages}` : ''}</span>`;
+  if (totalPages <= 1) {
+    return `<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:8px 4px;">${summary}</div>`;
+  }
+
+  const numbers = [];
+  const push = (n) => { if (!numbers.includes(n)) numbers.push(n); };
+  push(1);
+  for (let n = curPage - 2; n <= curPage + 2; n++) if (n > 1 && n < totalPages) push(n);
+  push(totalPages);
+  numbers.sort((a, b) => a - b);
+
+  let buttons = '';
+  let previous = 0;
+  for (const n of numbers) {
+    // A gap in the sequence becomes an ellipsis rather than a misleadingly adjacent number.
+    if (n - previous > 1) buttons += '<span class="small muted" style="padding:0 2px;">&hellip;</span>';
+    const isCurrent = n === curPage;
+    buttons += `<button class="btn-sm" ${isCurrent ? 'disabled' : ''} style="${isCurrent ? 'font-weight:700;opacity:1;' : ''}min-width:32px;" onclick="App.setWorkspaceDirectoryPage(${n})">${n}</button>`;
+    previous = n;
+  }
+
+  return `<div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:8px 4px;flex-wrap:wrap;">
+    ${summary}
+    <button class="btn-sm" ${curPage <= 1 ? 'disabled' : ''} onclick="App.setWorkspaceDirectoryPage(${curPage - 1})">Prev</button>
+    ${buttons}
+    <button class="btn-sm" ${curPage >= totalPages ? 'disabled' : ''} onclick="App.setWorkspaceDirectoryPage(${curPage + 1})">Next</button>
+  </div>`;
+}
 
 export function renderWorkspaceDirectory() {
   const devices = loadData('workspaceDevices', listWorkspaceDevices);
@@ -530,10 +582,20 @@ export function renderWorkspaceDirectory() {
   const editOk = canEdit('workspaceDirectory');
   const deleteOk = canDelete('workspaceDirectory');
   const selectedIds = new Set(STATE.workspaceDirectorySelectedIds || []);
+  // Select-all still spans the whole filtered set, not just the visible page - ticking the header
+  // box then paging away and acting on the selection should mean what it looked like it meant.
   const sortedIds = sorted.map((d) => d.id);
   const allSelected = sortedIds.length > 0 && sortedIds.every((id) => selectedIds.has(id));
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / WD_PAGE_SIZE));
+  // Clamped rather than trusted: a search that shrinks the result set can leave the stored page
+  // number past the end, which would otherwise render an empty table with no obvious way back.
+  const curPage = Math.min(Math.max(1, STATE.wdPage || 1), totalPages);
+  const pageRows = sorted.slice((curPage - 1) * WD_PAGE_SIZE, curPage * WD_PAGE_SIZE);
+  const pagerHtml = wdPagerHtml(curPage, totalPages, sorted.length);
+
   const colCount = editOk ? 14 : 13;
-  const rows = sorted.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, simById.get(d.sim_card_id))).join('')
+  const rows = pageRows.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, simById.get(d.sim_card_id))).join('')
     || `<tr><td colspan="${colCount}"><div class="empty">No devices match "${esc(STATE.workspaceDirectorySearch || '')}".</div></td></tr>`;
 
   return `
@@ -566,17 +628,21 @@ export function renderWorkspaceDirectory() {
           <button class="btn-sm" title="Reload this page's data without refreshing the whole app" onclick="App.refreshWorkspaceDirectory()">&#8635; Refresh</button>
         </div>
       </div>
-      <div style="max-height:520px;overflow-y:auto;overflow-x:auto;">
+      ${pagerHtml}
+      <div style="overflow-x:auto;">
         <!-- text-align:center on the table itself rather than per-cell: text-align inherits, so one
              declaration centres every header and every body cell together and they can't drift out
-             of step as columns are added later. Volume is wider than the others (18ch vs 14ch) so
-             its two stacked drive bars have room to read as bars rather than slivers. -->
+             of step as columns are added later. Volume is wider than the others so its stacked
+             drive bars have room to read as bars rather than slivers.
+             No max-height/vertical scroll any more: with 25 rows to a page the table is a bounded
+             length on its own, and an inner scrollbar on top of pagination means two competing ways
+             to move through the same list. -->
         <table style="${FIXED_TABLE_STYLE}text-align:center;">
           <thead><tr>
             ${editOk ? `<th style="width:24px;"><input type="checkbox" ${allSelected ? 'checked' : ''} onchange='App.toggleWorkspaceSelectAll(this.checked, ${jsonAttr(sortedIds)})' title="Select all shown"></th>` : ''}
-            ${sortTh('workspaceDevices', 'hostname', 'Hostname', 14, 'center')}
+            ${sortTh('workspaceDevices', 'hostname', 'Hostname', 22, 'center')}
             ${sortTh('workspaceDevices', 'volume', 'Volume', 18, 'center')}
-            ${sortTh('workspaceDevices', 'location', 'Location', 12, 'center')}
+            ${sortTh('workspaceDevices', 'location', 'Location', 14, 'center')}
             ${sortTh('workspaceDevices', 'ip', 'IP', 15, 'center')}
             <th style="width:15ch;">Remote Access</th>
             ${sortTh('workspaceDevices', 'dataUsage', 'Data Usage', 18, 'center')}
@@ -591,6 +657,7 @@ export function renderWorkspaceDirectory() {
           <tbody>${rows}</tbody>
         </table>
       </div>
+      ${pagerHtml}
     </div>
   `;
 }
@@ -606,7 +673,11 @@ export function refreshWorkspaceDirectory() {
   toast('Refreshed');
 }
 
-export function setWorkspaceDirectorySearch(value) { setState({ workspaceDirectorySearch: value }); }
+// Any new search starts from page 1 - keeping the old page number would land on an empty or
+// unrelated slice of a result set the user has just changed underneath themselves.
+export function setWorkspaceDirectorySearch(value) { setState({ workspaceDirectorySearch: value, wdPage: 1 }); }
+
+export function setWorkspaceDirectoryPage(page) { setState({ wdPage: Math.max(1, Number(page) || 1) }); }
 
 export function toggleWorkspaceSelection(id, checked) {
   const cur = new Set(STATE.workspaceDirectorySelectedIds || []);
