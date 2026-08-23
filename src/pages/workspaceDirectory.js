@@ -399,7 +399,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
          break point - "DRAGONMART-FOOD" was splitting across two lines purely on that, making
          rows taller and the column ragged. Ellipsis + title keeps an unusually long name from
          spilling into the next column while still being readable on hover. -->
-    <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(d.hostname)}"><b>${esc(d.hostname)}</b></td>
+    <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><button type="button" class="link-btn" title="${esc(d.hostname)} - click for full details" style="font-weight:700;font-size:inherit;padding:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" onclick="App.openWorkspaceDetailsModal('${d.id}')">${esc(d.hostname)}</button></td>
     <td>${volumeCellHtml(d)}</td>
     <td class="small">${esc(d.location || '-')}</td>
     <td class="small" style="white-space:nowrap;">${esc(d.ip_address || '-')}</td>
