@@ -991,6 +991,7 @@ $AnonKey = "${anonKey}"
 $TaskName = "WorkspaceDirectoryAgent"
 $PollTaskName = "WorkspaceDirectoryAgentPoll"
 $TrayTaskName = "WorkspaceDirectoryAgentTray"
+$DuScrapeTaskName = "WorkspaceDirectoryAgentDuScrape"
 $StateDir = "$env:ProgramData\\WorkspaceDirectoryAgent"
 $InstalledScriptPath = Join-Path $StateDir "Install-JstarAgent.ps1"
 $PendingResultFile = Join-Path $StateDir "pending-command-result.json"
@@ -1652,6 +1653,36 @@ function Test-DuScrapeDue($state) {
     $faulted = @('nobrowser', 'error', 'pending') -contains $state.outcome
     $retryDue = $faulted -and $lastAttempt -and (((Get-Date) - $lastAttempt).TotalMinutes -ge 60)
     return (-not $lastAttempt) -or ($lastAttempt -lt $boundary) -or $retryDue
+}
+
+# Runs the scrape in the logged-in user's interactive session by starting a dedicated on-demand
+# scheduled task registered under the Users group - the only way a SYSTEM process can get code into
+# another session, since Session 0 isolation is precisely what stops the browser rendering here.
+#
+# Deliberately NOT done by asking the tray to do it. The tray is a long-lived message loop started
+# once at logon, so it keeps executing whatever code it was launched with - a published change to
+# its timer would not take effect until someone logged off and back on, which on an unattended
+# signage PC could be weeks. It also has a "Close" item on its own context menu, so any user could
+# silently disable scraping for good. A task started fresh each time always runs the current script
+# and cannot be closed away.
+#
+# Returns $false when there is nobody to run it as (no interactive session) or the task is missing,
+# so the caller can fall back to scraping inline - which is no worse than today's behaviour.
+function Start-DuScrapeInUserSession {
+    try {
+        if (-not (Get-ScheduledTask -TaskName $DuScrapeTaskName -ErrorAction SilentlyContinue)) { return $false }
+        # An on-demand task under a group principal only actually runs if someone is logged on -
+        # Task Scheduler has no session to launch it into otherwise, and reports success regardless.
+        $hasUser = $false
+        try { $hasUser = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName } catch {}
+        if (-not $hasUser) { return $false }
+        Start-ScheduledTask -TaskName $DuScrapeTaskName -ErrorAction Stop
+        Write-AgentLog "DU scrape delegated to the logged-in user's session."
+        return $true
+    } catch {
+        Write-AgentLog "Could not delegate the DU scrape to the user session, running it here instead: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 # ONE du scrape attempt, start to finish: runs it, records to local state what happened, and hands
@@ -2446,6 +2477,13 @@ function Invoke-Checkin([switch]$Light) {
     $duState = Get-DuScrapeState
     $duDue = Test-DuScrapeDue $duState
     if ($duDue) {
+        # Headless Edge renders nothing in Session 0 - confirmed live: about:blank itself returned
+        # 0 bytes, so this is not about du, the network or the parser. Scraping is handed to the
+        # user session where a browser actually works; that run reports its own figures and leaves
+        # the result in the handoff file, which Get-DuScrapeState folds in on a later cycle.
+        $duDelegated = Start-DuScrapeInUserSession
+    }
+    if ($duDue -and -not $duDelegated) {
         $duResult = Invoke-DuScrape
         Add-DuFiguresToPayload $data $duResult
         # Feeds the attempt record straight into the reporting block below rather than
@@ -2761,6 +2799,28 @@ try {
     Write-Host "Scheduled task '$PollTaskName' installed (checks every 20 minutes, no UI)." -ForegroundColor Green
 } catch {
     Write-Warning "Could not register the poll task: $($_.Exception.Message)"
+}
+
+# The on-demand task that carries the DU scrape into the logged-in user's session (see
+# Start-DuScrapeInUserSession for why that is the only place a headless browser renders). No
+# trigger at all - it exists purely to be started by the SYSTEM check-in when a scrape is due, so
+# the decision about WHEN to scrape stays in one place instead of being duplicated into a second
+# schedule that could drift. Same Users-group principal as the tray, at Limited rights: the scrape
+# needs a desktop session, not privilege - SYSTEM already has far more privilege than an
+# administrator and still cannot render a page here.
+try {
+    $DuAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$InstalledScriptPath\`" -DuScrapeOnce"
+    $DuPrincipal = New-ScheduledTaskPrincipal -GroupId "S-1-5-32-545" -RunLevel Limited
+    # Bounded well above a normal scrape (a browser launch plus page render) but far short of the
+    # 3-day default, so a wedged browser cannot block the next attempt indefinitely.
+    $DuSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
+    if (Get-ScheduledTask -TaskName $DuScrapeTaskName -ErrorAction SilentlyContinue) {
+        Set-ScheduledTask -TaskName $DuScrapeTaskName -Action $DuAction -Principal $DuPrincipal -Settings $DuSettings | Out-Null
+    } else {
+        Register-ScheduledTask -TaskName $DuScrapeTaskName -Action $DuAction -Principal $DuPrincipal -Settings $DuSettings -Description "Runs the once-a-day du data-usage check in the logged-in user's session, where a headless browser can actually render." -ErrorAction Stop | Out-Null
+    }
+} catch {
+    Write-Warning "Could not register the user-session DU scrape task - the scrape will fall back to running as SYSTEM: $($_.Exception.Message)"
 }
 
 # Registers the taskbar tray icon (see the -Tray branch far above) to start automatically whenever
