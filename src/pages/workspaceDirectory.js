@@ -396,7 +396,11 @@ function dataUsageCellHtml(d, sim) {
     // mall LAN. A FAULT ('nobrowser'/'error') is not that, and must not borrow the same label: it
     // says nothing about the connection, only that we failed to ask. 'pending' means an attempt
     // started and never reported back, which is likewise not an answer.
-    if (d.du_scraped_at || d.du_scrape_outcome === 'nodata') {
+    // ...but a device we hold a du phone number for is NOT an unknown - see duScrapeStatusHtml for
+    // the live case this guards against. Without allocGb there is no bar to draw, so it falls
+    // through to the fault branch below rather than claiming a connection type we have evidence
+    // against.
+    if ((d.du_scraped_at || d.du_scrape_outcome === 'nodata') && !d.du_phone_number) {
       const when = d.du_scrape_attempted_at || d.du_scraped_at;
       return phoneHtml || `<span class="small muted" title="No SIM behind this PC - the scrape ran${when ? ` ${fmtRelativeTime(when)}` : ''} and du had no carrier data for this connection, so it reaches the internet over Wi-Fi/LAN.">Wi-Fi / LAN</span>`;
     }
@@ -424,8 +428,22 @@ function duScrapeStatusHtml(d) {
   switch (d.du_scrape_outcome) {
     case 'ok':
       return `<div class="small muted" style="margin-top:6px;">SIM check ran${when} and du reported these figures.</div>`;
-    case 'nodata':
+    case 'nodata': {
+      // "du reported nothing" only means "there is no SIM here" when nothing we already hold says
+      // otherwise. A stored phone number, or figures from an earlier successful scrape, is direct
+      // evidence this PC DOES have a du SIM - so the same empty result means the check failed, not
+      // that the SIM vanished. Confirmed live: PC-E89C258BBD2F showed its own number
+      // (+971581309074) and 11.72 of 43 GB in this very panel, immediately above a line claiming
+      // it had no SIM and was on Wi-Fi/LAN. Reporting a known-wrong conclusion is worse than
+      // reporting an unexplained failure, so the contradiction is resolved in favour of the
+      // evidence rather than the latest outcome.
+      const knownSim = d.du_phone_number || d.du_scraped_at;
+      if (knownSim) {
+        const lastGood = d.du_scraped_at ? ` The figures above are from the last successful check, ${fmtRelativeTime(d.du_scraped_at)}.` : '';
+        return `<div class="small" style="margin-top:6px;color:#c0392b;">SIM check ran${when} but du returned nothing, even though this PC has a known du SIM - so the check itself is failing, not the connection.${esc(lastGood)}</div>`;
+      }
       return `<div class="small muted" style="margin-top:6px;">SIM check ran${when} and du reported nothing for this connection - no du SIM behind this PC, so it reaches the internet over Wi-Fi/LAN.</div>`;
+    }
     case 'nobrowser':
     case 'error':
       return `<div class="small" style="margin-top:6px;color:#c0392b;">SIM check failed${when}: ${esc(d.du_scrape_note || 'no reason reported')}</div>`;
