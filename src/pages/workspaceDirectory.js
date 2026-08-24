@@ -247,9 +247,19 @@ export async function uploadWorkspaceInstaller(fileInputId, argsInputId, targetI
     // A bare string statement (not Write-Warning) so it actually lands in Last Command Output on
     // the dashboard - Invoke-PendingCommand only merges the error stream into its captured output
     // (2>&1), not the separate warning stream Write-Warning writes to.
+    // The download path is resolved ONCE into $__pkg rather than repeated inline at each use. The
+    // .msi branch used to pass its path inside a SINGLE-quoted -ArgumentList, and PowerShell does
+    // not expand variables in single quotes - so msiexec received the literal text
+    // "$env:TEMP\Whatever.msi" as the package name, could not open a file by that name, and failed
+    // with 1619 (ERROR_INSTALL_PACKAGE_OPEN_FAILED) on every single MSI deploy. The file itself had
+    // downloaded perfectly well; only the path handed to msiexec was wrong, which is exactly why
+    // this looked like a broken/corrupt package rather than a quoting bug. Confirmed live.
+    // The inner `" quotes around $__pkg stay (now inside a DOUBLE-quoted string, so they survive as
+    // real quotes in the argument msiexec parses) because installer filenames routinely contain
+    // spaces - without them msiexec reads only the first word as the package path.
     const command = ext === 'msi'
-      ? `Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile "${localPath}" -UseBasicParsing; $__p = Start-Process msiexec.exe -ArgumentList '/i "${localPath}" /qn /norestart' -PassThru; if (-not $__p.WaitForExit(${timeoutMs})) { Stop-Process -Id $__p.Id -Force -ErrorAction SilentlyContinue; "Install timed out after 5 minutes" } else { "Install exited with code $($__p.ExitCode)" }; Remove-Item "${localPath}" -Force -ErrorAction SilentlyContinue`
-      : `Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile "${localPath}" -UseBasicParsing; $__p = Start-Process "${localPath}"${silentArgs ? ` -ArgumentList '${silentArgs}'` : ''} -PassThru; if (-not $__p.WaitForExit(${timeoutMs})) { Stop-Process -Id $__p.Id -Force -ErrorAction SilentlyContinue; "Install timed out after 5 minutes - likely missing or incorrect silent install args" } else { "Install exited with code $($__p.ExitCode)" }; Remove-Item "${localPath}" -Force -ErrorAction SilentlyContinue`;
+      ? `$__pkg = "${localPath}"; Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile $__pkg -UseBasicParsing; $__p = Start-Process msiexec.exe -ArgumentList "/i \`"$__pkg\`" /qn /norestart" -PassThru; if (-not $__p.WaitForExit(${timeoutMs})) { Stop-Process -Id $__p.Id -Force -ErrorAction SilentlyContinue; "Install timed out after 5 minutes" } else { "Install exited with code $($__p.ExitCode)" }; Remove-Item $__pkg -Force -ErrorAction SilentlyContinue`
+      : `$__pkg = "${localPath}"; Invoke-WebRequest -Uri "${signed.signedUrl}" -OutFile $__pkg -UseBasicParsing; $__p = Start-Process $__pkg${silentArgs ? ` -ArgumentList '${silentArgs}'` : ''} -PassThru; if (-not $__p.WaitForExit(${timeoutMs})) { Stop-Process -Id $__p.Id -Force -ErrorAction SilentlyContinue; "Install timed out after 5 minutes - likely missing or incorrect silent install args" } else { "Install exited with code $($__p.ExitCode)" }; Remove-Item $__pkg -Force -ErrorAction SilentlyContinue`;
     fillWorkspaceCommand(command, targetId);
     toast(`${file.name} uploaded - review the generated command below, then Save/Queue.`);
   } catch (e) {
