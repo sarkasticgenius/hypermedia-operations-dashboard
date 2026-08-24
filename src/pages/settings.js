@@ -980,7 +980,7 @@ function buildWorkspaceDirectoryAgentScript(secret, uninstallPasswordHash) {
 # Monitor - but it auto-hides itself the instant Broadsign's or Grassfish's own player process is
 # actually running, so it can never appear over live public-facing content either.
 
-param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce, [string]$RunCommandFile, [switch]$Tray)
+param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce, [string]$RunCommandFile, [switch]$Tray, [switch]$DuScrapeOnce)
 
 $CheckinUrl = "${checkinUrl}"
 $CollectorUrl = "${collectorUrl}"
@@ -998,6 +998,23 @@ $StatusFile = Join-Path $StateDir "status.json"
 $LogFile = Join-Path $StateDir "agent.log"
 $PendingBatchFile = Join-Path $StateDir "pending-command.bat"
 $DuScrapeStateFile = Join-Path $StateDir "du-scrape-last.txt"
+# Headless Edge stalls indefinitely when launched from Session 0 (see Get-DuDataUsageViaDom), which
+# is where every SYSTEM scheduled task runs - confirmed live on 24 Aug 2026: 0 bytes, no exit code
+# and empty stderr on every device, with and without --no-sandbox. The scrape therefore has to run
+# in the LOGGED-IN USER's interactive session, which is exactly where the tray process already
+# lives, and hand its result back for the SYSTEM check-in to report.
+#
+# It hands it back through a dedicated sub-folder rather than writing $DuScrapeStateFile directly,
+# because that would need BUILTIN\Users to have modify rights on $StateDir - and $StateDir also
+# holds Install-JstarAgent.ps1, the very script SYSTEM executes every cycle. Granting a limited
+# user write access to it would let any logged-in user replace the agent and have SYSTEM run their
+# code: a straightforward privilege escalation. Only this one folder is writable by Users.
+$DuHandoffDir = Join-Path $StateDir "user-scrape"
+$DuHandoffFile = Join-Path $DuHandoffDir "du-result.json"
+# Where Save-DuScrapeState writes. SYSTEM keeps the real state file; the user-session scrape
+# (-DuScrapeOnce) redirects to the handoff, which SYSTEM folds in on its next check-in.
+$Script:DuStateTarget = $DuScrapeStateFile
+$Script:DuIsUserSession = $false
 $PopupStateFile = Join-Path $StateDir "last-unexpected-windows.txt"
 $ModerateSnapshotFile = Join-Path $StateDir "last-moderate-snapshot.json"
 $HeavySnapshotFile = Join-Path $StateDir "last-heavy-snapshot.json"
@@ -1016,7 +1033,7 @@ $UninstallPasswordHash = "${uninstallHash}"
 # session so its icon can actually appear - elevating it would either fail silently (Session 0
 # isolation) or, if it somehow succeeded, run it as a different, non-visible session instead.
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $Once -and -not $PollOnce -and -not $RunCommandFile -and -not $Tray -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+if (-not $Once -and -not $PollOnce -and -not $RunCommandFile -and -not $Tray -and -not $DuScrapeOnce -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $reElevateArgs = "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`""
     if ($Uninstall) { $reElevateArgs += " -Uninstall" }
     Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs
@@ -1125,6 +1142,23 @@ if ($Tray) {
     $visibilityTimer.Interval = 30000
     $visibilityTimer.add_Tick({ $notifyIcon.Visible = -not (Test-SignagePlayerRunning) })
     $visibilityTimer.Start()
+
+    # The tray process is this agent's only foothold in an interactive desktop session, so it is
+    # what drives the DU scrape now that Session 0 cannot (see $DuHandoffFile). Spawned as a
+    # separate hidden child rather than run inline: the scrape drives a browser for up to a minute
+    # and this thread owns the tray icon's message loop, which would visibly freeze.
+    #
+    # Checked every 5 minutes but almost always a no-op - the child re-evaluates the same
+    # once-a-day, per-host-jittered gate the SYSTEM path uses, so it exits immediately unless a
+    # scrape is genuinely due. That keeps the decision about WHEN to scrape in exactly one place.
+    $duTimer = New-Object System.Windows.Forms.Timer
+    $duTimer.Interval = 300000
+    $duTimer.add_Tick({
+        try {
+            Start-Process powershell.exe -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "\`"$InstalledScriptPath\`"", "-DuScrapeOnce") -WindowStyle Hidden
+        } catch {}
+    })
+    $duTimer.Start()
 
     [System.Windows.Forms.Application]::Run()
     $notifyIcon.Visible = $false
@@ -1565,8 +1599,59 @@ function Get-DuJitterMinutes {
 
 function Save-DuScrapeState($at, $outcome, $note) {
     New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Script:DuStateTarget) -Force -ErrorAction SilentlyContinue | Out-Null
     (@{ at = $at; outcome = $outcome; note = $note } | ConvertTo-Json -Compress) |
-        Set-Content -Path $DuScrapeStateFile -Encoding utf8 -NoNewline
+        Set-Content -Path $Script:DuStateTarget -Encoding utf8 -NoNewline
+}
+
+# Reads the last attempt record, folding in anything the user-session scrape left in the handoff
+# file first (see $DuHandoffFile). The handoff wins when it is newer, then it is promoted into the
+# real state file and deleted - so the handoff never accumulates, and SYSTEM keeps exactly one
+# authoritative record regardless of which session actually performed the scrape.
+function Get-DuScrapeState {
+    $state = $null
+    $stateAt = [datetime]::MinValue
+    if (Test-Path $DuScrapeStateFile) {
+        $raw = Get-Content -Path $DuScrapeStateFile -Raw -ErrorAction SilentlyContinue
+        if ($raw) {
+            try { $state = $raw | ConvertFrom-Json } catch { $state = $null }
+            # Agents updating from a pre-3.2 build have a bare timestamp here with no outcome
+            # attached. Treated as "error" (never $null) so it is eligible for the hourly retry
+            # rather than silently trusted as done for the day - confirmed live on PC-F44D306862C0,
+            # whose legacy timestamp was that morning's actual failure.
+            if (-not $state) { try { $state = [pscustomobject]@{ at = ([datetime]$raw).ToString("o"); outcome = "error"; note = "Migrated from a pre-3.2 agent with no recorded outcome - treated as unconfirmed and retried." } } catch {} }
+            if ($state -and $state.at) { try { $stateAt = [datetime]$state.at } catch {} }
+        }
+    }
+    # Only SYSTEM promotes the handoff - the user-session run is writing INTO it at this point, and
+    # would just be reading back its own work.
+    if (-not $Script:DuIsUserSession -and (Test-Path $DuHandoffFile)) {
+        try {
+            $hoRaw = Get-Content -Path $DuHandoffFile -Raw -ErrorAction SilentlyContinue
+            $ho = if ($hoRaw) { $hoRaw | ConvertFrom-Json } else { $null }
+            $hoAt = if ($ho -and $ho.at) { [datetime]$ho.at } else { [datetime]::MinValue }
+            if ($ho -and $hoAt -gt $stateAt) {
+                $state = $ho
+                Set-Content -Path $DuScrapeStateFile -Value $hoRaw -Encoding utf8 -NoNewline
+                Write-AgentLog "Folded in user-session DU scrape result: $($ho.outcome)"
+            }
+            Remove-Item -Path $DuHandoffFile -Force -ErrorAction SilentlyContinue
+        } catch { Write-AgentLog "Could not read the user-session DU handoff file: $($_.Exception.Message)" }
+    }
+    return $state
+}
+
+# Whether a scrape is due right now, from this host's own jittered slot in the 8-9 AM hour plus the
+# hourly retry a FAULT earns. 'nodata' is pointedly not retried - it is a stable, correct answer
+# (no du SIM behind this connection), and retrying it hourly would relaunch a browser every hour
+# forever on every Wi-Fi/LAN machine in the fleet to re-learn the same thing.
+function Test-DuScrapeDue($state) {
+    $lastAttempt = if ($state -and $state.at) { try { [datetime]$state.at } catch { $null } } else { $null }
+    $todayEightAm = (Get-Date -Hour 8 -Minute 0 -Second 0 -Millisecond 0).AddMinutes((Get-DuJitterMinutes))
+    $boundary = if ((Get-Date) -lt $todayEightAm) { $todayEightAm.AddDays(-1) } else { $todayEightAm }
+    $faulted = @('nobrowser', 'error', 'pending') -contains $state.outcome
+    $retryDue = $faulted -and $lastAttempt -and (((Get-Date) - $lastAttempt).TotalMinutes -ge 60)
+    return (-not $lastAttempt) -or ($lastAttempt -lt $boundary) -or $retryDue
 }
 
 # ONE du scrape attempt, start to finish: runs it, records to local state what happened, and hands
@@ -2356,34 +2441,10 @@ function Invoke-Checkin([switch]$Light) {
     # succeeded gets one unnecessary bonus scrape during the migration window, gone for good the
     # moment any real 3.2 scrape writes a proper outcome - trivial next to a failure going unnoticed
     # for days again, which is exactly what happened to DR2-FOODCOURT before today.
-    $duState = $null
-    if (Test-Path $DuScrapeStateFile) {
-        $duRaw = Get-Content -Path $DuScrapeStateFile -Raw -ErrorAction SilentlyContinue
-        if ($duRaw) {
-            try { $duState = $duRaw | ConvertFrom-Json } catch { $duState = $null }
-            if (-not $duState) { try { $duState = [pscustomobject]@{ at = ([datetime]$duRaw).ToString("o"); outcome = "error"; note = "Migrated from a pre-3.2 agent with no recorded outcome - treated as unconfirmed and retried." } } catch {} }
-        }
-    }
-    $lastDuAttempt = if ($duState -and $duState.at) { try { [datetime]$duState.at } catch { $null } } else { $null }
-    # This host's own slot in the 8-9 AM hour (see Get-DuJitterMinutes) rather than a bare 8:00 for
-    # every device - the anchor is still "once a day, first thing in the morning" from an admin's
-    # point of view, just no longer the same clock second on all twelve machines at once.
-    $todayEightAm = (Get-Date -Hour 8 -Minute 0 -Second 0 -Millisecond 0).AddMinutes((Get-DuJitterMinutes))
-    $lastEightAmBoundary = if ((Get-Date) -lt $todayEightAm) { $todayEightAm.AddDays(-1) } else { $todayEightAm }
-    # A FAILED attempt no longer costs the whole day. The gate advancing on every attempt was right
-    # when a failure was indistinguishable from a success, but it meant one flaky browser launch at
-    # 08:11 put the next reading 24 hours away - confirmed live on PC-E89C258BBD2F, whose 8 AM
-    # attempt died with "DOM dump produced no HTML (browser exited without writing a page)" and had
-    # nothing queued to try again. Now that the outcome is recorded, a fault can be retried on its
-    # own merits: hourly, so a transient launch failure clears within the same morning instead of
-    # tomorrow, and bounded so it isn't relaunching a browser every 20-minute poll all day.
-    #
-    # 'nodata' is pointedly NOT retried. It is a stable, correct answer (no du SIM behind this
-    # connection), and retrying it hourly would launch a headless browser every hour, forever, on
-    # every Wi-Fi/LAN machine in the fleet to re-learn the same thing.
-    $duFaulted = @('nobrowser', 'error', 'pending') -contains $duState.outcome
-    $duRetryDue = $duFaulted -and $lastDuAttempt -and (((Get-Date) - $lastDuAttempt).TotalMinutes -ge 60)
-    $duDue = (-not $lastDuAttempt) -or ($lastDuAttempt -lt $lastEightAmBoundary) -or $duRetryDue
+    # Both halves of the scrape - the SYSTEM check-in here and the user-session run launched by the
+    # tray - ask these same two functions, so "when is a scrape due" has exactly one definition.
+    $duState = Get-DuScrapeState
+    $duDue = Test-DuScrapeDue $duState
     if ($duDue) {
         $duResult = Invoke-DuScrape
         Add-DuFiguresToPayload $data $duResult
@@ -2513,6 +2574,29 @@ function Invoke-Checkin([switch]$Light) {
 # with "the term 'Get-DuDataUsage' is not recognized" (confirmed on a real device). Also must stay
 # ABOVE the task-registration block right below - $RunCommandFile invocations never pass -Once, so
 # without exiting first they'd re-register the scheduled tasks on every single queued command.
+# The user-session half of the DU scrape (see $DuHandoffFile). Spawned by the tray process, which
+# is the only part of this agent already running in a real interactive desktop session - the one
+# place headless Edge actually renders. Deliberately does NOT check in or POST anything: it scrapes,
+# writes the result to the handoff file, and exits. The next SYSTEM check-in folds that in and
+# reports it through the existing path, so there is exactly one place that talks to the server.
+# Sits with the other dispatch branches for the reason described directly above - Invoke-DuScrape
+# is defined far below the tray branch that launches this.
+if ($DuScrapeOnce) {
+    $Script:DuStateTarget = $DuHandoffFile
+    $Script:DuIsUserSession = $true
+    try {
+        $duState = Get-DuScrapeState
+        if (Test-DuScrapeDue $duState) {
+            Write-AgentLog "User-session DU scrape starting (tray-triggered)."
+            $r = Invoke-DuScrape
+            Write-AgentLog "User-session DU scrape finished: $($r.outcome)"
+        }
+    } catch {
+        Write-AgentLog "User-session DU scrape failed to run: $($_.Exception.Message)"
+    }
+    exit 0
+}
+
 if ($RunCommandFile) {
     $command = Get-Content -Path $RunCommandFile -Raw -ErrorAction SilentlyContinue
     if ($null -eq $command) { $command = '' }
@@ -2590,6 +2674,20 @@ try {
     Write-Host "Scheduled task '$TaskName' installed (runs on startup and every 6 hours)." -ForegroundColor Green
 } catch {
     Write-Warning "Could not register the scheduled task: $($_.Exception.Message)"
+}
+
+# The one folder a logged-in (non-admin) user is allowed to write, so the tray-launched scrape can
+# hand its result back to SYSTEM - see $DuHandoffFile for why the scrape has to run in that session
+# at all. Scoped to this sub-folder ONLY, never $StateDir itself: that holds Install-JstarAgent.ps1,
+# which SYSTEM executes every cycle, so making it user-writable would let any logged-in user swap in
+# their own script and have SYSTEM run it. (OI)(CI)M grants modify on the folder and anything
+# created inside it. Re-applied every cycle because this whole block is idempotent by design, so a
+# machine that had the folder removed or its ACL reset repairs itself within one cycle.
+try {
+    New-Item -ItemType Directory -Path $DuHandoffDir -Force -ErrorAction SilentlyContinue | Out-Null
+    & icacls.exe $DuHandoffDir /grant "*S-1-5-32-545:(OI)(CI)M" /T /C | Out-Null
+} catch {
+    Write-Warning "Could not grant the logged-in user write access to the DU handoff folder - the user-session scrape will not be able to report back: $($_.Exception.Message)"
 }
 
 # Chocolatey's bootstrapper is skipped entirely once choco.exe is already on PATH, so re-checking
