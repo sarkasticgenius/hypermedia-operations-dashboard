@@ -91,9 +91,33 @@ const GEMS_VENUE_KEYWORDS = ['PALM DUBAI ZUMUROD', 'PALM DUBAI RUBY', 'PALM DUBA
 const FOC_MARKETING_KEYWORDS = ['FOC', 'MARKETING', 'MKTG', 'NAMING RIGHTS', 'NAMING RIGHT', 'NR', 'FILLER'];
 const FOC_MARKETING_PATTERN = new RegExp(`\\b(?:${FOC_MARKETING_KEYWORDS.join('|')})\\b`);
 
+// The vendor's own contract IDs (see fetchTrafficSheetCampaigns - this data is a live proxy pull,
+// never stored locally, so there is nowhere to persist a "this one is FOC/Marketing" flag except
+// here) for campaigns an admin has manually decided belong in FOC/Marketing despite a name that
+// gives the keyword match above nothing to go on. Confirmed live: REEM MALL LOGO CAMPAIGN NEW and
+// Max N - BTS Campaign_July are both genuinely FOC bookings with no FOC/MKTG/etc. wording at all.
+const FOC_MARKETING_OVERRIDE_IDS = new Set([
+  'CHM-69269f3cb5c57', // REEM MALL LOGO CAMPAIGN NEW
+  'CHM-6a5a339ac7f89', // Max N - BTS Campaign_July
+]);
+// Whole advertisers whose campaigns are booked as FOC/Marketing by business arrangement regardless
+// of how any individual campaign happens to be named - unlike FOC_MARKETING_OVERRIDE_IDS above,
+// this covers every AutoPro campaign automatically, present and future, without needing a new ID
+// added by hand each time one launches. Matched as a prefix on the campaign name itself, not the
+// keyword list, since "AutoPro" isn't a word that MEANS FOC/Marketing the way "FOC" or "MKTG" do -
+// it's a business rule about one specific advertiser.
+const FOC_MARKETING_OVERRIDE_NAME_PREFIXES = ['AUTOPRO'];
+
 export function isFocMarketingCampaign(campaign) {
   const name = (campaign.campaignName || '').toUpperCase();
-  return FOC_MARKETING_PATTERN.test(name);
+  if (campaign.contract && FOC_MARKETING_OVERRIDE_IDS.has(campaign.contract)) return true;
+  if (FOC_MARKETING_OVERRIDE_NAME_PREFIXES.some((p) => name.startsWith(p))) return true;
+  // Normalized before matching so "FOC_copy" and "FOC-2" - real, live campaign names, not
+  // hypothetical - read as "FOC copy"/"FOC 2" instead of one unbroken word: JS's \b treats
+  // underscore as a word character, so "FOC_copy" has no boundary between C and _ and silently
+  // never matched at all. Confirmed live: Blackhawk Tire Enoc FOC_copy and Blue Tokai Burjuman
+  // Mall FOC_2 were both showing as paid campaigns despite visibly containing "FOC" in the name.
+  return FOC_MARKETING_PATTERN.test(name.replace(/[_-]+/g, ' '));
 }
 
 function defaultMonth() {

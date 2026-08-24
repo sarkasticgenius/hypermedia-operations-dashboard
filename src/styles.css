@@ -240,6 +240,15 @@ th.tleft,td.tleft{text-align:left;}
    specificity instead of being painted over. */
 .zebra tbody tr:nth-child(even){background:var(--row-alt);}
 .zebra tr:hover td{background:var(--row-hover);}
+/* Digital Directory packs 5 buttons edge-to-edge in the actions column - .btn-sm's own opaque
+   background (var(--card-bg), needed everywhere else a button sits on a plain card) covers nearly
+   the entire cell there, so the row tint (and the hover tint above) never showed through underneath
+   it - confirmed live: banding visibly stops dead the moment the buttons start. Scoped to .zebra
+   rather than changing .btn-sm globally, since most buttons in the app sit on a plain page
+   background, not inside a striped row, and don't have this problem to begin with. The border stays
+   (unchanged from .btn-sm) so each button is still legible as a button against either row tint. */
+.zebra td button.btn-sm{background:transparent;}
+.zebra td button.btn-sm:hover{background:var(--row-hover);}
 
 .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700;}
 .b-green{background:var(--green-bg);color:var(--green);}
