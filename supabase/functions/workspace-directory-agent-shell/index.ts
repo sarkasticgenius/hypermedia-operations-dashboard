@@ -42,9 +42,31 @@ Deno.serve(async (req) => {
       throw new Error('Not authenticated - missing or incorrect x-agent-secret header.');
     }
 
+    // TWO SLOTS, so a Publish can be tried on a few machines before it reaches signage PCs in
+    // malls that nobody can walk up to:
+    //   - workspaceDirectoryAgentShell        -> STABLE, what the fleet runs.
+    //   - workspaceDirectoryAgentShellCanary  -> { script, version, hostnames[] }, served ONLY to
+    //                                            the hostnames listed on it.
+    // Routing is by the hostname the agent now sends on its self-update check. An agent that sends
+    // NO hostname (any build older than that change) always falls through to stable - the safe
+    // default, since an unidentified device must never be handed an untested build.
     const { data: shellRow } = await adminClient.from('app_settings').select('value').eq('key', 'workspaceDirectoryAgentShell').single();
-    const script = shellRow?.value?.script || '';
-    const version = shellRow?.value?.version || 0;
+    let script = shellRow?.value?.script || '';
+    let version = shellRow?.value?.version || 0;
+
+    const hostname = (new URL(req.url).searchParams.get('hostname') || '').trim();
+    if (hostname) {
+      const { data: canaryRow } = await adminClient.from('app_settings').select('value')
+        .eq('key', 'workspaceDirectoryAgentShellCanary').maybeSingle();
+      const canary = canaryRow?.value;
+      // Compared case-insensitively: Windows hostnames are case-insensitive, and an admin typing
+      // "hm-office-test" into the dashboard should not silently fail to match "HM-OFFICE-TEST".
+      const targets = (canary?.hostnames || []).map((h: string) => String(h).trim().toUpperCase());
+      if (canary?.script && targets.includes(hostname.toUpperCase())) {
+        script = canary.script;
+        version = canary.version || 0;
+      }
+    }
 
     const metaOnly = new URL(req.url).searchParams.get('meta') === '1';
     const body = metaOnly ? { version } : { script, version };

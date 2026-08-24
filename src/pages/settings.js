@@ -554,6 +554,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
   const collector = settings.workspaceDirectoryCollector || {};
   const collectorScript = collector.script || defaultCollectorScript();
   const shell = settings.workspaceDirectoryAgentShell || {};
+  const canary = settings.workspaceDirectoryAgentShellCanary || {};
   return `
     <div class="card">
       <div class="card-head"><h3>Jstar Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, installed software, detected problems). The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Fully headless by design - no tray icon, window, or notification ever appears, since these PCs drive signage screens. Generate a secret, save, then run the .bat as Administrator on each PC once (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files). After that one install, every agent self-updates from Published Agent Version below - PCs in remote locations never need a physical reinstall again for anything except a secret rotation.</div></div>
@@ -579,8 +580,15 @@ function renderWorkspaceDirectoryAgentCard(settings) {
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
       <div class="field">
         <label>Published Agent Version</label>
-        <div class="small muted" style="margin-bottom:6px;">The install script (scheduled task setup, remote-command runner, self-update logic itself) - unlike the Data Collector Script below, this normally requires re-running the installer to change. Publishing pushes the CURRENT version of that logic here; every already-installed agent compares itself against it on each check-in and silently updates itself if different, no physical reinstall needed. Requires PCs already running an agent built after this self-update feature shipped (that batch needs the one-time reinstall above).${shell.version ? ` Currently published: v${shell.version}${shell.publishedAt ? ` (${new Date(shell.publishedAt).toLocaleString()})` : ''}.` : ' Nothing published yet.'}</div>
-        <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.publishWorkspaceDirectoryAgentShell()">Publish Latest Agent Version</button>
+        <div class="small muted" style="margin-bottom:6px;">The install script (scheduled task setup, remote-command runner, self-update logic itself) - unlike the Data Collector Script below, this normally requires re-running the installer to change. Publishing pushes the CURRENT version of that logic here; an already-installed agent compares itself against it on each check-in and silently updates itself if different, no physical reinstall needed.<br><br><b>Publishing is a two-step rollout.</b> The first button reaches ONLY the test PCs (${AGENT_CANARY_HOSTNAMES.join(', ')}) - every other machine keeps running the fleet version, untouched. Once you have confirmed the new build behaves on those, the second button rolls that exact same script out to everything else. This exists because most of the fleet drives signage screens in malls that nobody can walk up to and fix.</div>
+        <div class="small" style="margin-bottom:8px;display:flex;flex-direction:column;gap:2px;">
+          <span><b>Fleet (all PCs):</b> ${shell.version ? `v${shell.version}${shell.publishedAt ? ` - ${new Date(shell.publishedAt).toLocaleString()}` : ''}` : '<span class="muted">nothing published yet</span>'}</span>
+          <span><b>Test PCs:</b> ${canary.version ? `v${canary.version}${canary.publishedAt ? ` - ${new Date(canary.publishedAt).toLocaleString()}` : ''}${canary.version > (shell.version || 0) ? ' <span class="badge b-amber">awaiting promotion</span>' : ' <span class="muted">(same as fleet)</span>'}` : '<span class="muted">nothing published yet</span>'}</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.publishWorkspaceDirectoryAgentShell()">Publish to Test PCs</button>
+          <button type="button" class="btn-outline btn-sm" ${canary.version && canary.version > (shell.version || 0) ? '' : 'disabled title="Publish to the test PCs first, and confirm it works there"'} onclick="App.promoteWorkspaceDirectoryAgentShell()">Roll Out to All PCs${canary.version && canary.version > (shell.version || 0) ? ` (v${canary.version})` : ''}</button>
+        </div>
       </div>
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
       <form onsubmit="App.saveWorkspaceDirectoryCollectorForm(event)">
@@ -651,17 +659,54 @@ export function resetWorkspaceDirectoryCollector() {
 // check-in and self-updates if different (see Invoke-SelfUpdate in the shell template) - this is
 // the "centralized deployment" half of the feature; the Data Collector Script above is the other
 // half and already worked this way from day one.
+// The PCs a Publish is allowed to reach. Deliberately a small, explicit list rather than a
+// percentage or a "first N devices" rule: which machines are safe to break is a judgement about
+// physical access (an office test bench you can walk over to) and business impact (not a signage
+// screen in a mall), and nothing in the device data expresses that.
+export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST', 'PC-CC28AA47304D', 'PC-1C697A0E88E4'];
+
+// Publishes to the TEST PCs only (see AGENT_CANARY_HOSTNAMES). Writes the canary slot, which
+// workspace-directory-agent-shell serves only to those hostnames - every other device keeps
+// running whatever is in the stable slot, untouched, until someone promotes it.
 export async function publishWorkspaceDirectoryAgentShell() {
   const settings = STATE.pageData.settings?.data || {};
   const secret = settings.workspaceDirectoryAgent?.secret;
   if (!secret) { toast('Save a secret first', 'error'); return; }
   const script = buildWorkspaceDirectoryAgentScript(secret, settings.workspaceDirectoryAgent?.uninstallPasswordHash);
-  const version = (settings.workspaceDirectoryAgentShell?.version || 0) + 1;
+  // Versioned above BOTH slots so a canary is always numerically newer than the stable build it is
+  // being tested against - the agent's own self-update compares versions, so a canary sharing or
+  // trailing stable's number would simply never install.
+  const version = Math.max(
+    settings.workspaceDirectoryAgentShell?.version || 0,
+    settings.workspaceDirectoryAgentShellCanary?.version || 0,
+  ) + 1;
   try {
-    await saveSetting('workspaceDirectoryAgentShell', { script, version, publishedAt: new Date().toISOString() });
-    await logAudit('Publish Jstar Agent version', `v${version}`);
+    await saveSetting('workspaceDirectoryAgentShellCanary', {
+      script, version, hostnames: AGENT_CANARY_HOSTNAMES, publishedAt: new Date().toISOString(),
+    });
+    await logAudit('Publish Jstar Agent version (test PCs)', `v${version} -> ${AGENT_CANARY_HOSTNAMES.join(', ')}`);
     invalidate('settings');
-    toast(`Agent v${version} published - every PC self-updates on its next check-in.`);
+    toast(`Agent v${version} published to ${AGENT_CANARY_HOSTNAMES.length} test PC(s) only - the rest of the fleet is unchanged.`);
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// Promotes whatever is currently on the test PCs to the whole fleet - the deliberate second step,
+// so reaching every signage PC is always an explicit decision rather than a side effect of
+// publishing. Copies the canary script verbatim rather than rebuilding from source, so what the
+// fleet receives is byte-identical to what was actually tested.
+export async function promoteWorkspaceDirectoryAgentShell() {
+  const settings = STATE.pageData.settings?.data || {};
+  const canary = settings.workspaceDirectoryAgentShellCanary;
+  if (!canary?.script) { toast('Publish to the test PCs first - there is nothing to promote.', 'error'); return; }
+  if (!confirm(`Roll agent v${canary.version} out to EVERY PC in the fleet?\n\nIt is currently running on: ${(canary.hostnames || []).join(', ')}`)) return;
+  try {
+    await saveSetting('workspaceDirectoryAgentShell', {
+      script: canary.script, version: canary.version, publishedAt: new Date().toISOString(),
+    });
+    await logAudit('Promote Jstar Agent version to all PCs', `v${canary.version}`);
+    invalidate('settings');
+    toast(`Agent v${canary.version} promoted - every PC self-updates on its next check-in.`);
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -1198,7 +1243,12 @@ function Invoke-SelfUpdate($OriginalArgs) {
         # on every single cycle, so unconditionally downloading it just to discover it was
         # byte-identical cost roughly 211MB per device per month - on the very metered SIM plan this
         # whole feature exists to measure. The "?meta=1" response is a couple of dozen bytes.
-        $metaResp = Invoke-RestMethod -Method Get -Uri ($AgentShellUrl + "?meta=1") -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
+        # hostname identifies this PC to the shell endpoint so a Publish can be scoped to a small
+        # set of test machines instead of the whole fleet (see workspace-directory-agent-shell).
+        # An agent that does not send it - anything older than this build - is always served the
+        # STABLE slot, which is the safe default: an unknown device never receives a canary build.
+        $hostQ = "&hostname=" + [uri]::EscapeDataString($env:COMPUTERNAME)
+        $metaResp = Invoke-RestMethod -Method Get -Uri ($AgentShellUrl + "?meta=1" + $hostQ) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15
         if (-not $metaResp -or $null -eq $metaResp.version) { return }
         $publishedVersion = [string]$metaResp.version
         $installedVersion = if (Test-Path $ShellVersionFile) { (Get-Content -Path $ShellVersionFile -Raw -ErrorAction SilentlyContinue).Trim() } else { $null }
@@ -1213,7 +1263,7 @@ function Invoke-SelfUpdate($OriginalArgs) {
         # one upgrading from a build that predates version tracking). Both need the full body: the
         # first to apply it, the second to establish the baseline. This is the ONLY path that
         # downloads ~100KB, and after it runs once the check above short-circuits every later cycle.
-        $resp = Invoke-RestMethod -Method Get -Uri $AgentShellUrl -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 30
+        $resp = Invoke-RestMethod -Method Get -Uri ($AgentShellUrl + "?hostname=" + [uri]::EscapeDataString($env:COMPUTERNAME)) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 30
         if (-not $resp -or -not $resp.script) { return }
         $normalize = { param($t) $t -replace "\`r\`n", "\`n" -replace "\`r", "\`n" }
         $current = & $normalize (Get-Content -Path $InstalledScriptPath -Raw)
