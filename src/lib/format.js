@@ -33,6 +33,14 @@ export function jsAttr(s) {
 // "2 days, 4 hours and 16 minutes ago" - deliberately computed at render time from a raw
 // timestamp rather than ever being baked into a stored string, so it stays accurate no matter how
 // long ago the sync that captured the timestamp actually ran.
+// Reports only the single largest unit (days, else hours, else minutes) rather than stacking all
+// three ("3 days, 7 hours and 21 minutes ago") - every call site uses this as a quick "how long
+// ago" scan in a table cell or inline label, never as an audit-grade duration, and the combined
+// form is long enough to wrap across 5-6 lines in a normal fixed-width column (confirmed live: the
+// IoT Panel's offline devices, some stale for 12+ days, turned an ~85px-tall cell next to online
+// rows' single-line "20 minutes ago" - unreadable, and inconsistent row heights next to each
+// other). "3 days ago" is both the GitHub/Twitter convention and enough precision for what every
+// caller here actually needs: roughly how stale is this.
 export function fmtRelativeTime(iso) {
   if (!iso) return null;
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -41,12 +49,9 @@ export function fmtRelativeTime(iso) {
   const days = Math.floor(totalMinutes / 1440);
   const hours = Math.floor((totalMinutes % 1440) / 60);
   const minutes = totalMinutes % 60;
-  const parts = [];
-  if (days) parts.push(`${days} day${days === 1 ? '' : 's'}`);
-  if (hours) parts.push(`${hours} hour${hours === 1 ? '' : 's'}`);
-  if (minutes || !parts.length) parts.push(`${minutes} minute${minutes === 1 ? '' : 's'}`);
-  const joined = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
-  return `${joined} ago`;
+  if (days) return `${days} day${days === 1 ? '' : 's'} ago`;
+  if (hours) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
 }
 
 export function daysUntilInfo(dateStr) {

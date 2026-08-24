@@ -14,18 +14,20 @@ import { esc } from './format.js';
 // row itself never changed. A fixed width sourced from the full (unsliced) row set, not just the
 // currently-visible page, stays constant across sorts and page turns.
 //
-// align (optional, 'center'|'right') - a header's own label is very often longer than the short
-// badge/number every row actually shows in that column (e.g. "DAYS TO EXPIRE" vs "18d"), so with
-// the default left alignment the value sits flush against the header's left edge while the rest of
-// the (header-label-driven) column width goes empty to its right - reads as misaligned even though
-// nothing is technically wrong. Passing the same align here and on the column's <td> class
-// (tcenter/tright) keeps the two visually centered on each other instead.
+// align (optional, 'center'|'right'|'left') - a header's own label is very often longer than the
+// short badge/number every row actually shows in that column (e.g. "DAYS TO EXPIRE" vs "18d"), so
+// with the default left alignment the value sits flush against the header's left edge while the
+// rest of the (header-label-driven) column width goes empty to its right - reads as misaligned even
+// though nothing is technically wrong. Passing the same align here and on the column's <td> class
+// (tcenter/tright/tleft) keeps the two visually aligned with each other instead. 'left' exists
+// because every table centres by default (see styles.css) - it's only needed to pull a non-first
+// column (Venue, Campaign Name, ...) back to the left, the same treatment column 1 gets for free.
 export function sortTh(scope, key, label, widthCh, align) {
   const sort = STATE.tableSort?.[scope];
   const active = sort && sort.key === key;
   const arrow = active ? (sort.dir === 'desc' ? ' ▼' : ' ▲') : '';
   const widthStyle = widthCh ? `width:${widthCh}ch;` : '';
-  const alignClass = align === 'center' ? ' tcenter' : align === 'right' ? ' tright' : '';
+  const alignClass = align === 'center' ? ' tcenter' : align === 'right' ? ' tright' : align === 'left' ? ' tleft' : '';
   return `<th class="${alignClass.trim()}" style="${widthStyle}cursor:pointer;user-select:none;" onclick="App.toggleSort('${scope}','${key}')">${esc(label)}${arrow}</th>`;
 }
 

@@ -227,6 +227,12 @@ tbody tr:has(> td:first-child input[type=checkbox]) > td:nth-child(2){text-align
    column that explicitly asks to be centred still gets centred even when it is first. */
 th.tright,td.tright{text-align:center;}
 th.tcenter,td.tcenter{text-align:center;}
+/* Same identity/long-text exception as the :first-child rule above, for a column that carries one
+   but isn't first - a Venue or Campaign Name column reads exactly like an asset name: centred, its
+   ragged variable-length lines (sometimes wrapping to two or three) drift instead of scanning down
+   a straight edge. Applied per-column (Venue, Campaign Name, ...), not per-cell by that cell's own
+   length - a column with mixed left/centred rows would read as broken, not adaptive. */
+th.tleft,td.tleft{text-align:left;}
 
 /* Alternating light-blue/white row banding for Reporting page tables - opt-in via .zebra on the
    <table> so it doesn't change every other table in the app. Set on <tr> (not <td>) so an

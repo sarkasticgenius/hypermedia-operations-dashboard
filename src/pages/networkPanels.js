@@ -405,7 +405,7 @@ function renderIotDeviceTable(cfg) {
       <td class="small">${esc(d.deviceId)}</td>
       <td>${esc(d.displayName || '-')}</td>
       <td class="small">${esc(d.macAddress || '-')}</td>
-      <td class="small">${venueCellHtml(d)}</td>
+      <td class="small tleft">${venueCellHtml(d)}</td>
       <td class="small">${esc(d.platform)}</td>
       <td class="small">${esc(d.state)}</td>
       <td>${connBadge}</td>
@@ -428,7 +428,7 @@ function renderIotDeviceTable(cfg) {
     </div>
     <div style="max-height:480px;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${sortTh('iotDevices', 'deviceId', 'Device ID', 14)}${sortTh('iotDevices', 'name', 'Name', 18)}${sortTh('iotDevices', 'mac', 'MAC Address', 15)}${sortTh('iotDevices', 'venue', 'Venue')}${sortTh('iotDevices', 'platform', 'Platform', 12)}${sortTh('iotDevices', 'state', 'State', 10)}${sortTh('iotDevices', 'connectivity', 'Connectivity', 13)}${sortTh('iotDevices', 'lastSeen', 'Last Seen', 14)}<th style="width:9ch;"></th></tr></thead>
+        <thead><tr>${sortTh('iotDevices', 'deviceId', 'Device ID', 14)}${sortTh('iotDevices', 'name', 'Name', 18)}${sortTh('iotDevices', 'mac', 'MAC Address', 15)}${sortTh('iotDevices', 'venue', 'Venue', undefined, 'left')}${sortTh('iotDevices', 'platform', 'Platform', 12)}${sortTh('iotDevices', 'state', 'State', 10)}${sortTh('iotDevices', 'connectivity', 'Connectivity', 13)}${sortTh('iotDevices', 'lastSeen', 'Last Seen', 14)}<th style="width:9ch;"></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
