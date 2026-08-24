@@ -12,7 +12,7 @@ import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtRelativeTime } from '../lib/format.js';
 import { aiooSiteCategory, aiooSiteDisplayName, SITE_CATEGORIES } from '../lib/aiooSiteCategory.js';
-import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
+import { sortTh, applySort, colWidthCh, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 
 // Top-of-page "last pulled" stat strip, shared by every network console page - shows when the
 // last sync ran and what it found, with a View Sync Log button for reviewing mismatches over
@@ -378,6 +378,21 @@ function renderIotDeviceTable(cfg) {
   const page = Math.min(STATE.iotDevicePage || 0, totalPages - 1);
   const pageRows = sorted.slice(page * pageSize, page * pageSize + pageSize);
 
+  // Sized from the LONGEST INDIVIDUAL LINE the venue cell stacks (venue/store/asset/entrance),
+  // not the concatenated length of all four - those render one above another via <br>, not side
+  // by side, so summing them would wildly overestimate the width an actual line ever needs. Left
+  // unsized before, this column fell back to the browser's own auto-width under table-layout:fixed
+  // - centred, the leftover space split evenly on both sides and went unnoticed; left-aligned (see
+  // the .tleft change above) that same leftover space became one glaring gap on the right instead,
+  // confirmed live. Computed from the FULL filtered set, not just this page, so paging/sorting
+  // doesn't shift the column width under the user (same reasoning as colWidthCh itself).
+  const venueColWidth = colWidthCh(
+    filtered,
+    (d) => [d.venue, d.storeName, d.asset, d.entrance].filter(Boolean).reduce((longest, s) => (s.length > longest.length ? s : longest), ''),
+    'Venue',
+    { min: 14, max: 34 },
+  );
+
   // Venue cell shows the full location chain the vendor API gives per device - venue (mall/site),
   // then store/aisle and the specific asset/entrance name within it, each on their own line -
   // matching the vendor's own IoT Admin Console venue display instead of splitting store into a
@@ -428,7 +443,7 @@ function renderIotDeviceTable(cfg) {
     </div>
     <div style="max-height:480px;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${sortTh('iotDevices', 'deviceId', 'Device ID', 14)}${sortTh('iotDevices', 'name', 'Name', 18)}${sortTh('iotDevices', 'mac', 'MAC Address', 15)}${sortTh('iotDevices', 'venue', 'Venue', undefined, 'left')}${sortTh('iotDevices', 'platform', 'Platform', 12)}${sortTh('iotDevices', 'state', 'State', 10)}${sortTh('iotDevices', 'connectivity', 'Connectivity', 13)}${sortTh('iotDevices', 'lastSeen', 'Last Seen', 14)}<th style="width:9ch;"></th></tr></thead>
+        <thead><tr>${sortTh('iotDevices', 'deviceId', 'Device ID', 14)}${sortTh('iotDevices', 'name', 'Name', 18)}${sortTh('iotDevices', 'mac', 'MAC Address', 15)}${sortTh('iotDevices', 'venue', 'Venue', venueColWidth, 'left')}${sortTh('iotDevices', 'platform', 'Platform', 12)}${sortTh('iotDevices', 'state', 'State', 10)}${sortTh('iotDevices', 'connectivity', 'Connectivity', 13)}${sortTh('iotDevices', 'lastSeen', 'Last Seen', 14)}<th style="width:9ch;"></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>

@@ -1145,8 +1145,27 @@ function Write-AgentLog($message) {
     New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
     $line = "$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) - $message"
     Add-Content -Path $LogFile -Value $line -Encoding utf8
-    $lines = Get-Content -Path $LogFile -ErrorAction SilentlyContinue
-    if ($lines.Count -gt 200) { $lines[-200..-1] | Set-Content -Path $LogFile -Encoding utf8 }
+    $lines = @(Get-Content -Path $LogFile -ErrorAction SilentlyContinue)
+    if (-not $lines) { return }
+    # Every line here is written by this SAME function in a fixed "yyyy-MM-dd HH:mm:ss - ..."
+    # shape, so its age is always the first 19 characters - parsed with an explicit format/culture
+    # rather than PowerShell's implicit [datetime] cast, which is locale-dependent and could
+    # misread a line as a future or ancient date. A line that fails to parse at all (hand-edited,
+    # corrupted, or from a build that logged differently) is kept rather than guessed at - "can't
+    # tell how old this is" isn't the same as "this is old enough to drop".
+    $cutoff = (Get-Date).AddDays(-30)
+    $kept = @($lines | Where-Object {
+        $ts = $null
+        if ($_.Length -ge 19) {
+            try { $ts = [datetime]::ParseExact($_.Substring(0, 19), 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture) } catch {}
+        }
+        (-not $ts) -or ($ts -ge $cutoff)
+    })
+    # The 200-line cap stays alongside the 30-day one rather than being replaced by it - a PC
+    # failing loudly can write hundreds of lines within a single day, and date-based pruning alone
+    # wouldn't catch that until a month later.
+    if ($kept.Count -gt 200) { $kept = $kept[-200..-1] }
+    if ($kept.Count -ne $lines.Count) { $kept | Set-Content -Path $LogFile -Encoding utf8 }
 }
 
 function Write-AgentStatus($success, $message) {
@@ -2276,14 +2295,23 @@ function Invoke-Checkin([switch]$Light) {
     # The state file holds a JSON record of the last attempt ({ at, outcome, note }) rather than the
     # bare timestamp it used to - the outcome has to survive between cycles so it can be re-reported
     # on ordinary check-ins too (see below), not just on the one cycle a day that actually scrapes.
-    # Agents updating from an older version still have a plain timestamp sitting there, so that
-    # shape is still accepted and simply carries no outcome until the next scrape writes one.
+    # Agents updating from an older version still have a plain timestamp sitting there - treated as
+    # outcome "error" (never $null) rather than genuinely unknown, so it's eligible for the hourly
+    # retry below instead of silently trusted as done for the day. $null would be the wrong default:
+    # confirmed live on PC-F44D306862C0, which self-updated fine but whose legacy timestamp was from
+    # THIS MORNING'S ACTUAL FAILURE - with no outcome attached, and a jitter slot earlier than that
+    # timestamp, the new gate read "already tried today" and would have gone right on trusting a
+    # known failure as settled, the exact silent-failure blind spot this whole fix exists to close.
+    # The cost is symmetric but one-sided in practice: a device whose legacy attempt actually
+    # succeeded gets one unnecessary bonus scrape during the migration window, gone for good the
+    # moment any real 3.2 scrape writes a proper outcome - trivial next to a failure going unnoticed
+    # for days again, which is exactly what happened to DR2-FOODCOURT before today.
     $duState = $null
     if (Test-Path $DuScrapeStateFile) {
         $duRaw = Get-Content -Path $DuScrapeStateFile -Raw -ErrorAction SilentlyContinue
         if ($duRaw) {
             try { $duState = $duRaw | ConvertFrom-Json } catch { $duState = $null }
-            if (-not $duState) { try { $duState = [pscustomobject]@{ at = ([datetime]$duRaw).ToString("o"); outcome = $null; note = $null } } catch {} }
+            if (-not $duState) { try { $duState = [pscustomobject]@{ at = ([datetime]$duRaw).ToString("o"); outcome = "error"; note = "Migrated from a pre-3.2 agent with no recorded outcome - treated as unconfirmed and retried." } } catch {} }
         }
     }
     $lastDuAttempt = if ($duState -and $duState.at) { try { [datetime]$duState.at } catch { $null } } else { $null }
