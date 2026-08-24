@@ -45,9 +45,9 @@
 //     under the merged name afterward.
 //   - Stores (labeled "In-Stores") is LULU/Union Coop/ADCOOP/Carrefour only - ENOC deliberately
 //     has its own tab, not part of In-Stores.
-import { STATE, setState, loadData } from '../state.js';
+import { STATE, setState, loadData, invalidate, toast } from '../state.js';
 import { loadingCard } from '../modals.js';
-import { getAllSettings, getSetting } from '../data/settings.js';
+import { getAllSettings, getSetting, saveSetting } from '../data/settings.js';
 import { MAF_MALL_VENUE_KEYWORDS } from '../data/locationStats.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin } from '../auth.js';
@@ -55,6 +55,7 @@ import { esc, jsAttr, todayISO } from '../lib/format.js';
 import { renderTabs } from '../lib/tabs.js';
 import { exportTrafficSheetExcel, exportOverallTrafficSheetExcel } from '../lib/excelExport.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
+import { logAudit } from '../lib/audit.js';
 
 // "Today's Campaigns" and "FOC / Marketing" are both cross-category views - venueMatchesTab
 // matches every venue for either, so neither is scoped to a single venueType/network the way the
@@ -91,26 +92,33 @@ const GEMS_VENUE_KEYWORDS = ['PALM DUBAI ZUMUROD', 'PALM DUBAI RUBY', 'PALM DUBA
 const FOC_MARKETING_KEYWORDS = ['FOC', 'MARKETING', 'MKTG', 'NAMING RIGHTS', 'NAMING RIGHT', 'NR', 'FILLER'];
 const FOC_MARKETING_PATTERN = new RegExp(`\\b(?:${FOC_MARKETING_KEYWORDS.join('|')})\\b`);
 
-// The vendor's own contract IDs (see fetchTrafficSheetCampaigns - this data is a live proxy pull,
-// never stored locally, so there is nowhere to persist a "this one is FOC/Marketing" flag except
-// here) for campaigns an admin has manually decided belong in FOC/Marketing despite a name that
-// gives the keyword match above nothing to go on. Confirmed live: REEM MALL LOGO CAMPAIGN NEW and
-// Max N - BTS Campaign_July are both genuinely FOC bookings with no FOC/MKTG/etc. wording at all.
-const FOC_MARKETING_OVERRIDE_IDS = new Set([
-  'CHM-69269f3cb5c57', // REEM MALL LOGO CAMPAIGN NEW
-  'CHM-6a5a339ac7f89', // Max N - BTS Campaign_July
-]);
 // Whole advertisers whose campaigns are booked as FOC/Marketing by business arrangement regardless
-// of how any individual campaign happens to be named - unlike FOC_MARKETING_OVERRIDE_IDS above,
-// this covers every AutoPro campaign automatically, present and future, without needing a new ID
-// added by hand each time one launches. Matched as a prefix on the campaign name itself, not the
-// keyword list, since "AutoPro" isn't a word that MEANS FOC/Marketing the way "FOC" or "MKTG" do -
-// it's a business rule about one specific advertiser.
+// of how any individual campaign happens to be named - covers every AutoPro campaign
+// automatically, present and future, without needing anything added by hand each time one
+// launches. Matched as a prefix on the campaign name itself, not the keyword list above, since
+// "AutoPro" isn't a word that MEANS FOC/Marketing the way "FOC" or "MKTG" do - it's a business
+// rule about one specific advertiser, not a naming convention.
 const FOC_MARKETING_OVERRIDE_NAME_PREFIXES = ['AUTOPRO'];
 
-export function isFocMarketingCampaign(campaign) {
+// Admin-managed one-off overrides (Settings > Integrations > Traffic Sheet FOC/Marketing
+// Overrides) for campaigns with no FOC/MKTG/etc. wording in the name at all, so the keyword match
+// below has nothing to go on - confirmed live: REEM MALL LOGO CAMPAIGN NEW and Max N - BTS
+// Campaign_July are both genuinely FOC bookings named like any other paid one. This data is a live
+// vendor proxy pull (see fetchTrafficSheetCampaigns) never stored locally, so the vendor's own
+// contract ID is the only stable key available to hang a manual decision on - same shape/pattern
+// as venueAliasMap() above (a small admin-editable map, self-healing via loadData() rather than a
+// hardcoded list that needs a code change and redeploy for every new one-off case).
+function focMarketingOverrideIds() {
+  const raw = loadData('focMarketingOverrides', () => getSetting('focMarketingOverrides'));
+  return new Set((raw || []).map((o) => o.contract));
+}
+
+// Split out from isFocMarketingCampaign so the UI can tell "genuinely FOC by name or business
+// rule" apart from "FOC only because an admin manually overrode it" - see
+// isFocMarketingByOverrideOnly below, which needs exactly that distinction to decide whether the
+// Move to Active button makes sense to offer at all.
+function isNameBasedFocMarketing(campaign) {
   const name = (campaign.campaignName || '').toUpperCase();
-  if (campaign.contract && FOC_MARKETING_OVERRIDE_IDS.has(campaign.contract)) return true;
   if (FOC_MARKETING_OVERRIDE_NAME_PREFIXES.some((p) => name.startsWith(p))) return true;
   // Normalized before matching so "FOC_copy" and "FOC-2" - real, live campaign names, not
   // hypothetical - read as "FOC copy"/"FOC 2" instead of one unbroken word: JS's \b treats
@@ -118,6 +126,36 @@ export function isFocMarketingCampaign(campaign) {
   // never matched at all. Confirmed live: Blackhawk Tire Enoc FOC_copy and Blue Tokai Burjuman
   // Mall FOC_2 were both showing as paid campaigns despite visibly containing "FOC" in the name.
   return FOC_MARKETING_PATTERN.test(name.replace(/[_-]+/g, ' '));
+}
+
+export function isFocMarketingCampaign(campaign) {
+  if (campaign.contract && focMarketingOverrideIds().has(campaign.contract)) return true;
+  return isNameBasedFocMarketing(campaign);
+}
+
+// True only for a campaign that is FOC/Marketing SOLELY because of a manual override - not one
+// that also (or instead) matches by name/business-rule. Removing the override from the latter
+// wouldn't change its classification at all, so the Move to Active button only makes sense to
+// offer here; a campaign like "...FOC_copy" or any AutoPro booking has nothing to revert.
+export function isFocMarketingByOverrideOnly(campaign) {
+  return !!(campaign.contract && focMarketingOverrideIds().has(campaign.contract)) && !isNameBasedFocMarketing(campaign);
+}
+
+// Toggles one campaign's manual override on/off, keyed by the vendor's own contract ID - same
+// shape as toggleIotDeviceExcluded (networkPanels.js): read-modify-write the whole list under one
+// app_settings key, invalidate so every open view (Today's list, Campaign Calendar, the Excel
+// export) picks up the change on its next render instead of only the row that was clicked.
+export async function toggleFocMarketingOverride(contract, campaignName, add) {
+  try {
+    const current = (await getSetting('focMarketingOverrides')) || [];
+    const withoutThis = current.filter((o) => o.contract !== contract);
+    const next = add ? [...withoutThis, { contract, campaignName, addedAt: new Date().toISOString() }] : withoutThis;
+    await saveSetting('focMarketingOverrides', next);
+    await logAudit(add ? 'Move campaign to FOC/Marketing' : 'Move campaign back to Active', `${contract} - ${campaignName}`);
+    invalidate('focMarketingOverrides');
+    toast(add ? 'Moved to FOC/Marketing.' : 'Moved back to Active.');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to update campaign', 'error'); }
 }
 
 function defaultMonth() {
@@ -651,8 +689,25 @@ function describeMatchedVenues(campaign, rosterByNetwork) {
 // Always-visible live snapshot of what's running today, independent of any Start/End Date
 // narrowing applied to the grid below. Start/End/Status columns are nowrap - narrow columns next
 // to Campaign Name's free text otherwise wrap "2026-06-22" onto two lines.
-function todayListTable(campaigns, emptyText, rosterByNetwork) {
-  const rows = campaigns.map((c) => `
+// isFocSection: whether this table is listing campaigns already classified FOC/Marketing (the FOC
+// sub-table, or the dedicated FOC/Marketing tab) rather than the regular/paid list - decides which
+// direction the per-row toggle button (admin only) offers, and whether it shows at all. Moving a
+// campaign TO FOC/Marketing always makes sense from the regular list; moving one BACK to Active
+// only makes sense when it's FOC purely because of a manual override (see
+// isFocMarketingByOverrideOnly) - a campaign whose own name says FOC/MKTG, or an AutoPro booking,
+// has nothing for the override to revert, so no button is offered for those rows.
+function todayListTable(campaigns, emptyText, rosterByNetwork, isFocSection) {
+  const admin = isAdmin();
+  const rows = campaigns.map((c) => {
+    let actionHtml = '';
+    if (admin) {
+      if (!isFocSection) {
+        actionHtml = `<button class="btn-sm" title="Move this campaign to FOC/Marketing - it has no FOC/MKTG wording in its name, so this is remembered separately and only affects this dashboard's own grouping." onclick="App.toggleFocMarketingOverride('${jsAttr(c.contract || '')}', '${jsAttr(c.campaignName || '')}', true)">Move to FOC/Marketing</button>`;
+      } else if (isFocMarketingByOverrideOnly(c)) {
+        actionHtml = `<button class="btn-sm" onclick="App.toggleFocMarketingOverride('${jsAttr(c.contract || '')}', '${jsAttr(c.campaignName || '')}', false)">Move to Active</button>`;
+      }
+    }
+    return `
     <tr>
       <td class="tsheet-nowrap">${esc(c.contract || '')}</td>
       <td class="tleft">${esc(c.campaignName || '')}</td>
@@ -660,11 +715,13 @@ function todayListTable(campaigns, emptyText, rosterByNetwork) {
       <td class="tsheet-nowrap">${statusBadge(c.status)}</td>
       <td class="tsheet-nowrap">${esc(c.startDate || '')}</td>
       <td class="tsheet-nowrap">${esc(c.endDate || '')}</td>
+      ${admin ? `<td class="tsheet-nowrap">${actionHtml}</td>` : ''}
     </tr>
-  `).join('');
+  `;
+  }).join('');
   return `
-    <table><thead><tr><th>Campaign ID</th><th class="tleft">Campaign Name</th><th class="tleft">Venue(s)</th><th class="tsheet-nowrap">Status</th><th class="tsheet-nowrap">Start</th><th class="tsheet-nowrap">End</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="6"><div class="empty">${esc(emptyText)}</div></td></tr>`}</tbody></table>
+    <table><thead><tr><th>Campaign ID</th><th class="tleft">Campaign Name</th><th class="tleft">Venue(s)</th><th class="tsheet-nowrap">Status</th><th class="tsheet-nowrap">Start</th><th class="tsheet-nowrap">End</th>${admin ? '<th></th>' : ''}</tr></thead>
+    <tbody>${rows || `<tr><td colspan="${admin ? 7 : 6}"><div class="empty">${esc(emptyText)}</div></td></tr>`}</tbody></table>
   `;
 }
 
@@ -683,7 +740,7 @@ function renderTodayList(campaigns, tab, rosterByNetwork) {
     return `
       <div class="card" style="margin-bottom:16px;">
         <div class="card-head"><h3>Today's Active Campaigns</h3><div class="desc">${campaigns.length} FOC/Marketing campaign(s) active today for this location.</div></div>
-        ${todayListTable(campaigns, 'No FOC/Marketing campaigns active today.', rosterByNetwork)}
+        ${todayListTable(campaigns, 'No FOC/Marketing campaigns active today.', rosterByNetwork, true)}
       </div>
     `;
   }
@@ -692,10 +749,10 @@ function renderTodayList(campaigns, tab, rosterByNetwork) {
   return `
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head"><h3>Today's Active Campaigns</h3><div class="desc">${campaigns.length} campaign(s) active today for this tab/location - ${regular.length} regular, ${focMarketing.length} FOC/Marketing.</div></div>
-      ${todayListTable(regular, 'No regular campaigns active today.', rosterByNetwork)}
+      ${todayListTable(regular, 'No regular campaigns active today.', rosterByNetwork, false)}
       ${focMarketing.length ? `
         <div class="card-head" style="margin-top:16px;"><h3 style="font-size:13px;">FOC / Marketing <span class="badge b-amber">${focMarketing.length}</span></h3></div>
-        ${todayListTable(focMarketing, 'None.', rosterByNetwork)}
+        ${todayListTable(focMarketing, 'None.', rosterByNetwork, true)}
       ` : ''}
     </div>
   `;
