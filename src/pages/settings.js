@@ -2590,6 +2590,33 @@ if ($DuScrapeOnce) {
             Write-AgentLog "User-session DU scrape starting (tray-triggered)."
             $r = Invoke-DuScrape
             Write-AgentLog "User-session DU scrape finished: $($r.outcome)"
+            # Reports its own result immediately rather than waiting for SYSTEM's next check-in to
+            # notice the handoff - the figures reach the dashboard the moment they are scraped
+            # instead of up to 20 minutes later. Needs no elevation: posting is a plain HTTPS call
+            # with the shared secret this script already carries.
+            #
+            # The handoff file is still written (by Invoke-DuScrape above, via $DuStateTarget) even
+            # though the server already has the data. That is not redundant: it is what keeps
+            # SYSTEM's own local gate in step, so the 6-hourly check-in sees the day's scrape as
+            # done instead of re-running it in Session 0 - where it can only fail, record an error,
+            # and start the hourly retry churning against a browser that cannot render there.
+            $duPayload = @{
+                hostname = $env:COMPUTERNAME
+                light = $true
+                duScrapeAttemptedAt = $r.at
+                duScrapeOutcome = $r.outcome
+            }
+            if ($r.note) { $duPayload.duScrapeNote = $r.note }
+            Add-DuFiguresToPayload $duPayload $r
+            try {
+                Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body ($duPayload | ConvertTo-Json -Compress) -ContentType "application/json" \`
+                    -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 30 | Out-Null
+                Write-AgentLog "User-session DU result reported straight to the dashboard."
+            } catch {
+                # Not a failure worth retrying here - the handoff file already holds the result, so
+                # SYSTEM's next check-in reports it through the normal path regardless.
+                Write-AgentLog "Could not report the user-session DU result directly (the next check-in will carry it): $($_.Exception.Message)"
+            }
         }
     } catch {
         Write-AgentLog "User-session DU scrape failed to run: $($_.Exception.Message)"
