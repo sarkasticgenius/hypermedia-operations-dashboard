@@ -895,7 +895,7 @@ $__os = Get-CimInstance Win32_OperatingSystem
     software          = @(Get-InstalledSoftware)
     problems          = @(Get-Problems $__volumes $__antivirus $__anydeskId $__teamviewerId)
     networkBytesTotal = Get-NetworkBytesTotal
-    agentVersion      = "3.0"
+    agentVersion      = "3.2"
 }`;
 }
 
@@ -956,6 +956,7 @@ $DuScrapeStateFile = Join-Path $StateDir "du-scrape-last.txt"
 $PopupStateFile = Join-Path $StateDir "last-unexpected-windows.txt"
 $ModerateSnapshotFile = Join-Path $StateDir "last-moderate-snapshot.json"
 $HeavySnapshotFile = Join-Path $StateDir "last-heavy-snapshot.json"
+$DuSnapshotFile = Join-Path $StateDir "last-du-scrape-snapshot.json"
 $ShellVersionFile = Join-Path $StateDir "installed-shell-version.txt"
 $RenamedFromFile = Join-Path $StateDir "renamed-from.txt"
 $CollectorCacheFile = Join-Path $StateDir "collector-cache.ps1"
@@ -1350,6 +1351,52 @@ function Invoke-PendingCommand($command) {
         exit 0
     }
 
+    # A dashboard-queued "Check Data Usage" (the button on a device's Details panel): re-runs the
+    # mydata.du.ae scrape right now instead of waiting for the next 8 AM boundary.
+    #
+    # Deliberately NOT implemented as the plain Run Command "Get-DuDataUsage | ConvertTo-Json" that
+    # an admin could type by hand: that only ever lands as text in Last Command Output, so the
+    # figures don't reach du_data_*/du_scrape_outcome and the Data Usage column doesn't move - which
+    # makes it useless as the answer to "what is this PC using right now". Going through
+    # Invoke-DuScrape and POSTing a real check-in payload means an on-demand check updates exactly
+    # what a scheduled one updates.
+    #
+    # Posts and exits rather than caching a result for the normal report-on-next-cycle path, same as
+    # ::UNINSTALL below: the payload has to carry the du fields, which that path can't express (it
+    # sends commandOutput only), and commandOutput being present here is also what clears
+    # pending_command server-side so this doesn't re-run every cycle forever. Resetting the local
+    # gate is what makes it a genuinely fresh reading - and it deliberately consumes the day's
+    # attempt, so a manual check at 14:00 means the next automatic one is tomorrow morning, not
+    # twenty minutes later.
+    if ($command -eq '::DUCHECK') {
+        $duResult = Invoke-DuScrape
+        $duPayload = @{
+            hostname = $env:COMPUTERNAME
+            light = $true
+            duScrapeAttemptedAt = $duResult.at
+            duScrapeOutcome = $duResult.outcome
+        }
+        if ($duResult.note) { $duPayload.duScrapeNote = $duResult.note }
+        Add-DuFiguresToPayload $duPayload $duResult
+        $duPayload.commandOutput = switch ($duResult.outcome) {
+            "ok" { "Data usage checked: $($duResult.du.dataUsedGb) GB used of $($duResult.du.dataTotalGb) GB ($($duResult.du.phoneNumber))." }
+            "nodata" { "Data usage checked - du reported nothing for this connection, so there is no SIM behind this PC (Wi-Fi/LAN)." }
+            default { "Data usage check could not complete: $($duResult.note)" }
+        }
+        try {
+            Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body ($duPayload | ConvertTo-Json -Compress) -ContentType "application/json" \`
+                -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 30 | Out-Null
+            Write-AgentLog "On-demand data usage check reported: $($duResult.outcome)"
+        } catch {
+            # Nothing to fall back on - the figures are already saved to local state, so the next
+            # ordinary check-in re-reports the attempt record (see Invoke-Checkin). The pending
+            # command stays queued because the server never heard a commandOutput, which means this
+            # retries on the next cycle rather than being silently dropped.
+            Write-AgentLog "On-demand data usage check could not be reported: $($_.Exception.Message)"
+        }
+        exit 0
+    }
+
     if ($command -eq '::UNINSTALL') {
         Invoke-UninstallCleanup
         try {
@@ -1391,6 +1438,129 @@ function Invoke-PendingCommand($command) {
     } finally {
         Remove-Item -Path $inputFile -Force -ErrorAction SilentlyContinue
     }
+}
+
+# The headless browser every scrape strategy below needs, in the order they prefer it (Edge first -
+# it ships with Windows, so it's the one that's actually there on a stock kiosk build; Chrome only
+# if Edge somehow isn't). Machine-wide install paths only: a per-user Chrome (%LOCALAPPDATA%) is
+# deliberately NOT probed, since the agent runs as SYSTEM and cannot count on any particular user's
+# profile being present. Shared rather than repeated inside each strategy so "which browsers do we
+# look for" has exactly one answer - the check-in's own attempt note (see Invoke-Checkin) needs to
+# ask the same question to report "no browser" as a distinct outcome from "the page told us
+# nothing", and a fourth divergent copy of the list is how those two quietly stop agreeing.
+function Get-DuScrapeBrowserPath {
+    $browserPaths = @(
+        "$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe",
+        "\${env:ProgramFiles(x86)}\\Microsoft\\Edge\\Application\\msedge.exe",
+        "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe",
+        "\${env:ProgramFiles(x86)}\\Google\\Chrome\\Application\\chrome.exe"
+    )
+    return $browserPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+
+# The last attempt's timestamp, outcome and (for faults) reason, kept locally so ordinary check-ins
+# can re-report it without re-running the scrape. Written twice per scrape - once up front to hold
+# the once-a-day gate even if the scrape never returns, once after with the real outcome.
+# A stable, host-specific spread across the anchor hour, not a random one - random would pick a
+# different offset every agent restart, which defeats the point: this PC's quiet slot has to stay
+# put day to day so it doesn't wander back into the pile-up it was moved out of. Confirmed live on
+# 24 Aug 2026: every device in the fleet anchored to the same 08:00 clock second, so eleven
+# headless browsers hit mydata.du.ae inside the same 19-minute window and eleven came back empty;
+# the one device that DIDN'T pile up that morning (a late gate on a machine returning from an
+# outage) was also the one that worked. Spreading each host's own anchor across the hour after 8 AM
+# is the direct fix for that collision, whatever exactly it is in the du portal or the headless
+# launch that a pile-up triggers.
+#
+# .NET's own string hashing is deliberately randomized per process (a security property, not a bug)
+# so it can't be used here - this hand-rolled FNV-1a is fixed across restarts by construction, and
+# the exact algorithm doesn't matter, only that it's stable and spreads hostnames widely.
+#
+# The classic C translation of this algorithm masks each step with \`-band 0xFFFFFFFF\` to wrap the
+# hash back into 32 bits - which is a silent no-op in PowerShell, confirmed live: 0xFFFFFFFF parses
+# as the Int32 literal -1 (all bits set, same as it would be reinterpreted as an unsigned 32-bit
+# value, but PowerShell never makes that reinterpretation), so ANDing with it never truncates
+# anything. Without the mask actually taking effect, $hash grows without bound every iteration -
+# unsigned overflow doesn't wrap in PowerShell the way it does in C, it promotes to a wider type
+# instead - and by a 14-character hostname it's a double past 2^53, at which point -band can no
+# longer even convert it to compare against the mask and throws outright. True modulo arithmetic
+# (\`% 4294967296\`, i.e. 2^32) doesn't have that ambiguity - it's the same operation on every
+# numeric type - so $hash is kept as an actual uint64 throughout instead: comfortably wide enough
+# that the largest possible intermediate product (a 32-bit value times the FNV prime) never
+# approaches uint64's own limit, so nothing here ever needs to overflow at all.
+function Get-DuJitterMinutes {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:COMPUTERNAME)
+    [uint64]$hash = 2166136261
+    foreach ($b in $bytes) { $hash = (($hash -bxor [uint64]$b) * 16777619) % 4294967296 }
+    return [int]($hash % 55)
+}
+
+function Save-DuScrapeState($at, $outcome, $note) {
+    New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+    (@{ at = $at; outcome = $outcome; note = $note } | ConvertTo-Json -Compress) |
+        Set-Content -Path $DuScrapeStateFile -Encoding utf8 -NoNewline
+}
+
+# ONE du scrape attempt, start to finish: runs it, records to local state what happened, and hands
+# the outcome back for the caller to put in a check-in payload. Shared by the once-a-day gate in
+# Invoke-Checkin and by the dashboard's on-demand "Check Data Usage" button (::DUCHECK below), so
+# the two cannot drift - an on-demand check that recorded a different shape of answer than the
+# scheduled one would be worse than having no button at all.
+function Invoke-DuScrape {
+    $at = (Get-Date).ToUniversalTime().ToString("o")
+    # Written BEFORE the scrape, same as this gate always was, so the once-a-day boundary advances
+    # even if what follows never returns - "pending" is what's left behind in that case, and it
+    # stays deliberately non-committal (the dashboard reads it as "no answer yet", not as a verdict
+    # about the connection) until the real outcome overwrites it below.
+    Save-DuScrapeState $at "pending" $null
+    $outcome = "error"
+    $note = $null
+    $du = $null
+    try {
+        if (-not (Get-DuScrapeBrowserPath)) {
+            # Kept separate from "the page told us nothing": this is a fixable fault on the PC, not
+            # a fact about its connection, and it's invisible from the software list alone - a
+            # per-user Chrome install shows up there but sits outside the paths a SYSTEM task can
+            # rely on, so the dashboard would otherwise show a browser that cannot actually be used.
+            $outcome = "nobrowser"
+            $note = "No machine-wide Chrome or Edge install found, so there was no browser to load mydata.du.ae with."
+            Write-AgentLog "DU data-usage scrape skipped: $note"
+        } else {
+            $du = Get-DuDataUsage
+            # A result object with every field empty counts as nothing found, not as success -
+            # otherwise it would stamp du_scraped_at server-side and have the dashboard claim the
+            # connection was checked and answered when it answered nothing.
+            if ($du -and ($du.phoneNumber -or $null -ne $du.dataUsedGb -or $null -ne $du.dataLeftGb -or $null -ne $du.dataTotalGb)) {
+                $outcome = "ok"
+                Write-AgentLog "DU data-usage scrape: phone=$($du.phoneNumber) used=$($du.dataUsedGb) left=$($du.dataLeftGb) total=$($du.dataTotalGb)"
+            } else {
+                # The browser ran and the page gave nothing back. For these PCs that is not an
+                # error - du identifies the subscriber from the connection itself, so a machine
+                # reaching the internet over Wi-Fi or the mall LAN has nothing to report and never
+                # will. Recorded as its own outcome so the Data Usage column can say exactly that
+                # instead of leaving the device on "Not checked" forever.
+                $outcome = "nodata"
+                $du = $null
+                Write-AgentLog "DU data-usage scrape returned nothing - no du SIM behind this connection."
+            }
+        }
+    } catch {
+        $outcome = "error"
+        $note = "Scrape failed: $($_.Exception.Message)"
+        Write-AgentLog "DU data-usage scrape failed: $($_.Exception.Message)"
+    }
+    Save-DuScrapeState $at $outcome $note
+    return [pscustomobject]@{ at = $at; outcome = $outcome; note = $note; du = $du }
+}
+
+# Copies a successful scrape's carrier figures into a check-in payload. Split out from the attempt
+# record itself (duScrapeAttemptedAt/Outcome/Note), which every check-in reports whether or not
+# there were any figures to go with it.
+function Add-DuFiguresToPayload($payload, $result) {
+    if (-not $result.du) { return }
+    if ($result.du.phoneNumber) { $payload.duPhoneNumber = $result.du.phoneNumber }
+    if ($null -ne $result.du.dataUsedGb) { $payload.duDataUsedGb = $result.du.dataUsedGb }
+    if ($null -ne $result.du.dataLeftGb) { $payload.duDataLeftGb = $result.du.dataLeftGb }
+    if ($null -ne $result.du.dataTotalGb) { $payload.duDataTotalGb = $result.du.dataTotalGb }
 }
 
 # Scrapes mydata.du.ae once a day for this SIM's own carrier-reported number/usage, as an
@@ -1721,13 +1891,7 @@ function Get-DuUsageFromLines($lines) {
 # generous but firm timeout (nothing here can hang indefinitely - the worst case is returning $null a
 # few seconds later than usual, letting the DOM method take over).
 function Get-DuDataUsageViaNetwork {
-    $browserPaths = @(
-        "$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe",
-        "\${env:ProgramFiles(x86)}\\Microsoft\\Edge\\Application\\msedge.exe",
-        "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe",
-        "\${env:ProgramFiles(x86)}\\Google\\Chrome\\Application\\chrome.exe"
-    )
-    $browser = $browserPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $browser = Get-DuScrapeBrowserPath
     if (-not $browser) { return $null }
 
     $port = Get-Random -Minimum 9300 -Maximum 9899
@@ -1865,13 +2029,7 @@ function Get-DuDataUsageViaNetwork {
 # doesn't pan out (browser too old to support the DevTools Protocol flags used there, a redirect or
 # different response shape than expected, etc.) rather than replaced outright.
 function Get-DuDataUsageViaDom {
-    $browserPaths = @(
-        "$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe",
-        "\${env:ProgramFiles(x86)}\\Microsoft\\Edge\\Application\\msedge.exe",
-        "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe",
-        "\${env:ProgramFiles(x86)}\\Google\\Chrome\\Application\\chrome.exe"
-    )
-    $browser = $browserPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $browser = Get-DuScrapeBrowserPath
     if (-not $browser) { return $null }
 
     # A fresh --user-data-dir every run, on top of --incognito, so there's no way a cookie/session
@@ -2066,6 +2224,7 @@ function Invoke-Checkin([switch]$Light) {
     #     rather than these waiting on the separately-timed 6-hourly schedule.
     $moderateFields = @('ip', 'anydeskId', 'teamviewerId', 'otherRemoteIds', 'broadsignPlayerId', 'grassfishBoxId', 'os', 'osVersion', 'loggedInUser', 'antivirus')
     $heavyFields = @('volumes', 'components', 'software')
+    $duFields = @('duScrapeAttemptedAt', 'duScrapeOutcome', 'duScrapeNote')
 
     # Only reported when the detected set actually CHANGES from last time (a local state file
     # tracks the last-reported titles) - the same stray Windows Update prompt sitting there for
@@ -2100,38 +2259,73 @@ function Invoke-Checkin([switch]$Light) {
         } catch { Write-Warning "Could not read cached command result: $($_.Exception.Message)" }
     }
 
-    # Launching a browser is slow, so this only runs once a day, anchored to a fixed 8:00 AM local
-    # clock time rather than "N hours since the last attempt" - a rolling window drifts earlier
-    # every day it's checked slightly early (a PollOnce cycle that happens to land at, say, 19:55
-    # would push the next day's scrape to 15:55, then 11:55, and so on), which stops lining up with
-    # a predictable time of day to look at the numbers. Comparing against the most recent 8 AM
-    # boundary instead means it fires within one ~20-minute poll cycle after 8 AM every day, no
-    # matter how the exact check-in timing has wandered. On a brand-new install (no state file yet)
+    # Launching a browser is slow, so this only runs once a day, anchored to this host's own slot in
+    # the 8-9 AM local hour (see Get-DuJitterMinutes) rather than "N hours since the last attempt" -
+    # a rolling window drifts earlier every day it's checked slightly early (a PollOnce cycle that
+    # happens to land at, say, 19:55 would push the next day's scrape to 15:55, then 11:55, and so
+    # on), which stops lining up with a predictable time of day to look at the numbers. Comparing
+    # against the most recent per-host boundary instead means it fires within one ~20-minute poll
+    # cycle after that host's slot every day, no matter how the exact check-in timing has wandered -
+    # and staggered rather than a flat 8:00 for every device, since a fleet-wide pile-up on the same
+    # clock second is exactly what took down 11 of 12 devices on 24 Aug 2026 (see Get-DuJitterMinutes
+    # for the evidence). On a brand-new install (no state file yet)
     # this is due immediately, same as before - the first-ever check-in already collects a baseline
     # reading rather than waiting for the next 8 AM. The gate still advances on every ATTEMPT, not
     # just success, so a temporarily-unreachable page retries at tomorrow's 8 AM rather than looping
     # every cycle for the rest of today.
-    $lastDuAttempt = if (Test-Path $DuScrapeStateFile) { [datetime](Get-Content -Path $DuScrapeStateFile -Raw -ErrorAction SilentlyContinue) } else { $null }
-    $todayEightAm = Get-Date -Hour 8 -Minute 0 -Second 0 -Millisecond 0
-    $lastEightAmBoundary = if ((Get-Date) -lt $todayEightAm) { $todayEightAm.AddDays(-1) } else { $todayEightAm }
-    $duDue = (-not $lastDuAttempt) -or ($lastDuAttempt -lt $lastEightAmBoundary)
-    if ($duDue) {
-        New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
-        Set-Content -Path $DuScrapeStateFile -Value (Get-Date).ToString("o") -Encoding utf8
-        try {
-            $du = Get-DuDataUsage
-            if ($du) {
-                if ($du.phoneNumber) { $data.duPhoneNumber = $du.phoneNumber }
-                if ($null -ne $du.dataUsedGb) { $data.duDataUsedGb = $du.dataUsedGb }
-                if ($null -ne $du.dataLeftGb) { $data.duDataLeftGb = $du.dataLeftGb }
-                if ($null -ne $du.dataTotalGb) { $data.duDataTotalGb = $du.dataTotalGb }
-                Write-AgentLog "DU data-usage scrape: phone=$($du.phoneNumber) used=$($du.dataUsedGb) left=$($du.dataLeftGb) total=$($du.dataTotalGb)"
-            } else {
-                Write-AgentLog "DU data-usage scrape found no browser or returned nothing."
-            }
-        } catch {
-            Write-AgentLog "DU data-usage scrape failed: $($_.Exception.Message)"
+    # The state file holds a JSON record of the last attempt ({ at, outcome, note }) rather than the
+    # bare timestamp it used to - the outcome has to survive between cycles so it can be re-reported
+    # on ordinary check-ins too (see below), not just on the one cycle a day that actually scrapes.
+    # Agents updating from an older version still have a plain timestamp sitting there, so that
+    # shape is still accepted and simply carries no outcome until the next scrape writes one.
+    $duState = $null
+    if (Test-Path $DuScrapeStateFile) {
+        $duRaw = Get-Content -Path $DuScrapeStateFile -Raw -ErrorAction SilentlyContinue
+        if ($duRaw) {
+            try { $duState = $duRaw | ConvertFrom-Json } catch { $duState = $null }
+            if (-not $duState) { try { $duState = [pscustomobject]@{ at = ([datetime]$duRaw).ToString("o"); outcome = $null; note = $null } } catch {} }
         }
+    }
+    $lastDuAttempt = if ($duState -and $duState.at) { try { [datetime]$duState.at } catch { $null } } else { $null }
+    # This host's own slot in the 8-9 AM hour (see Get-DuJitterMinutes) rather than a bare 8:00 for
+    # every device - the anchor is still "once a day, first thing in the morning" from an admin's
+    # point of view, just no longer the same clock second on all twelve machines at once.
+    $todayEightAm = (Get-Date -Hour 8 -Minute 0 -Second 0 -Millisecond 0).AddMinutes((Get-DuJitterMinutes))
+    $lastEightAmBoundary = if ((Get-Date) -lt $todayEightAm) { $todayEightAm.AddDays(-1) } else { $todayEightAm }
+    # A FAILED attempt no longer costs the whole day. The gate advancing on every attempt was right
+    # when a failure was indistinguishable from a success, but it meant one flaky browser launch at
+    # 08:11 put the next reading 24 hours away - confirmed live on PC-E89C258BBD2F, whose 8 AM
+    # attempt died with "DOM dump produced no HTML (browser exited without writing a page)" and had
+    # nothing queued to try again. Now that the outcome is recorded, a fault can be retried on its
+    # own merits: hourly, so a transient launch failure clears within the same morning instead of
+    # tomorrow, and bounded so it isn't relaunching a browser every 20-minute poll all day.
+    #
+    # 'nodata' is pointedly NOT retried. It is a stable, correct answer (no du SIM behind this
+    # connection), and retrying it hourly would launch a headless browser every hour, forever, on
+    # every Wi-Fi/LAN machine in the fleet to re-learn the same thing.
+    $duFaulted = @('nobrowser', 'error', 'pending') -contains $duState.outcome
+    $duRetryDue = $duFaulted -and $lastDuAttempt -and (((Get-Date) - $lastDuAttempt).TotalMinutes -ge 60)
+    $duDue = (-not $lastDuAttempt) -or ($lastDuAttempt -lt $lastEightAmBoundary) -or $duRetryDue
+    if ($duDue) {
+        $duResult = Invoke-DuScrape
+        Add-DuFiguresToPayload $data $duResult
+        # Feeds the attempt record straight into the reporting block below rather than
+        # setting those fields here, so a scrape that just ran and one that ran days ago
+        # travel exactly the same path into the payload.
+        $duState = $duResult
+    }
+
+    # Reported on EVERY check-in from the stored state, not only on the cycle that runs the scrape.
+    # Two reasons. The server used to hear about successful scrapes only, so a PC on Wi-Fi/LAN (which
+    # can never succeed, by design) looked identical to one whose scrape is broken, and both looked
+    # identical to one that had never tried - all three sat on "Not checked" indefinitely, which is
+    # how DR2-FOODCOURT spent four days quietly failing every morning with nothing to show for it.
+    # And re-sending it every cycle means an agent that has just updated reports what it already
+    # knows on its very next check-in, rather than the answer only appearing after the next 8 AM.
+    if ($duState -and $duState.at) {
+        $data.duScrapeAttemptedAt = $duState.at
+        if ($duState.outcome) { $data.duScrapeOutcome = $duState.outcome }
+        if ($duState.note) { $data.duScrapeNote = $duState.note }
     }
 
     # Now that $duDue is known, actually apply the moderate/heavy tiering decided above - removing
@@ -2164,6 +2358,19 @@ function Invoke-Checkin([switch]$Light) {
         }
     } else {
         foreach ($f in $heavyFields) { $data.Remove($f) }
+    }
+    # The scrape-attempt trio rides the same "only if it changed" rule as the moderate tier rather
+    # than a schedule of its own. It's re-derived from stored state on EVERY cycle, so an agent that
+    # has just updated (or one whose earlier check-in failed to send) reports what it already knows
+    # on its very next check-in instead of the answer waiting for tomorrow's 8 AM - but it only
+    # actually costs bytes on the cycles where the answer is new, which is at most once a day and
+    # usually far rarer, since a device's outcome rarely changes from one day to the next.
+    $duSnapshot = [ordered]@{}
+    foreach ($f in $duFields) { $duSnapshot[$f] = $data[$f] }
+    if (Test-AgentSnapshotChanged $duSnapshot $DuSnapshotFile) {
+        $snapshotsToCommit.Add(@{ data = $duSnapshot; file = $DuSnapshotFile })
+    } else {
+        foreach ($f in $duFields) { $data.Remove($f) }
     }
 
     $payload = $data | ConvertTo-Json -Depth 6 -Compress

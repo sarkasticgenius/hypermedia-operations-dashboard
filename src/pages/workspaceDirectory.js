@@ -380,14 +380,50 @@ function dataUsageCellHtml(d, sim) {
     // something. Calling the second case "Wi-Fi / LAN" would be a confident claim about a device we
     // know nothing about - and was wrong in practice on a real device that turned out to have a
     // perfectly good SIM, it just had not scraped yet.
-    if (d.du_scraped_at) {
-      return phoneHtml || '<span class="small muted" title="No SIM behind this PC - the scrape ran and du had no carrier data for this connection, so it reaches the internet over Wi-Fi/LAN.">Wi-Fi / LAN</span>';
+    // du_scrape_outcome (agent 3.1+) is what finally makes that distinction, rather than leaving it
+    // to be inferred from an absence: 'nodata' means the page was loaded and answered with nothing,
+    // which for these PCs IS the answer - no du SIM behind the connection, so it's on Wi-Fi or the
+    // mall LAN. A FAULT ('nobrowser'/'error') is not that, and must not borrow the same label: it
+    // says nothing about the connection, only that we failed to ask. 'pending' means an attempt
+    // started and never reported back, which is likewise not an answer.
+    if (d.du_scraped_at || d.du_scrape_outcome === 'nodata') {
+      const when = d.du_scrape_attempted_at || d.du_scraped_at;
+      return phoneHtml || `<span class="small muted" title="No SIM behind this PC - the scrape ran${when ? ` ${fmtRelativeTime(when)}` : ''} and du had no carrier data for this connection, so it reaches the internet over Wi-Fi/LAN.">Wi-Fi / LAN</span>`;
     }
-    return phoneHtml || '<span class="small muted" title="This PC has not been checked for a SIM yet - the scrape runs once a day, anchored to 08:00 local time. Once it has run, this becomes either a usage bar or Wi-Fi / LAN.">Not checked</span>';
+    if (d.du_scrape_outcome === 'nobrowser' || d.du_scrape_outcome === 'error') {
+      // Deliberately loud rather than muted, and deliberately NOT "Wi-Fi / LAN" - this is a fault
+      // on the PC that someone has to go and fix, and the whole reason the column exists is that a
+      // silently-failing check used to be invisible here for days at a time.
+      const detail = d.du_scrape_note || 'The scrape could not be completed.';
+      return phoneHtml || `<span class="small" style="color:#c0392b;" title="${esc(detail)}${d.du_scrape_attempted_at ? ` (last tried ${esc(fmtRelativeTime(d.du_scrape_attempted_at))})` : ''}">Check failed</span>`;
+    }
+    return phoneHtml || '<span class="small muted" title="This PC has not been checked for a SIM yet - the scrape runs once a day, anchored to 08:00 local time. Once it has run, this becomes a usage bar, Wi-Fi / LAN, or Check failed.">Not checked</span>';
   }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
   const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
   return `<div title="${fmtGb(usedGb)} of ${fmtGb(allocGb)} used${haveDu ? ' (DU)' : ''}">${phoneHtml}${stripedBarHtml(pct, color)}</div>`;
+}
+
+// One line in the Details modal saying what the once-a-day mydata.du.ae check last did, so the
+// reason a device has no usage figures is readable here instead of only in the agent log on the PC
+// itself. Older agents (pre-3.1) never reported attempts, so they have no outcome to show and get
+// the same "hasn't reported one yet" line as a genuinely new install - correct either way, since
+// from the dashboard's point of view nothing has been reported.
+function duScrapeStatusHtml(d) {
+  const when = d.du_scrape_attempted_at ? ` ${fmtRelativeTime(d.du_scrape_attempted_at)}` : '';
+  switch (d.du_scrape_outcome) {
+    case 'ok':
+      return `<div class="small muted" style="margin-top:6px;">SIM check ran${when} and du reported these figures.</div>`;
+    case 'nodata':
+      return `<div class="small muted" style="margin-top:6px;">SIM check ran${when} and du reported nothing for this connection - no du SIM behind this PC, so it reaches the internet over Wi-Fi/LAN.</div>`;
+    case 'nobrowser':
+    case 'error':
+      return `<div class="small" style="margin-top:6px;color:#c0392b;">SIM check failed${when}: ${esc(d.du_scrape_note || 'no reason reported')}</div>`;
+    case 'pending':
+      return `<div class="small muted" style="margin-top:6px;">SIM check started${when} but never reported an outcome - it was interrupted before it finished.</div>`;
+    default:
+      return '<div class="small muted" style="margin-top:6px;">This PC has not reported a SIM check yet. It runs once a day, on the first check-in after 08:00 local time.</div>';
+  }
 }
 
 function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
@@ -814,6 +850,36 @@ export async function clearWorkspacePendingCommand(deviceId) {
   } catch (e) { toast(e.message || 'Failed to clear command', 'error'); }
 }
 
+// "Check Now" on a device's Data Usage panel - re-runs that PC's mydata.du.ae check on demand
+// rather than waiting for its next 8 AM boundary, which is the difference between answering "what
+// is this PC using right now" in twenty minutes and answering it tomorrow.
+//
+// Queued as the ::DUCHECK marker rather than as a literal "Get-DuDataUsage" Run Command, because
+// only the marker's agent-side handler posts the result back as a real check-in payload - a plain
+// Run Command would print the figures into Last Command Output and leave this very panel unchanged.
+// Paired with force_checkin_requested for the same reason the Force button sets it: nothing here
+// can reach out to these PCs, so the fastest path is the agent's own 20-minute poll noticing.
+//
+// Refuses on a device that already has an unrelated command queued instead of silently discarding
+// it - there is only one pending_command slot per device, and quietly dropping someone's queued
+// install to service a usage check is not a trade this button gets to make on its own.
+export async function checkWorkspaceDataUsage(deviceId) {
+  try {
+    const devices = STATE.pageData.workspaceDevices?.data || [];
+    const device = devices.find((x) => x.id === deviceId);
+    const queued = device?.pending_command;
+    if (queued && queued !== '::DUCHECK') {
+      toast('This PC already has a different command queued - clear it first, then check data usage.', 'error');
+      return;
+    }
+    await updateWorkspaceDevice(deviceId, { pending_command: '::DUCHECK', force_checkin_requested: true });
+    await logAudit('Check Digital Directory data usage', device?.hostname || deviceId);
+    invalidate('workspaceDevices');
+    toast('Data usage check queued - this PC reports back within ~20 minutes.');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to queue data usage check', 'error'); }
+}
+
 // One button, two effects depending on what's already true of the device - not really "pull" as a
 // separate concept from "push": a forced check-in ALWAYS runs Invoke-Checkin, which (per the agent
 // shell) executes any pending_command as part of that same check-in before reporting back - so if
@@ -1008,8 +1074,12 @@ registerModal('workspaceDetails', (data) => {
   const { haveDu, allocGb, usedGb, leftGb, phone } = duUsageInfo(d, sim);
   const usagePct = allocGb ? Math.min(100, (usedGb / allocGb) * 100) : 0;
   const usageColor = usagePct >= 80 ? '#c0392b' : usagePct >= 70 ? '#e07a2c' : '#1f9d55';
+  // "No data usage reported yet" was the whole story this panel could tell before the agent
+  // reported its attempts, and it was the wrong one for every device that had been trying and
+  // getting nowhere. Says which of the four states this device is actually in instead.
+  const duStatusHtml = duScrapeStatusHtml(d);
   const dataUsageHtml = !phone && !allocGb
-    ? '<div class="empty">No data usage reported yet.</div>'
+    ? `<div class="empty">No data usage reported yet.</div>${duStatusHtml}`
     : `<div class="small" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;">
         ${phone ? `<span class="muted">Phone Number</span><span style="text-align:right;">${esc(phone)}</span>` : ''}
         <span class="muted">Total Data</span><span style="text-align:right;">${allocGb ? fmtGb(allocGb) : '&mdash;'}</span>
@@ -1017,7 +1087,8 @@ registerModal('workspaceDetails', (data) => {
         <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? fmtGb(leftGb) : '&mdash;'}</span>
         <span class="muted">${haveDu ? 'DU Last Update' : 'Last Update'}</span><span style="text-align:right;">${haveDu ? esc(fmtRelativeTime(d.du_scraped_at)) : (d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : '&mdash;')}</span>
       </div>
-      ${allocGb ? `<div style="margin-top:8px;">${stripedBarHtml(usagePct, usageColor)}</div>` : '<div class="small muted" style="margin-top:6px;">No plan size set yet - link a SIM Card, or wait for the usage figure to finish scraping.</div>'}`;
+      ${allocGb ? `<div style="margin-top:8px;">${stripedBarHtml(usagePct, usageColor)}</div>` : '<div class="small muted" style="margin-top:6px;">No plan size set yet - link a SIM Card, or wait for the usage figure to finish scraping.</div>'}
+      ${duStatusHtml}`;
 
   const volumes = d.volumes || [];
   const volumesHtml = volumes.length
@@ -1085,7 +1156,10 @@ registerModal('workspaceDetails', (data) => {
     <div class="card-head" style="margin-top:4px;"><h3 style="font-size:13px;">Remote Access</h3></div>
     <div style="margin-bottom:12px;">${remoteAccessCell(d)}</div>
 
-    <div class="card-head"><h3 style="font-size:13px;">Data Usage</h3></div>
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <h3 style="font-size:13px;">Data Usage</h3>
+      ${editOk ? `<button class="btn-sm" title="Re-run this PC's mydata.du.ae check now instead of waiting for tomorrow morning - picked up within ~20 minutes, and it uses up today's automatic check." onclick="App.checkWorkspaceDataUsage('${d.id}')">Check Now</button>` : ''}
+    </div>
     <div style="margin-bottom:12px;">${dataUsageHtml}</div>
 
     <div class="card-head"><h3 style="font-size:13px;">Matched Broadsign/Grassfish Screen</h3></div>
@@ -1108,7 +1182,11 @@ registerModal('workspaceDetails', (data) => {
     <div class="card-head"><h3 style="font-size:13px;">Software</h3></div>
     <div style="margin-bottom:12px;">${softwareHtml}</div>
 
-    ${d.pending_command ? `<div class="card-head"><h3 style="font-size:13px;">Pending Command${/^\s*::BATCH\r?\n/.test(d.pending_command) ? ' (Batch script)' : ''}</h3></div><div class="small" style="margin-bottom:12px;"><code style="white-space:pre-wrap;">${esc(stripBatchMarker(d.pending_command))}</code> - runs on the next check-in.</div>` : ''}
+    ${d.pending_command === '::DUCHECK'
+      // Not a command anyone typed, so showing it as one (a bare "::DUCHECK" in a code block) would
+      // read like a glitch rather than like the Check Now button they just pressed.
+      ? '<div class="card-head"><h3 style="font-size:13px;">Pending Command</h3></div><div class="small muted" style="margin-bottom:12px;">Data usage check - runs on the next check-in.</div>'
+      : d.pending_command ? `<div class="card-head"><h3 style="font-size:13px;">Pending Command${/^\s*::BATCH\r?\n/.test(d.pending_command) ? ' (Batch script)' : ''}</h3></div><div class="small" style="margin-bottom:12px;"><code style="white-space:pre-wrap;">${esc(stripBatchMarker(d.pending_command))}</code> - runs on the next check-in.</div>` : ''}
     ${d.last_command_output ? `<div class="card-head"><h3 style="font-size:13px;">Last Command Output</h3></div><div class="small muted" style="margin-bottom:4px;">${d.last_command_at ? esc(fmtRelativeTime(d.last_command_at)) : ''}</div><pre style="max-height:200px;overflow-y:auto;background:var(--bg);padding:8px;border-radius:6px;white-space:pre-wrap;font-size:11.5px;">${esc(d.last_command_output)}</pre>` : ''}
 
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>

@@ -201,6 +201,28 @@ Deno.serve(async (req) => {
       row.du_scraped_at = new Date().toISOString();
     }
 
+    // What the last ATTEMPT did, whether or not it parsed anything - the fields above only arrive
+    // on the days the scrape succeeds, which is why a PC on Wi-Fi/LAN (nothing to report, ever)
+    // used to be indistinguishable from one whose scrape is broken, and both from one that had
+    // never run it at all. The agent re-sends this trio whenever it changes rather than only on
+    // scrape days, so this is also the path by which a just-updated agent backfills what it knows.
+    // Timestamped by the AGENT, not on arrival like du_scraped_at above: it records when the scrape
+    // ran on the PC, which can be several cycles before the check-in that finally delivers it.
+    if (body.duScrapeAttemptedAt) {
+      const attemptedAt = new Date(String(body.duScrapeAttemptedAt));
+      if (!Number.isNaN(attemptedAt.getTime())) {
+        row.du_scrape_attempted_at = attemptedAt.toISOString();
+        // Constrained to the known set rather than stored as-sent, so the dashboard can branch on
+        // it safely and a mangled/rogue payload can't invent a state the UI has no branch for.
+        const outcome = String(body.duScrapeOutcome || '').toLowerCase();
+        row.du_scrape_outcome = ['ok', 'nodata', 'nobrowser', 'error', 'pending'].includes(outcome) ? outcome : null;
+        // Cleared when the attempt carries no note, so a fault reason doesn't outlive the fault.
+        row.du_scrape_note = typeof body.duScrapeNote === 'string' && body.duScrapeNote.length
+          ? body.duScrapeNote.slice(0, 500)
+          : null;
+      }
+    }
+
     // Slack-worthy the moment a FRESH DU reading (this check-in, not a stale earlier one) crosses
     // 80% - compared against what was stored before this same upsert, so it only fires once per
     // crossing rather than every day the figure stays over 80% (the next day's oldPct is already
