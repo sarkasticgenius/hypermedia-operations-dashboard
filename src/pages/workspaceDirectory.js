@@ -5,6 +5,7 @@ import { listSimCards } from '../data/simCards.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { canEdit, canDelete } from '../auth.js';
 import { AGENT_CANARY_HOSTNAMES } from './settings.js';
+import { remoteAccessUrl } from '../lib/remoteAccess.js';
 import { esc, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
@@ -52,29 +53,21 @@ function locationTile(loc, list) {
 // AnyDesk/TeamViewer IDs are directly actionable, not just displayed - a Connect link (the
 // installed client's own custom protocol handler on whoever's browsing the dashboard) plus a Copy
 // button, since not every admin will have the client set as the default handler for that scheme.
-function remoteIdChip(tool, id, protocol) {
+function remoteIdChip(tool, id) {
   if (!id) return '';
+  const url = remoteAccessUrl(tool, id);
   return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 6px;margin:1px 3px 1px 0;font-size:11px;white-space:nowrap;">
     <b>${esc(tool)}</b> <span style="font-family:monospace;">${esc(id)}</span>
-    <a href="${protocol}:${esc(id)}" title="Connect via ${esc(tool)}" style="text-decoration:none;">&#128279;</a>
+    ${url ? `<a href="${url}" title="Connect via ${esc(tool)}" style="text-decoration:none;">&#128279;</a>` : ''}
     <button type="button" class="link-btn" style="padding:0;" title="Copy ID" onclick="App.copyWorkspaceId(event,'${esc(id)}')">&#128203;</button>
   </span>`;
 }
 
-// A second/third AnyDesk id (a PC with more than one AnyDesk install - see Get-AllAnyDeskIds)
-// still needs a working Connect link, not just a bare id - inferred from the tool name since
-// other_remote_ids itself only carries {tool, id}, no protocol.
-function protocolForTool(tool) {
-  if (/^AnyDesk/i.test(tool)) return 'anydesk';
-  if (/^TeamViewer/i.test(tool)) return 'teamviewer10';
-  return '';
-}
-
 function remoteAccessCell(d) {
   const chips = [
-    remoteIdChip('AnyDesk', d.anydesk_id, 'anydesk'),
-    remoteIdChip('TeamViewer', d.teamviewer_id, 'teamviewer10'),
-    ...(d.other_remote_ids || []).map((r) => remoteIdChip(r.tool, r.id, protocolForTool(r.tool))),
+    remoteIdChip('AnyDesk', d.anydesk_id),
+    remoteIdChip('TeamViewer', d.teamviewer_id),
+    ...(d.other_remote_ids || []).map((r) => remoteIdChip(r.tool, r.id)),
   ].filter(Boolean).join('');
   return chips || '<span class="small muted">-</span>';
 }
@@ -86,11 +79,11 @@ function remoteAccessCell(d) {
 // above) since it already has the room for it.
 function remoteAccessButtonHtml(d) {
   const tools = [];
-  if (d.anydesk_id) tools.push({ tool: 'AnyDesk', id: d.anydesk_id, protocol: 'anydesk' });
-  if (d.teamviewer_id) tools.push({ tool: 'TeamViewer', id: d.teamviewer_id, protocol: 'teamviewer10' });
+  if (d.anydesk_id) tools.push({ tool: 'AnyDesk', id: d.anydesk_id, url: remoteAccessUrl('AnyDesk', d.anydesk_id) });
+  if (d.teamviewer_id) tools.push({ tool: 'TeamViewer', id: d.teamviewer_id, url: remoteAccessUrl('TeamViewer', d.teamviewer_id) });
   (d.other_remote_ids || []).forEach((r) => {
-    const protocol = protocolForTool(r.tool);
-    if (protocol) tools.push({ tool: r.tool, id: r.id, protocol });
+    const url = remoteAccessUrl(r.tool, r.id);
+    if (url) tools.push({ tool: r.tool, id: r.id, url });
   });
   if (!tools.length) return '<span class="small muted">-</span>';
   return `<button class="btn-sm" onclick='App.openRemoteAccessPicker(${jsonAttr({ tools, label: d.hostname })})'>Remote Access</button>`;

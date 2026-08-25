@@ -797,7 +797,44 @@ function Get-OtherRemoteIds($anydeskIds) {
     for ($i = 1; $i -lt $anydeskIds.Count; $i++) {
         $extra += @{ tool = "AnyDesk ($($i + 1))"; id = $anydeskIds[$i] }
     }
+    $rustDesk = Get-RustDeskId
+    if ($rustDesk) { $extra += @{ tool = "RustDesk"; id = $rustDesk } }
     return $extra
+}
+
+# RustDesk keeps its connect id in a TOML config rather than the registry, so this reads the file
+# rather than probing HKLM like the AnyDesk/TeamViewer lookups above.
+#
+# TWO locations, checked in this order and for a reason: when RustDesk is installed as a Windows
+# service (the normal unattended-access setup, and the only one that works on a signage PC with
+# nobody logged in) the authoritative id lives in the LocalService profile. The per-user copy only
+# exists where someone ran the desktop app interactively, and on a PC with several profiles each
+# one has its own - so the service copy is the id that actually answers a connection.
+#
+# Read as SYSTEM, which is what makes the LocalService path reachable at all; a per-user agent
+# could not see it. Falls back to scanning user profiles for the machines running RustDesk purely
+# interactively.
+function Get-RustDeskId {
+    $candidates = @("$env:WinDir\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml")
+    $userRoot = Join-Path $env:SystemDrive "Users"
+    if (Test-Path $userRoot) {
+        foreach ($profileDir in (Get-ChildItem -Path $userRoot -Directory -ErrorAction SilentlyContinue)) {
+            $candidates += (Join-Path $profileDir.FullName "AppData\Roaming\RustDesk\config\RustDesk.toml")
+        }
+    }
+    foreach ($path in $candidates) {
+        if (-not (Test-Path $path)) { continue }
+        $raw = Get-Content -Path $path -Raw -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        # Anchored to the start of a line so it matches the top-level "id" key and not enc_id,
+        # id_server or any other key that merely ends in "id". Quotes are single in RustDesk's own
+        # output but double is accepted too, since it is still valid TOML and costs nothing here.
+        foreach ($line in ($raw -split "?
+")) {
+            if ($line -match "^\s*id\s*=\s*['\"]?([A-Za-z0-9]+)['\"]?\s*$") { return $matches[1] }
+        }
+    }
+    return $null
 }
 
 # Same discovery approach Broadsign's own player leaves on disk (and the same fallback file/keyword

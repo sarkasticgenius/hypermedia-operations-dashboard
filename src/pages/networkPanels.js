@@ -11,6 +11,7 @@ import { supabase } from '../supabaseClient.js';
 import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtRelativeTime } from '../lib/format.js';
+import { remoteAccessUrl } from '../lib/remoteAccess.js';
 import { aiooSiteCategory, aiooSiteDisplayName, SITE_CATEGORIES } from '../lib/aiooSiteCategory.js';
 import { sortTh, applySort, colWidthCh, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 
@@ -703,11 +704,11 @@ function deviceByBoxId() {
 function remoteAccessOptionsFor(device) {
   if (!device) return [];
   const tools = [];
-  if (device.anydesk_id) tools.push({ tool: 'AnyDesk', id: device.anydesk_id, protocol: 'anydesk' });
-  if (device.teamviewer_id) tools.push({ tool: 'TeamViewer', id: device.teamviewer_id, protocol: 'teamviewer10' });
+  if (device.anydesk_id) tools.push({ tool: 'AnyDesk', id: device.anydesk_id, url: remoteAccessUrl('AnyDesk', device.anydesk_id) });
+  if (device.teamviewer_id) tools.push({ tool: 'TeamViewer', id: device.teamviewer_id, url: remoteAccessUrl('TeamViewer', device.teamviewer_id) });
   (device.other_remote_ids || []).forEach((r) => {
-    const protocol = /^AnyDesk/i.test(r.tool) ? 'anydesk' : /^TeamViewer/i.test(r.tool) ? 'teamviewer10' : '';
-    if (protocol) tools.push({ tool: r.tool, id: r.id, protocol });
+    const url = remoteAccessUrl(r.tool, r.id);
+    if (url) tools.push({ tool: r.tool, id: r.id, url });
   });
   return tools;
 }
@@ -723,7 +724,7 @@ registerModal('remoteAccessPicker', (data) => {
   const rows = tools.map((t) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
     <span><b>${esc(t.tool)}</b> <span style="font-family:monospace;" class="small muted">${esc(t.id)}</span></span>
     <span style="display:flex;gap:6px;">
-      <a class="btn-sm" style="text-decoration:none;" href="${t.protocol}:${esc(t.id)}" title="Connect via ${esc(t.tool)}" onclick="App.closeModal()">Connect</a>
+      <a class="btn-sm" style="text-decoration:none;" href="${t.url || ''}" title="Connect via ${esc(t.tool)}" onclick="App.closeModal()">Connect</a>
       <button type="button" class="btn-sm" title="Copy ID" onclick="App.copyWorkspaceId(event,'${esc(t.id)}')">Copy</button>
     </span>
   </div>`).join('');
