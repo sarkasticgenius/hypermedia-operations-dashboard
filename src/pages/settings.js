@@ -1668,6 +1668,32 @@ function Invoke-PendingCommand($command) {
 # look for" has exactly one answer - the check-in's own attempt note (see Invoke-Checkin) needs to
 # ask the same question to report "no browser" as a distinct outcome from "the page told us
 # nothing", and a fourth divergent copy of the list is how those two quietly stop agreeing.
+# Flags shared by all three scrape strategies to keep a once-a-day page load from costing far more
+# than the page itself. These PCs are on metered cellular SIMs, so this is real money, not tidiness.
+#
+#   --disable-component-update      Chromium otherwise checks for (and downloads) component updates
+#                                   on startup - widevine, certificate revocation lists, origin
+#                                   trials and so on. That is dwarfed by nothing on a page this
+#                                   small, and it repeats on EVERY launch.
+#   --disable-background-networking Stops the variations/field-trial and metrics fetches that a
+#                                   fresh launch fires off before the page is even requested.
+#   --blink-settings=imagesEnabled=false
+#                                   The scrape reads text - a phone number and two usage figures.
+#                                   Images are pure waste here, and du's portal is image-heavy.
+#   --no-default-browser-check      One more startup round-trip nobody needs on a headless run.
+$DuBrowserFrugalArgs = @("--disable-component-update", "--disable-background-networking", "--disable-sync", "--no-default-browser-check", "--blink-settings=imagesEnabled=false")
+
+# A STABLE profile directory, reused across scrapes, rather than a fresh GUID one each time.
+#
+# The original reason for a throwaway profile was to guarantee no cookie or session from a previous
+# scrape (or a different SIM) could make du show stale or wrong-account data. --incognito already
+# guarantees that - nothing is written back to the profile at all - so the throwaway directory was
+# buying isolation that was already paid for, while forcing Chromium through full first-run setup on
+# every single launch: creating the profile tree, seeding preferences, and fetching components. That
+# first run is a large part of why Edge showed up as one of the heaviest data consumers on a signage
+# PC nobody browses on. Reusing one directory keeps the isolation and drops the repeated setup.
+$DuBrowserProfileDir = Join-Path $StateDir "du-browser-profile"
+
 function Get-DuScrapeBrowserPath {
     $browserPaths = @(
         "$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -1865,6 +1891,12 @@ function Invoke-DuScrape {
         $note = "Scrape failed: $($_.Exception.Message)"
         Write-AgentLog "DU data-usage scrape failed: $($_.Exception.Message)"
     }
+    # A reused browser profile is a speed/data optimisation, not something worth defending when it
+    # goes wrong: a Chromium profile can be left locked by a killed process or subtly corrupted, and
+    # that would otherwise turn one bad run into a permanent failure. Cleared on any non-ok outcome
+    # so the next attempt rebuilds it from scratch - paying the first-run cost once, on the rare
+    # failure path, rather than on every single scrape.
+    if ($outcome -ne "ok") { Remove-Item -Path $DuBrowserProfileDir -Recurse -Force -ErrorAction SilentlyContinue }
     Save-DuScrapeState $at $outcome $note
     return [pscustomobject]@{ at = $at; outcome = $outcome; note = $note; du = $du }
 }
@@ -2023,7 +2055,7 @@ function Get-DuDataUsageViaSelenium {
     $driverPath = $chromeAndDriver.driver
 
     $port = Get-Random -Minimum 9900 -Maximum 10299
-    $tempProfile = Join-Path $env:TEMP ("du-scrape-wd-" + [guid]::NewGuid().ToString("N"))
+    $tempProfile = $DuBrowserProfileDir
     # Redirected for the same reason as the CDP method above: chromedriver/msedgedriver announce
     # themselves on stdout and pass the browser's own stderr through, which would otherwise print
     # over an interactive installer's console. Everything this method needs comes back over the
@@ -2059,7 +2091,7 @@ function Get-DuDataUsageViaSelenium {
                     browserName = $chromeAndDriver.browserName
                     "$($chromeAndDriver.optionsKey)" = @{
                         binary = $chromeAndDriver.browser
-                        args = @("--headless=new", "--disable-gpu", $privateFlag, "--no-first-run", "--disable-extensions", "--user-data-dir=$tempProfile")
+                        args = @("--headless=new", "--disable-gpu", $privateFlag, "--no-first-run", "--disable-extensions", "--user-data-dir=$tempProfile") + $DuBrowserFrugalArgs
                     }
                 }
             }
@@ -2115,7 +2147,10 @@ function Get-DuDataUsageViaSelenium {
     } finally {
         if ($sessionId) { try { Invoke-RestMethod -Uri "$base/session/$sessionId" -Method Delete -TimeoutSec 5 | Out-Null } catch {} }
         if ($driverProc) { try { Stop-Process -Id $driverProc.Id -Force -ErrorAction SilentlyContinue } catch {} }
-        Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
+        # NOT deleted here any more - $DuBrowserProfileDir is deliberately reused so Chromium
+        # skips first-run setup on every scrape (see its definition). It is cleared only when a
+        # scrape FAILS, in Invoke-DuScrape, so a corrupted or lock-wedged profile still
+        # self-heals on the next attempt instead of failing forever.
         Remove-Item -Path $wdOut -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $wdErr -Force -ErrorAction SilentlyContinue
     }
@@ -2212,7 +2247,7 @@ function Get-DuDataUsageViaNetwork {
     if (-not $browser) { return $null }
 
     $port = Get-Random -Minimum 9300 -Maximum 9899
-    $tempProfile = Join-Path $env:TEMP ("du-scrape-cdp-" + [guid]::NewGuid().ToString("N"))
+    $tempProfile = $DuBrowserProfileDir
     # Browsers write a lot of unsolicited diagnostics to stderr - "DevTools listening on ws://...",
     # and on Edge a stream of SmartScreen DNS-resolver timeouts for whatever URL is being loaded.
     # Without redirecting, a Start-Process child INHERITS this console, so during an interactive
@@ -2225,7 +2260,7 @@ function Get-DuDataUsageViaNetwork {
     $client = $null
     try {
         $proc = Start-Process -FilePath $browser -ArgumentList @(
-            "--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=$tempProfile",
+            "--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=$tempProfile", "--disable-component-update", "--disable-background-networking", "--disable-sync", "--no-default-browser-check", "--blink-settings=imagesEnabled=false",
             "--no-first-run", "--disable-extensions", "--remote-debugging-port=$port"
         ) -PassThru -WindowStyle Hidden -RedirectStandardOutput $cdpOut -RedirectStandardError $cdpErr
 
@@ -2334,7 +2369,10 @@ function Get-DuDataUsageViaNetwork {
     } finally {
         if ($client) { try { $client.Dispose() } catch {} }
         if ($proc) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {} }
-        Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
+        # NOT deleted here any more - $DuBrowserProfileDir is deliberately reused so Chromium
+        # skips first-run setup on every scrape (see its definition). It is cleared only when a
+        # scrape FAILS, in Invoke-DuScrape, so a corrupted or lock-wedged profile still
+        # self-heals on the next attempt instead of failing forever.
         Remove-Item -Path $cdpOut -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $cdpErr -Force -ErrorAction SilentlyContinue
     }
@@ -2349,12 +2387,12 @@ function Get-DuDataUsageViaDom {
     $browser = Get-DuScrapeBrowserPath
     if (-not $browser) { return $null }
 
-    # A fresh --user-data-dir every run, on top of --incognito, so there's no way a cookie/session
+    # A stable --user-data-dir (see $DuBrowserProfileDir), on top of --incognito, so there's no way a cookie/session
     # from a previous scrape (or a different SIM that used to be in this PC) lingers and causes
     # mydata.du.ae to show stale or wrong-account data - --incognito alone is normally enough, but a
     # brand-new profile directory removes any doubt, and it's deleted again right after since
     # nothing here needs to persist between runs anyway.
-    $tempProfile = Join-Path $env:TEMP ("du-scrape-" + [guid]::NewGuid().ToString("N"))
+    $tempProfile = $DuBrowserProfileDir
     $dumpFile = Join-Path $env:TEMP ("du-dump-" + [guid]::NewGuid().ToString("N") + ".html")
     $dumpErrFile = "$dumpFile.err"
     try {
@@ -2368,7 +2406,7 @@ function Get-DuDataUsageViaDom {
         # the schedule runs it". Every other external call in this file is already bounded; this was
         # the last one that wasn't. Output goes to a file because --dump-dom writes the page to
         # stdout, which Start-Process can only capture by redirecting it.
-        $dumpArgs = @("--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=\`"$tempProfile\`"", "--no-first-run", "--disable-extensions", "--virtual-time-budget=10000", "--dump-dom", "http://mydata.du.ae/")
+        $dumpArgs = @("--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=\`"$tempProfile\`"", "--no-first-run", "--disable-extensions") + $DuBrowserFrugalArgs + @("--virtual-time-budget=10000", "--dump-dom", "http://mydata.du.ae/")
         $bp = Start-Process -FilePath $browser -ArgumentList $dumpArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $dumpFile -RedirectStandardError $dumpErrFile
         if (-not $bp.WaitForExit(60000)) {
             Stop-Process -Id $bp.Id -Force -ErrorAction SilentlyContinue
@@ -2406,7 +2444,10 @@ function Get-DuDataUsageViaDom {
     } catch {
         return $null
     } finally {
-        Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
+        # NOT deleted here any more - $DuBrowserProfileDir is deliberately reused so Chromium
+        # skips first-run setup on every scrape (see its definition). It is cleared only when a
+        # scrape FAILS, in Invoke-DuScrape, so a corrupted or lock-wedged profile still
+        # self-heals on the next attempt instead of failing forever.
         Remove-Item -Path $dumpFile -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $dumpErrFile -Force -ErrorAction SilentlyContinue
     }
