@@ -815,23 +815,28 @@ function Get-OtherRemoteIds($anydeskIds) {
 # could not see it. Falls back to scanning user profiles for the machines running RustDesk purely
 # interactively.
 function Get-RustDeskId {
-    $candidates = @("$env:WinDir\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml")
+    # Every backslash below is DOUBLED and the regex is single-quoted, because this whole script is
+    # built inside a JavaScript template literal, which consumes backslash escape sequences before
+    # PowerShell ever sees them - including inside comments, which is how the FIRST attempt at this
+    # very comment broke the script. v48 shipped with single backslashes here and the result was not
+    # a subtly wrong path but a script that would not parse AT ALL, which stopped three agents dead.
+    $candidates = @("$env:WinDir\\ServiceProfiles\\LocalService\\AppData\\Roaming\\RustDesk\\config\\RustDesk.toml")
     $userRoot = Join-Path $env:SystemDrive "Users"
     if (Test-Path $userRoot) {
         foreach ($profileDir in (Get-ChildItem -Path $userRoot -Directory -ErrorAction SilentlyContinue)) {
-            $candidates += (Join-Path $profileDir.FullName "AppData\Roaming\RustDesk\config\RustDesk.toml")
+            $candidates += (Join-Path $profileDir.FullName "AppData\\Roaming\\RustDesk\\config\\RustDesk.toml")
         }
     }
     foreach ($path in $candidates) {
         if (-not (Test-Path $path)) { continue }
-        $raw = Get-Content -Path $path -Raw -ErrorAction SilentlyContinue
-        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
-        # Anchored to the start of a line so it matches the top-level "id" key and not enc_id,
-        # id_server or any other key that merely ends in "id". Quotes are single in RustDesk's own
-        # output but double is accepted too, since it is still valid TOML and costs nothing here.
-        foreach ($line in ($raw -split "?
-")) {
-            if ($line -match "^\s*id\s*=\s*['\"]?([A-Za-z0-9]+)['\"]?\s*$") { return $matches[1] }
+        # Read as LINES rather than -Raw plus a split: the line-ending pattern a split needs has to
+        # survive this template, and in v48 it did not - it arrived as two real newlines. Get-Content
+        # already returns lines, so there is nothing left to escape.
+        foreach ($line in (Get-Content -Path $path -ErrorAction SilentlyContinue)) {
+            # Anchored to a whole line so it matches the top-level "id" key, not enc_id or id_server.
+            # Single-quoted so the pattern is literal, with '' for the quote character RustDesk
+            # actually writes - a double-quoted PowerShell string cannot carry a bare " here.
+            if ($line -match '^\\s*id\\s*=\\s*[''"]?([A-Za-z0-9]+)[''"]?\\s*$') { return $matches[1] }
         }
     }
     return $null
@@ -1244,7 +1249,7 @@ if ($Tray) {
 function Stop-TrayProcesses {
     try {
         Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match '-Tray\b' } |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match '-Tray\\b' } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     } catch {}
 }
@@ -1374,6 +1379,27 @@ function Invoke-SelfUpdate($OriginalArgs) {
         $incoming = & $normalize $resp.script
         New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
         if ($incoming -ne $current) {
+            # NEVER overwrite a working agent with a script that cannot run. PowerShell refuses to
+            # execute a file with a syntax error AT ALL - not the bad line, the whole file - so a
+            # malformed publish does not degrade the agent, it deletes it: no check-in, no poll, and
+            # critically no self-update, which is the very mechanism that would otherwise deliver
+            # the fix. The agent cannot heal itself because the healing code is in the file that
+            # will not parse, so recovery needs a human at each machine.
+            #
+            # That is exactly what v48 did to three test PCs on 25 Aug 2026 (a backslash eaten by
+            # the JavaScript template this script is generated from). Parsing the incoming text
+            # first turns that class of mistake back into a no-op: the agent keeps running the last
+            # known-good version, says so in its log, and picks up the corrected build automatically
+            # on a later cycle. Costs one parse of ~150KB on the rare cycle where a version differs.
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseInput($resp.script, [ref]$null, [ref]$parseErrors) | Out-Null
+            if ($parseErrors -and $parseErrors.Count -gt 0) {
+                $firstError = $parseErrors[0]
+                Write-AgentLog "REFUSED published version $publishedVersion - it has $($parseErrors.Count) syntax error(s), first at line $($firstError.Extent.StartLineNumber): $($firstError.Message). Staying on the current version."
+                # Deliberately does NOT record the version as installed, so the next cycle re-checks
+                # and adopts the moment a corrected build is published.
+                return
+            }
             Set-Content -Path $InstalledScriptPath -Value $resp.script -Encoding utf8 -NoNewline
             # Written BEFORE the re-exec, so the child process sees the new version as already
             # installed and skips straight past its own self-update instead of fetching again.
@@ -1542,6 +1568,27 @@ function Invoke-PendingCommand($command) {
     # attempt, so a manual check at 14:00 means the next automatic one is tomorrow morning, not
     # twenty minutes later.
     if ($command -eq '::DUCHECK') {
+        # Hand it to the user session first, exactly as the scheduled path does. A queued command
+        # runs as SYSTEM, and headless Edge renders nothing in Session 0 - confirmed live, even
+        # about:blank came back as 0 bytes - so scraping inline here would fail on every PC that
+        # has a logged-in user, which is precisely the case this button is pressed in. Clearing the
+        # local gate first is what makes the delegated run consider a scrape due at all; without it
+        # a device that already answered today would simply decline and the button would do nothing.
+        Remove-Item -Path $DuScrapeStateFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $DuHandoffFile -Force -ErrorAction SilentlyContinue
+        if (Start-DuScrapeInUserSession) {
+            # That run reports its own figures directly (see the -DuScrapeOnce branch), so there is
+            # nothing to POST here - only the acknowledgement that it was started.
+            $ackPayload = @{ hostname = $env:COMPUTERNAME; light = $true; commandOutput = "Data usage check started in the logged-in user's session - figures follow within a minute." }
+            try {
+                Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body ($ackPayload | ConvertTo-Json -Compress) -ContentType "application/json" \`
+                    -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 30 | Out-Null
+            } catch {}
+            exit 0
+        }
+        # No interactive session to hand it to (nobody logged in). Falling back to scraping here is
+        # still worth doing - it costs one browser launch and correctly records 'error' rather than
+        # a bogus "no SIM" verdict, so the dashboard shows why instead of going quiet.
         $duResult = Invoke-DuScrape
         $duPayload = @{
             hostname = $env:COMPUTERNAME
@@ -2750,10 +2797,10 @@ if ($DuScrapeOnce) {
 if ($RunCommandFile) {
     $command = Get-Content -Path $RunCommandFile -Raw -ErrorAction SilentlyContinue
     if ($null -eq $command) { $command = '' }
-    $isBatch = $command -match '^\s*::BATCH\r?\n'
+    $isBatch = $command -match '^\\s*::BATCH\\r?\\n'
     try {
         if ($isBatch) {
-            $batchBody = $command -replace '^\s*::BATCH\r?\n', ''
+            $batchBody = $command -replace '^\\s*::BATCH\\r?\\n', ''
             New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
             Set-Content -Path $PendingBatchFile -Value $batchBody -Encoding ascii
             $output = & cmd.exe /c "\`"$PendingBatchFile\`"" 2>&1 | Out-String
