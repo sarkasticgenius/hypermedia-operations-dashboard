@@ -160,7 +160,7 @@ function renderListView(visible) {
   const rows = sorted.map((t) => `
     <tr>
       <td>${esc(t.title)}</td>
-      <td>${esc(t.location || '-')}</td>
+      <td class="tleft">${esc(t.location || '-')}</td>
       <td class="tcenter"><span class="badge ${STATUS_BADGE[t.status] || 'b-gray'}">${esc(t.status)}</span></td>
       <td>${esc(t.priority)}</td>
       <td>${fmtDate(t.date_reported)}</td>
@@ -174,7 +174,7 @@ function renderListView(visible) {
     <div class="card">
       ${visible.length === 0 ? '<div class="empty">No tickets match your filters.</div>' : `
         <table>
-          <thead><tr>${sortTh('ticketsList', 'title', 'Title')}${sortTh('ticketsList', 'location', 'Location')}${sortTh('ticketsList', 'status', 'Status', null, 'center')}${sortTh('ticketsList', 'priority', 'Priority')}${sortTh('ticketsList', 'reported', 'Reported')}<th></th></tr></thead>
+          <thead><tr>${sortTh('ticketsList', 'title', 'Title')}${sortTh('ticketsList', 'location', 'Location', null, 'left')}${sortTh('ticketsList', 'status', 'Status', null, 'center')}${sortTh('ticketsList', 'priority', 'Priority')}${sortTh('ticketsList', 'reported', 'Reported')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

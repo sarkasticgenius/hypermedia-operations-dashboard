@@ -26,7 +26,7 @@ export function renderMetroPic() {
     return `
       <tr>
         <td>${esc(m.station)}</td>
-        <td>${esc(m.pic_name || '-')}</td>
+        <td class="tleft">${esc(m.pic_name || '-')}</td>
         <td>${esc(m.phone || '-')}</td>
         <td>${fmtDate(m.validity_start)}</td>
         <td>${fmtDate(m.validity_end)}</td>
@@ -53,7 +53,7 @@ export function renderMetroPic() {
     <div class="card">
       ${pics.length === 0 ? '<div class="empty">No Metro PICs yet.</div>' : `
         <table>
-          <thead><tr>${sortTh('metroPics', 'station', 'Company Name')}${sortTh('metroPics', 'picName', 'PIC Name')}${sortTh('metroPics', 'phone', 'Phone')}${sortTh('metroPics', 'validityStart', 'Valid From')}${sortTh('metroPics', 'validityEnd', 'Valid Until')}${sortTh('metroPics', 'daysToExpire', 'Days to Expire', null, 'center')}${sortTh('metroPics', 'status', 'Status', null, 'center')}<th></th></tr></thead>
+          <thead><tr>${sortTh('metroPics', 'station', 'Company Name')}${sortTh('metroPics', 'picName', 'PIC Name', null, 'left')}${sortTh('metroPics', 'phone', 'Phone')}${sortTh('metroPics', 'validityStart', 'Valid From')}${sortTh('metroPics', 'validityEnd', 'Valid Until')}${sortTh('metroPics', 'daysToExpire', 'Days to Expire', null, 'center')}${sortTh('metroPics', 'status', 'Status', null, 'center')}<th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}

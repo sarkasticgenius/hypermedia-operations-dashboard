@@ -143,10 +143,10 @@ export function renderAssetsInventory() {
     <tr>
       ${bulkOk ? `<td style="width:28px;"><input type="checkbox" ${selectedIds.has(r.id) ? 'checked' : ''} onchange="App.toggleAssetInvSelection('${r.id}', this.checked)"></td>` : ''}
       <td><b>${esc(r.name)}</b>${r.source_asset_id ? `<div class="small muted">ID: ${esc(r.source_asset_id)}</div>` : ''}</td>
-      <td>${r.venue ? `${brandLogoTag(r.venue, 18)} ` : ''}${esc(r.venue || '-')}<div class="small muted">${esc(r.location || '')}</div></td>
+      <td class="tleft">${r.venue ? `${brandLogoTag(r.venue, 18)} ` : ''}${esc(r.venue || '-')}<div class="small muted">${esc(r.location || '')}</div></td>
       <td>${esc(r.category || '-')}</td>
       <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
-      <td>${esc(r.player_type || '-')}${r.player_box_id ? `<div class="small muted">${esc(r.player_box_id)}</div>` : ''}${r.last_poll_utc ? `<div class="small muted">Last poll: ${esc(new Date(r.last_poll_utc).toLocaleString())}</div>` : ''}</td>
+      <td class="tleft">${esc(r.player_type || '-')}${r.player_box_id ? `<div class="small muted">${esc(r.player_box_id)}</div>` : ''}${r.last_poll_utc ? `<div class="small muted">Last poll: ${esc(new Date(r.last_poll_utc).toLocaleString())}</div>` : ''}</td>
       <td class="tcenter">${r.pdooh_ready ? '<span class="badge b-green">Yes</span>' : '<span class="muted small">No</span>'}</td>
       <td>${r.contractor_id ? esc(contractorLabel(contractors, r.contractor_id)) : '<span class="muted small">-</span>'}</td>
       <td>${ticketCountByAsset[r.id] ? `<button class="link-btn" onclick="App.openAssetTicketHistory('${r.id}')">${ticketCountByAsset[r.id]}</button>` : '<span class="muted small">0</span>'}</td>
@@ -219,7 +219,7 @@ export function renderAssetsInventory() {
     </div>` : ''}
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr>${bulkOk ? `<th><input type="checkbox" ${allPageSelected ? 'checked' : ''} onchange="App.toggleAssetInvSelectAllOnPage(this.checked)" title="Select all on this page"></th>` : ''}${sortTh('assetsInventory', 'name', 'Name')}${sortTh('assetsInventory', 'venue', 'Venue / Location')}${sortTh('assetsInventory', 'category', 'Category')}${sortTh('assetsInventory', 'format', 'Format')}${sortTh('assetsInventory', 'player', 'Player')}${sortTh('assetsInventory', 'pdooh', 'pDOOH', null, 'center')}${sortTh('assetsInventory', 'contractor', 'Contractor')}<th>Tickets</th><th></th></tr></thead>
+        <thead><tr>${bulkOk ? `<th><input type="checkbox" ${allPageSelected ? 'checked' : ''} onchange="App.toggleAssetInvSelectAllOnPage(this.checked)" title="Select all on this page"></th>` : ''}${sortTh('assetsInventory', 'name', 'Name')}${sortTh('assetsInventory', 'venue', 'Venue / Location', null, 'left')}${sortTh('assetsInventory', 'category', 'Category')}${sortTh('assetsInventory', 'format', 'Format')}${sortTh('assetsInventory', 'player', 'Player', null, 'left')}${sortTh('assetsInventory', 'pdooh', 'pDOOH', null, 'center')}${sortTh('assetsInventory', 'contractor', 'Contractor')}<th>Tickets</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
       ${pager}
