@@ -15,7 +15,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Parses the agent shell and collector scripts with a REAL PowerShell parser before anything
+  # ships. Both are written as JavaScript template literals inside src/pages/settings.js, so JS
+  # consumes backslash escapes before PowerShell ever sees the text - forget to double one and the
+  # result is not a subtly wrong script but one that will not PARSE. PowerShell refuses to run such
+  # a file in its entirety, which means the agent loses its check-in, its poll AND its self-update:
+  # it cannot fetch the fix, because fetching is done by the file that will not parse. That shipped
+  # as agent v48 on 25 Aug 2026 and took three machines offline until each was repaired by hand.
+  #
+  # Runs on windows-latest with `shell: powershell` deliberately - that is Windows PowerShell 5.1,
+  # the same engine the agents actually run, rather than PowerShell 7, which accepts some syntax 5.1
+  # does not. Checking against the wrong engine would be a check that passes and still ships a
+  # broken agent.
+  verify-agent-script:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Renders the scripts exactly as the app does - by evaluating the real template literals - so
+      # what is parsed here went through identical escaping. Verified against a live published build:
+      # same line count, differing only in the placeholder secret/URL values.
+      - run: node scripts/generate-agent-script.mjs .ci-out
+      - name: Parse-check the generated PowerShell
+        shell: powershell
+        run: |
+          $failed = $false
+          foreach ($file in @('.ci-out\collector.generated.ps1', '.ci-out\agent.generated.ps1')) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors -and $errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "::error file=src/pages/settings.js::$file has $($errors.Count) PowerShell syntax error(s)"
+              foreach ($e in ($errors | Select-Object -First 10)) {
+                Write-Host "::error file=src/pages/settings.js::  line $($e.Extent.StartLineNumber): $($e.Message)"
+              }
+            } else {
+              Write-Host "OK - $file parses cleanly"
+            }
+          }
+          if ($failed) { exit 1 }
+
   build:
+    needs: verify-agent-script
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
