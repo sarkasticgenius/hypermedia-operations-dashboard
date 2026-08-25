@@ -264,39 +264,58 @@ export async function uploadWorkspaceInstaller(fileInputId, argsInputId, targetI
 // Cross-references this PC with the screen it drives in the Broadsign/Grassfish Console, by the
 // same Player Box ID those syncs themselves match on (see broadsign-sync/grassfish-sync) - so an
 // admin can see "this PC is behind screen X at location Y" without leaving Digital Directory.
-function matchedScreenFor(d, assetInventory) {
-  if (!Array.isArray(assetInventory)) return null;
+function matchedScreensFor(d, assetInventory) {
+  if (!Array.isArray(assetInventory)) return [];
+  const matches = [];
   const id = (d.broadsign_player_id || '').trim();
   const gfId = (d.grassfish_box_id || '').trim();
+  // BOTH consoles are checked, not just the first that hits. This used to return on the Broadsign
+  // match, so a PC running both players only ever reported Broadsign and its Grassfish box was
+  // invisible even though the agent had collected it - confirmed on HM-OFFICE-TEST, which carries
+  // a Broadsign player id AND grassfish box "Follower2".
   if (id) {
-    const row = assetInventory.find((r) => r.player_type === 'Broadsign' && String(r.player_box_id || '').trim() === id);
-    if (row) return { source: 'Broadsign', row };
+    // filter, not find: one player box commonly drives MANY screens (DR2-FOODCOURT's single
+    // Broadsign id maps to 17 rows), and naming one arbitrary panel misrepresents the rest.
+    const rows = assetInventory.filter((r) => r.player_type === 'Broadsign' && String(r.player_box_id || '').trim() === id);
+    if (rows.length) matches.push({ source: 'Broadsign', rows });
   }
   if (gfId) {
-    const row = assetInventory.find((r) => r.player_type === 'Grassfish' && String(r.player_box_id || '').trim().toLowerCase() === gfId.toLowerCase());
-    if (row) return { source: 'Grassfish', row };
+    const rows = assetInventory.filter((r) => r.player_type === 'Grassfish' && String(r.player_box_id || '').trim().toLowerCase() === gfId.toLowerCase());
+    if (rows.length) matches.push({ source: 'Grassfish', rows });
   }
-  return null;
+  return matches;
+}
+
+// One console's worth of matches as text: the screen name when a player drives exactly one, or a
+// count plus venue when it drives several - listing seventeen names would swamp the cell.
+function matchedScreenLabel({ source, rows }) {
+  if (rows.length === 1) {
+    const r = rows[0];
+    return `${source}: ${r.name}${r.venue ? ` @ ${r.venue}` : ''}`;
+  }
+  const venues = [...new Set(rows.map((r) => r.venue).filter(Boolean))];
+  const where = venues.length === 1 ? venues[0] : `${venues.length} venues`;
+  return `${source}: ${rows.length} screens @ ${where}`;
 }
 
 // Location, preferring what an admin typed but falling back to the venue of the screen this PC
-// actually drives (matched by Broadsign/Grassfish Player Box ID - see matchedScreenFor).
+// actually drives (matched by Broadsign/Grassfish Player Box ID - see matchedScreensFor).
 //
 // Almost no device has the manual Location set, because it is a curated field nobody fills in,
 // while the matched screen already knows exactly where the machine is - DESKTOP-8S3G9M2 showed "-"
 // on a PC sitting in Palm Dubai Ruby. Marked as inferred rather than shown as if it were entered,
 // so a wrong Broadsign match reads as a wrong match instead of as a wrong address.
-function locationCellHtml(d, matched) {
+function locationCellHtml(d, matches) {
   if (d.location) return esc(d.location);
-  const venue = matched?.row?.venue;
+  const first = (matches || [])[0];
+  const venue = first?.rows?.[0]?.venue;
   if (!venue) return '-';
-  return `<span title="From the matched ${esc(matched.source)} screen, not set manually">${esc(venue)} <span class="muted">(screen)</span></span>`;
+  return `<span title="From the matched ${esc(first.source)} screen, not set manually">${esc(venue)} <span class="muted">(screen)</span></span>`;
 }
 
-function matchedScreenHtml(matched) {
-  if (!matched) return '<span class="small muted">-</span>';
-  const { source, row } = matched;
-  return `<span class="small">${esc(source)}: <b>${esc(row.name)}</b>${row.venue ? ` @ ${esc(row.venue)}` : ''}</span>`;
+function matchedScreenHtml(matches) {
+  if (!matches || !matches.length) return '<span class="small muted">-</span>';
+  return matches.map((m) => `<div class="small">${esc(matchedScreenLabel(m))}</div>`).join('');
 }
 
 // A diagonally-striped fill with the percentage centered inside the bar itself, rather than as
@@ -466,7 +485,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
   const online = isOnline(d);
   const problemCount = visibleProblems(d).length;
   // Resolved once and reused by both the Location and Matched Screen cells below.
-  const matched = matchedScreenFor(d, assetInventory);
+  const matches = matchedScreensFor(d, assetInventory);
   // The whole row opens Details. Handled on the <tr> rather than by styling the hostname as a link,
   // so the name keeps its plain bold treatment and the target is the entire row instead of a few
   // characters of text. The handler ignores clicks that landed on a control (see
@@ -479,12 +498,12 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
          spilling into the next column while still being readable on hover. -->
     <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(d.hostname)}"><b>${esc(d.hostname)}</b></td>
     <td>${volumeCellHtml(d)}</td>
-    <td class="small">${locationCellHtml(d, matched)}</td>
+    <td class="small">${locationCellHtml(d, matches)}</td>
     <td class="small" style="white-space:nowrap;">${esc(d.ip_address || '-')}</td>
     <td>${remoteAccessButtonHtml(d)}</td>
     <td>${dataUsageCellHtml(d, sim)}</td>
     <td style="white-space:nowrap;">${statusDotHtml(online, true)}</td>
-    <td>${matchedScreenHtml(matched)}</td>
+    <td>${matchedScreenHtml(matches)}</td>
     <td class="small">${esc(d.os_name || '-')}${d.os_version ? ` <span class="muted">${esc(d.os_version)}</span>` : ''}</td>
     <td class="small">${esc(d.logged_in_user || '-')}</td>
     <td>${problemCount ? `<span class="badge b-red">${problemCount} issue${problemCount === 1 ? '' : 's'}</span>` : '<span class="badge b-blue">OK</span>'}</td>
@@ -651,10 +670,7 @@ export function renderWorkspaceDirectory() {
       if (!vols.length) return -1;
       return Math.max(...vols.map((v) => (v.sizeGb > 0 ? ((v.sizeGb - v.freeGb) / v.sizeGb) * 100 : 0)));
     },
-    screen: (d) => {
-      const m = matchedScreenFor(d, assetInventory);
-      return m ? `${m.name || ''} ${m.venue || ''}`.trim() : '';
-    },
+    screen: (d) => matchedScreensFor(d, assetInventory).map(matchedScreenLabel).join(' '),
   });
 
   const editOk = canEdit('workspaceDirectory');
@@ -1164,7 +1180,7 @@ registerModal('workspaceDetails', (data) => {
   const simCards = STATE.pageData.simCardsForDirectory?.data || [];
   const d = devices.find((x) => x.id === data.deviceId);
   if (!d) return `<div class="empty">Device not found.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
-  const matched = matchedScreenFor(d, assetInventory);
+  const matches = matchedScreensFor(d, assetInventory);
   const editOk = canEdit('workspaceDirectory');
   const sim = simCards.find((s) => s.id === d.sim_card_id);
   const { haveDu, allocGb, usedGb, leftGb, phone } = duUsageInfo(d, sim);
@@ -1266,7 +1282,10 @@ registerModal('workspaceDetails', (data) => {
 
     <div class="card-head"><h3 style="font-size:13px;">Matched Broadsign/Grassfish Screen</h3></div>
     <div class="small" style="margin-bottom:12px;">
-      ${matched ? `${esc(matched.source)}: <b>${esc(matched.row.name)}</b>${matched.row.venue ? ` @ ${esc(matched.row.venue)}` : ''}` : `<span class="muted">No match${(d.broadsign_player_id || d.grassfish_box_id) ? ` (ID ${esc(d.broadsign_player_id || d.grassfish_box_id)} not found in Asset Inventory)` : ' - no Broadsign/Grassfish player detected on this PC'}</span>`}
+      ${matches.length
+        ? matches.map((m) => `<div>${esc(matchedScreenLabel(m))}</div>`).join('')
+        : `<span class="muted">No match${(d.broadsign_player_id || d.grassfish_box_id) ? ` (ID ${esc([d.broadsign_player_id, d.grassfish_box_id].filter(Boolean).join(', '))} not found in Asset Inventory)` : ' - no Broadsign/Grassfish player detected on this PC'}</span>`}
+      ${(d.broadsign_player_id || d.grassfish_box_id) ? `<div class="small muted" style="margin-top:4px;">${[d.broadsign_player_id ? `Broadsign player: ${esc(d.broadsign_player_id)}` : '', d.grassfish_box_id ? `Grassfish box: ${esc(d.grassfish_box_id)}` : ''].filter(Boolean).join(' &middot; ')}</div>` : ''}
     </div>
 
     <div class="card-head"><h3 style="font-size:13px;">Problems</h3></div>
