@@ -1751,6 +1751,27 @@ function Get-DuJitterMinutes {
     return [int]($hash % 55)
 }
 
+# Applies a one-shot secret handed down by workspace-directory-force-status. Currently only an
+# AnyDesk password, which AnyDesk reads from STDIN rather than a command-line argument - which
+# is also why it never appears in a process command line, where any local user could read it
+# with Get-CimInstance Win32_Process.
+#
+# The value is never logged, never echoed and never written to disk - only whether it worked.
+function Set-AnyDeskPassword($password) {
+    $exe = @("$env:ProgramFiles\\AnyDesk\\AnyDesk.exe", "\${env:ProgramFiles(x86)}\\AnyDesk\\AnyDesk.exe", "$env:ProgramData\\AnyDesk\\AnyDesk.exe") |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $exe) { return "AnyDesk is not installed on this PC." }
+    try {
+        # cmd's pipe rather than PowerShell's: PowerShell's pipeline passes .NET objects, and
+        # AnyDesk wants raw bytes on stdin.
+        $null = cmd.exe /c "echo $password| \`"$exe\`" --set-password" 2>&1
+        if ($LASTEXITCODE -eq 0) { return "OK" }
+        return "AnyDesk exited with code $LASTEXITCODE."
+    } catch {
+        return "Could not run AnyDesk: $($_.Exception.Message)"
+    }
+}
+
 function Save-DuScrapeState($at, $outcome, $note) {
     New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
     New-Item -ItemType Directory -Path (Split-Path -Parent $Script:DuStateTarget) -Force -ErrorAction SilentlyContinue | Out-Null
@@ -3051,6 +3072,23 @@ if ($PollOnce) {
     try {
         $resp = Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10
         $forceRequested = $resp -and $resp.force
+        # A one-shot secret rides along on this same poll rather than costing its own request -
+        # see the endpoint's own comment for why it travels here and not as a queued command.
+        if ($resp -and $resp.secret -and $resp.secret.kind -eq "anydeskPassword") {
+            $applyResult = Set-AnyDeskPassword $resp.secret.value
+            # Confirmed ONLY on success, so a failed attempt leaves the delivery in place to be
+            # retried next poll rather than silently discarding the admin's password. The server
+            # reaps it by age if it can never be applied.
+            if ($applyResult -eq "OK") {
+                Write-AgentLog "AnyDesk password updated from the dashboard."
+                try {
+                    Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME + "&applied=" + $resp.secret.id) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10 | Out-Null
+                } catch {}
+            } else {
+                # The reason is logged; the password itself never is.
+                Write-AgentLog "Could not update the AnyDesk password: $applyResult"
+            }
+        }
     } catch {}
     if ($forceRequested) {
         Invoke-Checkin

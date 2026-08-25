@@ -855,6 +855,44 @@ export function openWorkspaceDetailsFromRow(event, deviceId) {
   openModal('workspaceDetails', { deviceId });
 }
 
+export function openWorkspaceAnyDeskPasswordModal(deviceId) {
+  openModal('workspaceAnyDeskPassword', { deviceId });
+}
+
+// Sends a new AnyDesk password to ONE device.
+//
+// The value goes into agent_secret_deliveries, never into pending_command. A queued Run Command
+// would leave a live remote-access credential in three long-lived clear-text places - the device's
+// pending_command, the audit_log detail for queueing it, and afterwards last_command_output - all
+// readable by anyone with dashboard or database access. agent_secret_deliveries has no SELECT
+// policy at all, so a password can be sent and never read back, and the row is destroyed the moment
+// the agent confirms it applied.
+//
+// The audit entry deliberately records only that a change was sent, and to which host.
+export async function saveWorkspaceAnyDeskPassword(event, deviceId) {
+  event.preventDefault();
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const device = devices.find((d) => d.id === deviceId);
+  if (!device) { toast('Device not found', 'error'); return; }
+  const pw = document.getElementById('wd-anydesk-pw').value || '';
+  const pw2 = document.getElementById('wd-anydesk-pw2').value || '';
+  if (pw !== pw2) { toast('The two passwords do not match.', 'error'); return; }
+  // AnyDesk itself accepts short passwords; refusing them here is a deliberate floor, since these
+  // machines are reachable by anyone who knows the ID.
+  if (pw.length < 8) { toast('Use at least 8 characters - this password grants remote control of the PC.', 'error'); return; }
+  try {
+    const { error } = await supabase.from('agent_secret_deliveries')
+      .insert({ hostname: device.hostname, kind: 'anydeskPassword', secret: pw });
+    if (error) throw error;
+    await logAudit('Send AnyDesk password', device.hostname);
+    closeModal();
+    toast(`Password sent to ${device.hostname} - it applies within a minute or two, then the dashboard shows when it changed.`);
+    setState({});
+  } catch (e) {
+    toast(e.message || 'Could not send the password', 'error');
+  }
+}
+
 export function openWorkspaceRenameModal(deviceId) {
   openModal('workspaceRename', { deviceId });
 }
@@ -1264,6 +1302,10 @@ registerModal('workspaceDetails', (data) => {
   return `
     <h3>${esc(d.hostname)}</h3>
     <div class="small muted" style="margin-bottom:10px;">${d.last_seen ? `Last check-in ${esc(fmtRelativeTime(d.last_seen))}` : 'Never checked in'} &middot; Agent v${esc(d.agent_version || '-')}</div>
+    ${editOk ? `<div class="small" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span>${d.anydesk_id ? `AnyDesk password${d.anydesk_password_set_at ? ` last changed ${esc(fmtRelativeTime(d.anydesk_password_set_at))}` : ' has not been changed from here'}.` : 'No AnyDesk detected on this PC.'}</span>
+      ${d.anydesk_id ? `<button class="btn-sm" onclick="App.openWorkspaceAnyDeskPasswordModal('${d.id}')">Set AnyDesk Password</button>` : ''}
+    </div>` : ''}
     ${editOk ? `<div class="small" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;${d.updates_disabled ? 'padding:8px 10px;border-radius:6px;background:var(--row-alt);border-left:3px solid #c0392b;' : ''}">
       <span>${d.updates_disabled
         ? `<b>Agent updates held</b>${d.updates_pinned_version ? ` at v${d.updates_pinned_version}` : ''} - this PC will not self-update until re-enabled.`
@@ -1312,6 +1354,37 @@ registerModal('workspaceDetails', (data) => {
 
     <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
   `;
+});
+
+registerModal('workspaceAnyDeskPassword', (data) => {
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const device = devices.find((d) => d.id === data.deviceId);
+  if (!device) return `<div class="empty">Device not found.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
+  const setAt = device.anydesk_password_set_at ? fmtRelativeTime(device.anydesk_password_set_at) : null;
+  return `
+    <h3>Set AnyDesk Password - ${esc(device.hostname)}</h3>
+    <form onsubmit="App.saveWorkspaceAnyDeskPassword(event, '${device.id}')" autocomplete="off">
+      <div class="field">
+        <label>New AnyDesk password</label>
+        <input id="wd-anydesk-pw" type="password" autocomplete="new-password" spellcheck="false" required>
+        <div class="small muted" style="margin-top:4px;">This sets the unattended-access password AnyDesk asks for when connecting to this PC.</div>
+      </div>
+      <div class="field">
+        <label>Confirm password</label>
+        <input id="wd-anydesk-pw2" type="password" autocomplete="new-password" spellcheck="false" required>
+      </div>
+      <div class="small" style="border-left:3px solid #e07a2c;padding:8px 12px;margin:12px 0;background:var(--bg);">
+        The password is sent to that one PC and destroyed as soon as it confirms the change. It is
+        never stored in the device's command history, never written to the audit log, and cannot be
+        read back from this dashboard by anyone - <b>including you</b>. Note it down somewhere safe
+        before sending, because nothing here can show it to you again.
+        ${setAt ? `<div style="margin-top:6px;">Last changed from here <b>${esc(setAt)}</b>.</div>` : ''}
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+        <button type="submit" class="btn-sm">Send to this PC</button>
+      </div>
+    </form>`;
 });
 
 registerModal('workspaceRename', (data) => {
