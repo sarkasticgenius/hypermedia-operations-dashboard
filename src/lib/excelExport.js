@@ -4,8 +4,10 @@ import ExcelJS from 'exceljs';
 // can't do either) - this builds a styled .xlsx matching the customer's own reference export:
 // Campaign Name, Start, End, Campaign Days, Loop Count, Status, then one merged "Mon YYYY" header
 // per month spanning its day-number ("01".."31") sub-columns, active-day cells filled yellow, and
-// a trailing TOTAL / "Number of Campaigns" row per section. Includes a Campaign ID column (the
-// campaign's internal `contract` id from AdLive) matching the on-screen tables in trafficSheet.js.
+// a trailing TOTAL / "Number of Campaigns" row per section. The campaign's internal `contract` id
+// is deliberately NOT a column here: it is an AdLive-internal key, not something the people reading
+// this sheet identify a campaign by, and it pushed the name - the column they actually scan - away
+// from the left edge. Still used internally to key FOC/Marketing overrides (see trafficSheet.js).
 // Campaigns are split into two labeled sections (Active Campaigns / FOC / Marketing), same
 // division already shown on-screen in Today's Active Campaigns (see isFocMarketingCampaign in
 // trafficSheet.js), each with its own subtotal row. The plain `xlsx` package used elsewhere in
@@ -13,7 +15,6 @@ import ExcelJS from 'exceljs';
 // write - confirmed by a round-trip test - so this uses ExcelJS instead, the only one of the two
 // that actually persists fills/borders/merges to a real file.
 const META_COLUMNS = [
-  { label: 'Campaign ID', width: 16, value: (c) => c.contract || '' },
   { label: 'Campaign Name', width: 45, value: (c) => c.campaignName || '' },
   { label: 'Start', width: 13, value: (c) => c.startDate || '' },
   { label: 'End', width: 13, value: (c) => c.endDate || '' },

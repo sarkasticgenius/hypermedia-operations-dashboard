@@ -709,7 +709,6 @@ function todayListTable(campaigns, emptyText, rosterByNetwork, isFocSection) {
     }
     return `
     <tr>
-      <td class="tsheet-nowrap">${esc(c.contract || '')}</td>
       <td class="tleft">${esc(c.campaignName || '')}</td>
       <td class="tleft">${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]), 18, brandFallbackForVenue((c.__matchedVenues || [])[0])) : ''} ${esc(describeMatchedVenues(c, rosterByNetwork))}</td>
       <td class="tsheet-nowrap">${statusBadge(c.status)}</td>
@@ -720,8 +719,8 @@ function todayListTable(campaigns, emptyText, rosterByNetwork, isFocSection) {
   `;
   }).join('');
   return `
-    <table><thead><tr><th>Campaign ID</th><th class="tleft">Campaign Name</th><th class="tleft">Venue(s)</th><th class="tsheet-nowrap">Status</th><th class="tsheet-nowrap">Start</th><th class="tsheet-nowrap">End</th>${admin ? '<th></th>' : ''}</tr></thead>
-    <tbody>${rows || `<tr><td colspan="${admin ? 7 : 6}"><div class="empty">${esc(emptyText)}</div></td></tr>`}</tbody></table>
+    <table><thead><tr><th class="tleft">Campaign Name</th><th class="tleft">Venue(s)</th><th class="tsheet-nowrap">Status</th><th class="tsheet-nowrap">Start</th><th class="tsheet-nowrap">End</th>${admin ? '<th></th>' : ''}</tr></thead>
+    <tbody>${rows || `<tr><td colspan="${admin ? 6 : 5}"><div class="empty">${esc(emptyText)}</div></td></tr>`}</tbody></table>
   `;
 }
 
@@ -772,9 +771,9 @@ export function renderDayGrid(campaigns, startDate, endDate) {
   }
   const dateGroups = groupDatesByMonth(dates);
 
-  const monthHeadRow = `<tr><th colspan="7"></th>${dateGroups.map((g) => `<th colspan="${g.dates.length}" class="tsheet-month-head">${esc(formatMonthLabel(g.month))}</th>`).join('')}</tr>`;
+  const monthHeadRow = `<tr><th colspan="6"></th>${dateGroups.map((g) => `<th colspan="${g.dates.length}" class="tsheet-month-head">${esc(formatMonthLabel(g.month))}</th>`).join('')}</tr>`;
   const dayHeadRow = `<tr>
-    <th>Campaign ID</th><th class="tleft">Campaign Name</th><th>Start</th><th>End</th><th class="tcenter">Days</th><th class="tcenter">Loop Count</th><th>Status</th>
+    <th class="tleft">Campaign Name</th><th>Start</th><th>End</th><th class="tcenter">Days</th><th class="tcenter">Loop Count</th><th>Status</th>
     ${dates.map((d) => `<th class="tsheet-day">${esc(d.slice(8, 10))}</th>`).join('')}
   </tr>`;
 
@@ -782,7 +781,6 @@ export function renderDayGrid(campaigns, startDate, endDate) {
     const dayMap = {};
     (c.days || []).forEach((d) => { dayMap[d.date] = d.spots; });
     return `<tr>
-      <td class="tsheet-nowrap">${esc(c.contract || '')}</td>
       <td class="tleft">${esc(c.campaignName || '')}</td>
       <td>${esc(c.startDate || '')}</td>
       <td>${esc(c.endDate || '')}</td>
