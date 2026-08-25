@@ -54,6 +54,11 @@ const corsHeaders = {
 // Gates the DU-style usage computation to roughly once a day, independent of the 6-hourly check-in
 // cadence - a bit under 24h so it reliably fires on the day's 4th check-in even with some drift.
 const USAGE_INTERVAL_MS = 20 * 60 * 60 * 1000;
+// Absolute safety net alongside the 80%-of-plan alert below. 80% of a 43GB plan is still 8.6GB
+// left - fine. 80% of TOTEM-8's 6GB plan is 1.2GB left - already tight. This catches the case the
+// percentage alert can miss on a small plan: genuinely about to run out, in real GB, regardless of
+// plan size.
+const LOW_LEFT_GB_FLOOR = 0.3;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -131,7 +136,8 @@ Deno.serve(async (req) => {
     const components = (body.components && typeof body.components === 'object') ? body.components : {};
 
     const { data: existing } = await adminClient.from('workspace_devices')
-      .select('network_bytes_total, data_used_mb_period, data_usage_computed_at, du_data_used_gb, du_data_total_gb').eq('hostname', hostname).maybeSingle();
+      .select('id, network_bytes_total, data_used_mb_period, data_usage_computed_at, du_data_used_gb, du_data_total_gb, du_data_left_gb, broadsign_player_id, grassfish_box_id')
+      .eq('hostname', hostname).maybeSingle();
 
     // Base fields: present on literally every check-in, light or not (see the header comment for
     // the three-tier cadence) - hostname/agent_version/last_seen/force_checkin_requested are
@@ -239,12 +245,13 @@ Deno.serve(async (req) => {
     }
 
     // Slack-worthy the moment a FRESH DU reading (this check-in, not a stale earlier one) crosses
-    // 80% - compared against what was stored before this same upsert, so it only fires once per
-    // crossing rather than every day the figure stays over 80% (the next day's oldPct is already
-    // >=80, so the condition below is false again). Computed here, before the upsert, since both
-    // the old (from `existing`, fetched above) and new (about to be written) values are on hand;
-    // the actual Slack call happens AFTER the upsert succeeds, so a failed write can't still result
-    // in a notification about data that was never actually saved.
+    // 80%, OR drops under the absolute LOW_LEFT_GB_FLOOR - compared against what was stored before
+    // this same upsert, so each only fires once per crossing rather than every day it stays past
+    // the line (the next day's "old" value is already past it too, so the condition is false
+    // again). Computed here, before the upsert, since both the old (from `existing`, fetched
+    // above) and new (about to be written) values are on hand; the actual Slack call happens AFTER
+    // the upsert succeeds, so a failed write can't still result in a notification about data that
+    // was never actually saved.
     const newUsedGb = Number(row.du_data_used_gb ?? existing?.du_data_used_gb);
     const newTotalGb = Number(row.du_data_total_gb ?? existing?.du_data_total_gb);
     const oldUsedGb = Number(existing?.du_data_used_gb);
@@ -253,16 +260,59 @@ Deno.serve(async (req) => {
     const oldPct = oldTotalGb > 0 ? (oldUsedGb / oldTotalGb) * 100 : null;
     const crossed80 = row.du_data_used_gb !== undefined && newPct !== null && newPct >= 80 && (oldPct === null || oldPct < 80);
 
+    const newLeftGbRaw = row.du_data_left_gb ?? existing?.du_data_left_gb;
+    const newLeftGb = newLeftGbRaw == null ? null : Number(newLeftGbRaw);
+    const oldLeftGbRaw = existing?.du_data_left_gb;
+    const oldLeftGb = oldLeftGbRaw == null ? null : Number(oldLeftGbRaw);
+    const crossedLowFloor = row.du_data_left_gb !== undefined && newLeftGb !== null && newLeftGb < LOW_LEFT_GB_FLOOR
+      && (oldLeftGb === null || oldLeftGb >= LOW_LEFT_GB_FLOOR);
+
     const { data: saved, error } = await adminClient.from('workspace_devices')
-      .upsert(row, { onConflict: 'hostname' }).select('pending_command').single();
+      .upsert(row, { onConflict: 'hostname' }).select('id, pending_command').single();
     if (error) throw error;
 
-    if (crossed80) {
+    // One row per device per Dubai calendar day, so day-over-day and month-over-month usage can be
+    // computed later - workspace_devices.du_data_used_gb is overwritten every scrape, so without
+    // this nothing keeps yesterday's number. Only written on cycles that actually carried a fresh
+    // DU reading (same gate as du_scraped_at above), and upserted per day since the scrape runs at
+    // most once a day - a second check-in the same day just refines that day's row.
+    if (saved?.id && row.du_data_used_gb !== undefined) {
+      const usageDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(new Date());
+      const { error: historyErr } = await adminClient.from('workspace_device_du_usage_daily').upsert({
+        device_id: saved.id,
+        hostname,
+        usage_date: usageDate,
+        used_gb: row.du_data_used_gb ?? null,
+        total_gb: row.du_data_total_gb ?? null,
+        left_gb: row.du_data_left_gb ?? null,
+        scraped_at: row.du_scraped_at ?? null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'device_id,usage_date' });
+      if (historyErr) console.error('du usage history upsert failed', historyErr.message);
+    }
+
+    if (crossed80 || crossedLowFloor) {
       try {
+        // Leads with the matched SCREEN and VENUE this PC drives, not the hostname - "TOTEM-8"
+        // means nothing to whoever reads Slack; "Totem 8 @ Dubai Mall" tells them where to
+        // actually go. Falls back to the bare hostname only when there's no match. Same match
+        // (Player Box ID against Asset Inventory) workspace-directory-alert-scan uses for its
+        // alerts, so every Slack alert agrees on how a device resolves to a place.
+        let placeLabel = hostname;
+        const boxIds = [existing?.broadsign_player_id, existing?.grassfish_box_id].map((v) => (v || '').trim()).filter(Boolean);
+        if (boxIds.length) {
+          const { data: assets } = await adminClient.from('asset_inventory')
+            .select('name, venue, player_box_id').in('player_box_id', boxIds).limit(1);
+          const match = (assets || [])[0] as any;
+          if (match) placeLabel = match.venue ? `${match.name} @ ${match.venue}` : match.name;
+        }
+        const reasons: string[] = [];
+        if (crossed80) reasons.push(`used ${newPct!.toFixed(0)}% of its SIM data plan (${newUsedGb.toFixed(2)} of ${newTotalGb.toFixed(2)} GB)`);
+        if (crossedLowFloor) reasons.push(`only ${newLeftGb!.toFixed(2)} GB left on its SIM`);
         const cronRes = await adminClient.from('app_settings').select('value').eq('key', '_cronSecret').single();
         const cronSecret = cronRes.data?.value?.secret;
         const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
-        const text = `${hostname} has used ${newPct!.toFixed(0)}% of its SIM data plan (${newUsedGb.toFixed(2)} of ${newTotalGb.toFixed(2)} GB).`;
+        const text = `${placeLabel} has ${reasons.join(' and ')}.`;
         await fetch(`${supabaseUrl}/functions/v1/slack-notify`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'apikey': anonKey, 'Authorization': `Bearer ${anonKey}`, 'x-cron-secret': cronSecret || '' },
