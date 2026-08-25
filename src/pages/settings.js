@@ -2665,7 +2665,10 @@ function Invoke-Checkin([switch]$Light) {
     #     SAME 8 AM boundary as the DU scrape below, independent of Light/full - whichever check-in
     #     first crosses 8 AM carries them (if changed), same as it carries that day's DU numbers,
     #     rather than these waiting on the separately-timed 6-hourly schedule.
-    $moderateFields = @('ip', 'anydeskId', 'teamviewerId', 'otherRemoteIds', 'broadsignPlayerId', 'grassfishBoxId', 'os', 'osVersion', 'loggedInUser', 'antivirus')
+    # anydeskInstalls was omitted here when it was first added, which meant it rode along on every
+    # 20-minute check-in uncapped instead of being gated like every other moderate field - exactly
+    # the silent per-cycle data cost this tiering exists to prevent.
+    $moderateFields = @('ip', 'anydeskId', 'teamviewerId', 'otherRemoteIds', 'anydeskInstalls', 'broadsignPlayerId', 'grassfishBoxId', 'os', 'osVersion', 'loggedInUser', 'antivirus')
     $heavyFields = @('volumes', 'components', 'software')
     $duFields = @('duScrapeAttemptedAt', 'duScrapeOutcome', 'duScrapeNote')
 
