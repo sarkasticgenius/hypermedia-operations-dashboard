@@ -279,6 +279,20 @@ function matchedScreenFor(d, assetInventory) {
   return null;
 }
 
+// Location, preferring what an admin typed but falling back to the venue of the screen this PC
+// actually drives (matched by Broadsign/Grassfish Player Box ID - see matchedScreenFor).
+//
+// Almost no device has the manual Location set, because it is a curated field nobody fills in,
+// while the matched screen already knows exactly where the machine is - DESKTOP-8S3G9M2 showed "-"
+// on a PC sitting in Palm Dubai Ruby. Marked as inferred rather than shown as if it were entered,
+// so a wrong Broadsign match reads as a wrong match instead of as a wrong address.
+function locationCellHtml(d, matched) {
+  if (d.location) return esc(d.location);
+  const venue = matched?.row?.venue;
+  if (!venue) return '-';
+  return `<span title="From the matched ${esc(matched.source)} screen, not set manually">${esc(venue)} <span class="muted">(screen)</span></span>`;
+}
+
 function matchedScreenHtml(matched) {
   if (!matched) return '<span class="small muted">-</span>';
   const { source, row } = matched;
@@ -451,6 +465,8 @@ function duScrapeStatusHtml(d) {
 function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
   const online = isOnline(d);
   const problemCount = visibleProblems(d).length;
+  // Resolved once and reused by both the Location and Matched Screen cells below.
+  const matched = matchedScreenFor(d, assetInventory);
   // The whole row opens Details. Handled on the <tr> rather than by styling the hostname as a link,
   // so the name keeps its plain bold treatment and the target is the entire row instead of a few
   // characters of text. The handler ignores clicks that landed on a control (see
@@ -463,12 +479,12 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
          spilling into the next column while still being readable on hover. -->
     <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(d.hostname)}"><b>${esc(d.hostname)}</b></td>
     <td>${volumeCellHtml(d)}</td>
-    <td class="small">${esc(d.location || '-')}</td>
+    <td class="small">${locationCellHtml(d, matched)}</td>
     <td class="small" style="white-space:nowrap;">${esc(d.ip_address || '-')}</td>
     <td>${remoteAccessButtonHtml(d)}</td>
     <td>${dataUsageCellHtml(d, sim)}</td>
     <td style="white-space:nowrap;">${statusDotHtml(online, true)}</td>
-    <td>${matchedScreenHtml(matchedScreenFor(d, assetInventory))}</td>
+    <td>${matchedScreenHtml(matched)}</td>
     <td class="small">${esc(d.os_name || '-')}${d.os_version ? ` <span class="muted">${esc(d.os_version)}</span>` : ''}</td>
     <td class="small">${esc(d.logged_in_user || '-')}</td>
     <td>${problemCount ? `<span class="badge b-red">${problemCount} issue${problemCount === 1 ? '' : 's'}</span>` : '<span class="badge b-blue">OK</span>'}</td>
@@ -1134,7 +1150,7 @@ registerModal('workspaceLocation', (data) => {
     <h3>${esc(data.location)} - ${list.length} device(s)</h3>
     <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
       <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:15ch;">Remote Access</th><th style="width:14ch;">Data Usage</th><th style="width:14ch;">Volume</th><th style="width:13ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
+        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:14ch;">Volume</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:15ch;">Remote Access</th><th style="width:14ch;">Data Usage</th><th style="width:13ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>

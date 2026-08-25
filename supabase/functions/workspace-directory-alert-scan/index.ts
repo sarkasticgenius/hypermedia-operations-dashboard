@@ -53,19 +53,19 @@ Deno.serve(async (req) => {
     if (!(await isAuthorized(req, adminClient, supabaseUrl, anonKey))) throw new Error('Not authenticated');
 
     const { data: devices, error } = await adminClient.from('workspace_devices')
-      .select('id, hostname, last_seen, offline_alerted_at')
+      .select('id, hostname, last_seen, offline_alerted_at, broadsign_player_id, grassfish_box_id')
       .is('removed_at', null);
     if (error) throw error;
 
     const staleMs = STALE_AFTER_MINUTES * 60 * 1000;
     const now = Date.now();
-    const newlyOffline: { id: string; hostname: string }[] = [];
+    const newlyOffline: { id: string; hostname: string; broadsignPlayerId: string | null; grassfishBoxId: string | null }[] = [];
     const recovered: string[] = [];
 
     for (const d of devices || []) {
       const isOffline = !d.last_seen || (now - new Date(d.last_seen).getTime()) > staleMs;
       if (isOffline && !d.offline_alerted_at) {
-        newlyOffline.push({ id: d.id, hostname: d.hostname });
+        newlyOffline.push({ id: d.id, hostname: d.hostname, broadsignPlayerId: d.broadsign_player_id, grassfishBoxId: d.grassfish_box_id });
       } else if (!isOffline && d.offline_alerted_at) {
         recovered.push(d.id);
       }
@@ -85,9 +85,52 @@ Deno.serve(async (req) => {
 
     let notified = false;
     if (newlyOffline.length) {
+      // Names the SCREEN this PC drives rather than the PC itself. A hostname like
+      // PC-1C697A0E88E4 says nothing about what is actually dark - whoever reads this alert needs
+      // to know which screen, at which venue, stopped working. Matched on the same Player Box ID
+      // that broadsign-sync/grassfish-sync already match on, so it agrees with the Matched Screen
+      // column in the Digital Directory rather than inventing a second notion of the same link.
+      //
+      // Falls back to the hostname when a device drives no known screen (a back-office PC, or an
+      // ID that is not in Asset Inventory) - there is genuinely nothing better to call it, and a
+      // bare hostname is still far better than omitting the device from the alert.
+      const boxIds = newlyOffline
+        .flatMap((d) => [d.broadsignPlayerId, d.grassfishBoxId])
+        .map((v) => (v || '').trim())
+        .filter(Boolean);
+      // Grouped, not keyed one-to-one: a single player box can drive MANY screens. DR2-FOODCOURT's
+      // one Broadsign ID maps to 17 rows in Asset Inventory, so picking "a" matching screen would
+      // name one arbitrary panel and quietly understate an outage covering all seventeen.
+      let screensByBoxId = new Map<string, { name: string; venue: string | null }[]>();
+      if (boxIds.length) {
+        const { data: assets } = await adminClient.from('asset_inventory')
+          .select('name, venue, player_box_id').in('player_box_id', boxIds);
+        for (const a of (assets || []) as any[]) {
+          if (!a.player_box_id) continue;
+          const key = String(a.player_box_id).trim();
+          const list = screensByBoxId.get(key) || [];
+          list.push({ name: a.name, venue: a.venue });
+          screensByBoxId.set(key, list);
+        }
+      }
+      const labelFor = (d: { hostname: string; broadsignPlayerId: string | null; grassfishBoxId: string | null }) => {
+        const screens = screensByBoxId.get((d.broadsignPlayerId || '').trim())
+          || screensByBoxId.get((d.grassfishBoxId || '').trim())
+          || [];
+        if (!screens.length) return d.hostname;
+        if (screens.length === 1) {
+          const only = screens[0];
+          return only.venue ? `${only.name} @ ${only.venue}` : only.name;
+        }
+        // Several screens behind one player: the venue is what matters, plus how many went dark.
+        // Naming all seventeen would bury the rest of the alert.
+        const venues = [...new Set(screens.map((x) => x.venue).filter(Boolean))];
+        const where = venues.length === 1 ? venues[0] : `${venues.length} venues`;
+        return `${screens.length} screens @ ${where}`;
+      };
       const text = newlyOffline.length === 1
-        ? `${newlyOffline[0].hostname} went offline (no check-in for ${STALE_AFTER_MINUTES}+ minutes).`
-        : `${newlyOffline.length} devices went offline (no check-in for ${STALE_AFTER_MINUTES}+ minutes): ${newlyOffline.map((d) => d.hostname).join(', ')}.`;
+        ? `${labelFor(newlyOffline[0])} went offline (no check-in for ${STALE_AFTER_MINUTES}+ minutes).`
+        : `${newlyOffline.length} devices went offline (no check-in for ${STALE_AFTER_MINUTES}+ minutes): ${newlyOffline.map(labelFor).join(', ')}.`;
       const cronRes = await adminClient.from('app_settings').select('value').eq('key', '_cronSecret').single();
       const cronSecret = cronRes.data?.value?.secret;
       const slackRes = await fetch(`${supabaseUrl}/functions/v1/slack-notify`, {
