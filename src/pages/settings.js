@@ -1184,22 +1184,14 @@ if ($Tray) {
     $visibilityTimer.add_Tick({ $notifyIcon.Visible = -not (Test-SignagePlayerRunning) })
     $visibilityTimer.Start()
 
-    # The tray process is this agent's only foothold in an interactive desktop session, so it is
-    # what drives the DU scrape now that Session 0 cannot (see $DuHandoffFile). Spawned as a
-    # separate hidden child rather than run inline: the scrape drives a browser for up to a minute
-    # and this thread owns the tray icon's message loop, which would visibly freeze.
-    #
-    # Checked every 5 minutes but almost always a no-op - the child re-evaluates the same
-    # once-a-day, per-host-jittered gate the SYSTEM path uses, so it exits immediately unless a
-    # scrape is genuinely due. That keeps the decision about WHEN to scrape in exactly one place.
-    $duTimer = New-Object System.Windows.Forms.Timer
-    $duTimer.Interval = 300000
-    $duTimer.add_Tick({
-        try {
-            Start-Process powershell.exe -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "\`"$InstalledScriptPath\`"", "-DuScrapeOnce") -WindowStyle Hidden
-        } catch {}
-    })
-    $duTimer.Start()
+    # NOTE: the tray deliberately does NOT drive the DU scrape. An earlier version had a 5-minute
+    # timer here that spawned -DuScrapeOnce, which was replaced by the dedicated
+    # WorkspaceDirectoryAgentDuScrape task (see Start-DuScrapeInUserSession) - started by the SYSTEM
+    # check-in only when the shared gate says a scrape is actually due. Leaving both in place ran
+    # the same work twice AND launched a PowerShell child on the logged-in user's desktop every 5
+    # minutes forever: powershell.exe allocates a console window before -WindowStyle Hidden can
+    # take effect, so each spawn flashed a visible window on machines that are supposed to show
+    # nothing at all. Reported from a real test PC.
 
     [System.Windows.Forms.Application]::Run()
     $notifyIcon.Visible = $false
