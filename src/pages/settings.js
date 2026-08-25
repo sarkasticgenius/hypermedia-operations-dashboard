@@ -1745,15 +1745,31 @@ function Invoke-DuScrape {
             if ($du -and ($du.phoneNumber -or $null -ne $du.dataUsedGb -or $null -ne $du.dataLeftGb -or $null -ne $du.dataTotalGb)) {
                 $outcome = "ok"
                 Write-AgentLog "DU data-usage scrape: phone=$($du.phoneNumber) used=$($du.dataUsedGb) left=$($du.dataLeftGb) total=$($du.dataTotalGb)"
-            } else {
-                # The browser ran and the page gave nothing back. For these PCs that is not an
-                # error - du identifies the subscriber from the connection itself, so a machine
-                # reaching the internet over Wi-Fi or the mall LAN has nothing to report and never
-                # will. Recorded as its own outcome so the Data Usage column can say exactly that
-                # instead of leaving the device on "Not checked" forever.
+            } elseif ($Script:DuIsUserSession) {
+                # The browser ran IN A REAL DESKTOP SESSION and the page still gave nothing back.
+                # Only then is "nothing" an actual answer: du identifies the subscriber from the
+                # connection itself, so a machine reaching the internet over Wi-Fi or the mall LAN
+                # has nothing to report and never will. Recorded as its own outcome so the Data
+                # Usage column can say exactly that instead of leaving the device on "Not checked".
                 $outcome = "nodata"
                 $du = $null
                 Write-AgentLog "DU data-usage scrape returned nothing - no du SIM behind this connection."
+            } else {
+                # Same empty result, but from Session 0, where it means nothing about the
+                # connection. Headless Edge renders NOTHING there - confirmed live: about:blank
+                # itself returned 0 bytes - so a SYSTEM run that finds a browser and gets no data
+                # has not learned that there is no SIM, only that it could not ask.
+                #
+                # Calling that 'nodata' was actively harmful, not just mislabelled: 'nodata' is
+                # deliberately excluded from the hourly retry (so Wi-Fi/LAN machines don't relaunch
+                # a browser forever), so every Session 0 failure disqualified itself from retrying
+                # AND told the dashboard the PC had no SIM - on machines whose own du phone number
+                # was displayed directly above that claim. Recorded as a fault instead, so it
+                # retries and reads honestly.
+                $outcome = "error"
+                $du = $null
+                $note = "The scrape ran as SYSTEM (Session 0), where a headless browser renders nothing, so this result says nothing about the connection. It will be retried in the logged-in user's session."
+                Write-AgentLog "DU data-usage scrape returned nothing under SYSTEM - treated as a fault, not as 'no SIM'."
             }
         }
     } catch {
