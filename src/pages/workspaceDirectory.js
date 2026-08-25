@@ -874,6 +874,8 @@ export async function saveWorkspaceAnyDeskPassword(event, deviceId) {
   const devices = STATE.pageData.workspaceDevices?.data || [];
   const device = devices.find((d) => d.id === deviceId);
   if (!device) { toast('Device not found', 'error'); return; }
+  const targetId = document.getElementById('wd-anydesk-target')?.value || '';
+  if (!targetId) { toast('Choose which AnyDesk installation to set the password on.', 'error'); return; }
   const pw = document.getElementById('wd-anydesk-pw').value || '';
   const pw2 = document.getElementById('wd-anydesk-pw2').value || '';
   if (pw !== pw2) { toast('The two passwords do not match.', 'error'); return; }
@@ -882,11 +884,12 @@ export async function saveWorkspaceAnyDeskPassword(event, deviceId) {
   if (pw.length < 8) { toast('Use at least 8 characters - this password grants remote control of the PC.', 'error'); return; }
   try {
     const { error } = await supabase.from('agent_secret_deliveries')
-      .insert({ hostname: device.hostname, kind: 'anydeskPassword', secret: pw });
+      .insert({ hostname: device.hostname, kind: 'anydeskPassword', secret: pw, target: targetId });
     if (error) throw error;
-    await logAudit('Send AnyDesk password', device.hostname);
+    // Records WHICH install was targeted, never the password itself.
+    await logAudit('Send AnyDesk password', `${device.hostname} (AnyDesk ${targetId})`);
     closeModal();
-    toast(`Password sent to ${device.hostname} - it applies within a minute or two, then the dashboard shows when it changed.`);
+    toast(`Password sent to ${device.hostname} for AnyDesk ${targetId} - it applies within a minute or two.`);
     setState({});
   } catch (e) {
     toast(e.message || 'Could not send the password', 'error');
@@ -1303,8 +1306,11 @@ registerModal('workspaceDetails', (data) => {
     <h3>${esc(d.hostname)}</h3>
     <div class="small muted" style="margin-bottom:10px;">${d.last_seen ? `Last check-in ${esc(fmtRelativeTime(d.last_seen))}` : 'Never checked in'} &middot; Agent v${esc(d.agent_version || '-')}</div>
     ${editOk ? `<div class="small" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-      <span>${d.anydesk_id ? `AnyDesk password${d.anydesk_password_set_at ? ` last changed ${esc(fmtRelativeTime(d.anydesk_password_set_at))}` : ' has not been changed from here'}.` : 'No AnyDesk detected on this PC.'}</span>
-      ${d.anydesk_id ? `<button class="btn-sm" onclick="App.openWorkspaceAnyDeskPasswordModal('${d.id}')">Set AnyDesk Password</button>` : ''}
+      <span>${anyDeskInstallsFor(d).length
+        ? anyDeskInstallsFor(d).map((a) => `AnyDesk <b>${esc(a.id)}</b> - ${esc(anyDeskInstallLabel(a).split(' - ')[1])}`).join('<br>')
+          + (d.anydesk_password_set_at ? `<div class="small muted">Last changed from here ${esc(fmtRelativeTime(d.anydesk_password_set_at))}.</div>` : '')
+        : 'No AnyDesk detected on this PC.'}</span>
+      ${anyDeskInstallsFor(d).length ? `<button class="btn-sm" onclick="App.openWorkspaceAnyDeskPasswordModal('${d.id}')">Set AnyDesk Password</button>` : ''}
     </div>` : ''}
     ${editOk ? `<div class="small" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;${d.updates_disabled ? 'padding:8px 10px;border-radius:6px;background:var(--row-alt);border-left:3px solid #c0392b;' : ''}">
       <span>${d.updates_disabled
@@ -1356,6 +1362,31 @@ registerModal('workspaceDetails', (data) => {
   `;
 });
 
+// The AnyDesk installations on a device, each with whether an unattended password is set.
+//
+// Falls back to the bare ids the agent has always reported when anydesk_installs is absent - a
+// device that has not checked in since this shipped still gets a usable picker, just without the
+// password indicator, rather than an empty dialog that makes the feature look broken.
+function anyDeskInstallsFor(d) {
+  const detailed = Array.isArray(d.anydesk_installs) ? d.anydesk_installs.filter((a) => a && a.id) : [];
+  if (detailed.length) return detailed;
+  const ids = [];
+  if (d.anydesk_id) ids.push(String(d.anydesk_id));
+  (d.other_remote_ids || []).forEach((r) => {
+    if (/^AnyDesk/i.test(r.tool || '') && r.id) ids.push(String(r.id));
+  });
+  return [...new Set(ids)].map((id) => ({ id, passwordSet: null }));
+}
+
+function anyDeskInstallLabel(a) {
+  // null (rather than false) means "this device predates the indicator" - saying "no password set"
+  // there would be a claim the data does not support.
+  const state = a.passwordSet === true ? 'password set'
+    : a.passwordSet === false ? 'no password set'
+    : 'password state unknown';
+  return `${a.id} - ${state}`;
+}
+
 registerModal('workspaceAnyDeskPassword', (data) => {
   const devices = STATE.pageData.workspaceDevices?.data || [];
   const device = devices.find((d) => d.id === data.deviceId);
@@ -1364,6 +1395,13 @@ registerModal('workspaceAnyDeskPassword', (data) => {
   return `
     <h3>Set AnyDesk Password - ${esc(device.hostname)}</h3>
     <form onsubmit="App.saveWorkspaceAnyDeskPassword(event, '${device.id}')" autocomplete="off">
+      <div class="field">
+        <label>Which AnyDesk installation</label>
+        <select id="wd-anydesk-target" required>
+          ${anyDeskInstallsFor(device).map((a) => `<option value="${esc(a.id)}">${esc(anyDeskInstallLabel(a))}</option>`).join('')}
+        </select>
+        <div class="small muted" style="margin-top:4px;">This PC runs ${anyDeskInstallsFor(device).length} AnyDesk installation(s) - a standard install and a custom-branded build each answer on their own ID, so the password has to be set against one of them specifically.</div>
+      </div>
       <div class="field">
         <label>New AnyDesk password</label>
         <input id="wd-anydesk-pw" type="password" autocomplete="new-password" spellcheck="false" required>

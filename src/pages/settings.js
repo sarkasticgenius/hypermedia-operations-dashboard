@@ -749,6 +749,51 @@ function defaultCollectorScript() {
 # service/system.conf and its own distinct ID) - so this scans every known conf path instead of
 # stopping at the first match, and returns every DISTINCT id found rather than just one, so none of
 # them silently go missing from the directory.
+# Every AnyDesk installation on this PC, as its own entry: which id it answers on, which exe
+# owns it, and whether an unattended-access password is set.
+#
+# Driven off the SERVICES rather than by scanning for AnyDesk.exe. A custom-branded MSI build
+# installs as its own service with its own binary named after itself - on a real device that is
+# "AnyDesk-ad_5595aceb_msi.exe", which a search for "AnyDesk.exe" silently misses. Reading the
+# service's own PathName is what makes each install addressable, and addressability is the whole
+# point: with two installs, "set the AnyDesk password" is ambiguous unless you can say WHICH.
+#
+# passwordSet reports only WHETHER a password exists, never anything derived from it. AnyDesk
+# stores a salted hash (ad.anynet.pwd_hash in service.conf on the standard install, or the
+# permission-profile pwd key in system.conf), and the hash itself is deliberately never read,
+# logged or transmitted - the dashboard only needs to show set / not set.
+function Get-AnyDeskInstalls {
+    $installs = @()
+    $services = @(Get-CimInstance Win32_Service -Filter "Name like '%AnyDesk%'" -ErrorAction SilentlyContinue)
+    foreach ($svc in $services) {
+        $exe = $null
+        if ($svc.PathName -match '"([^"]+\\.exe)"') { $exe = $matches[1] }
+        elseif ($svc.PathName -match '^(\\S+\\.exe)') { $exe = $matches[1] }
+        # The standard service is plain "AnyDesk" and keeps its config in ProgramData\AnyDesk;
+        # a custom build is "AnyDesk-<folder>" and keeps its own under that folder name.
+        $confDir = Join-Path $env:ProgramData 'AnyDesk'
+        if ($svc.Name -match '^AnyDesk-(.+)$') { $confDir = Join-Path $confDir $matches[1] }
+        $systemConf = Join-Path $confDir 'system.conf'
+        $serviceConf = Join-Path $confDir 'service.conf'
+        $id = $null
+        if (Test-Path $systemConf) {
+            $m = (Get-Content $systemConf -ErrorAction SilentlyContinue | Select-String -Pattern 'ad\\.anynet\\.id=(\\d+)')
+            if ($m) { $id = $m.Matches[0].Groups[1].Value }
+        }
+        if (-not $id) { continue }
+        # Presence only - the value after '=' is never captured.
+        $pwdSet = $false
+        foreach ($cf in @($serviceConf, $systemConf)) {
+            if (-not (Test-Path $cf)) { continue }
+            $hit = (Get-Content $cf -ErrorAction SilentlyContinue |
+                Select-String -Pattern '^(ad\\.anynet\\.pwd_hash|ad\\.security\\.permission_profiles\\._unattended_access\\.pwd)=\\S')
+            if ($hit) { $pwdSet = $true }
+        }
+        $installs += @{ id = $id; exe = $exe; service = $svc.Name; passwordSet = $pwdSet }
+    }
+    return $installs
+}
+
 function Get-AllAnyDeskIds {
     $paths = [System.Collections.Generic.List[string]]::new()
     $paths.Add("$env:ProgramData\\AnyDesk\\service.conf")
@@ -1020,6 +1065,7 @@ $__os = Get-CimInstance Win32_OperatingSystem
     antivirus         = $__antivirus
     software          = @(Get-InstalledSoftware)
     problems          = @(Get-Problems $__volumes $__antivirus $__anydeskId $__teamviewerId)
+    anydeskInstalls   = @(Get-AnyDeskInstalls)
     networkBytesTotal = Get-NetworkBytesTotal
     agentVersion      = "3.2"
 }`;
@@ -1757,14 +1803,21 @@ function Get-DuJitterMinutes {
 # with Get-CimInstance Win32_Process.
 #
 # The value is never logged, never echoed and never written to disk - only whether it worked.
-function Set-AnyDeskPassword($password) {
-    $exe = @("$env:ProgramFiles\\AnyDesk\\AnyDesk.exe", "\${env:ProgramFiles(x86)}\\AnyDesk\\AnyDesk.exe", "$env:ProgramData\\AnyDesk\\AnyDesk.exe") |
-        Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $exe) { return "AnyDesk is not installed on this PC." }
+function Set-AnyDeskPassword($password, $targetId) {
+    # Targets ONE installation. A PC can run a standard AnyDesk and a custom-branded MSI build
+    # side by side, each with its own id, service and exe - so "set the AnyDesk password" is
+    # meaningless without saying which, and the previous version picked whichever exe it found
+    # first, leaving the admin no way to know which id had actually changed.
+    $installs = @(Get-AnyDeskInstalls)
+    if (-not $installs -or $installs.Count -eq 0) { return "AnyDesk is not installed on this PC." }
+    $match = $installs | Where-Object { $_.id -eq $targetId } | Select-Object -First 1
+    if (-not $match) { return "No AnyDesk installation on this PC answers on id $targetId." }
+    if (-not $match.exe -or -not (Test-Path $match.exe)) { return "Found id $targetId but its AnyDesk binary is missing." }
     try {
         # cmd's pipe rather than PowerShell's: PowerShell's pipeline passes .NET objects, and
-        # AnyDesk wants raw bytes on stdin.
-        $null = cmd.exe /c "echo $password| \`"$exe\`" --set-password" 2>&1
+        # AnyDesk wants raw bytes on stdin. Passing it on stdin rather than as an argument is
+        # also what keeps it out of the process command line, where any local user could read it.
+        $null = cmd.exe /c "echo $password| \`"$($match.exe)\`" --set-password" 2>&1
         if ($LASTEXITCODE -eq 0) { return "OK" }
         return "AnyDesk exited with code $LASTEXITCODE."
     } catch {
@@ -3075,12 +3128,12 @@ if ($PollOnce) {
         # A one-shot secret rides along on this same poll rather than costing its own request -
         # see the endpoint's own comment for why it travels here and not as a queued command.
         if ($resp -and $resp.secret -and $resp.secret.kind -eq "anydeskPassword") {
-            $applyResult = Set-AnyDeskPassword $resp.secret.value
+            $applyResult = Set-AnyDeskPassword $resp.secret.value $resp.secret.target
             # Confirmed ONLY on success, so a failed attempt leaves the delivery in place to be
             # retried next poll rather than silently discarding the admin's password. The server
             # reaps it by age if it can never be applied.
             if ($applyResult -eq "OK") {
-                Write-AgentLog "AnyDesk password updated from the dashboard."
+                Write-AgentLog "AnyDesk password updated from the dashboard for id $($resp.secret.target)."
                 try {
                     Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME + "&applied=" + $resp.secret.id) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10 | Out-Null
                 } catch {}

@@ -159,6 +159,21 @@ Deno.serve(async (req) => {
     if (body.anydeskId !== undefined) row.anydesk_id = body.anydeskId ? String(body.anydeskId).slice(0, 50) : null;
     if (body.teamviewerId !== undefined) row.teamviewer_id = body.teamviewerId ? String(body.teamviewerId).slice(0, 50) : null;
     if (body.otherRemoteIds !== undefined) row.other_remote_ids = otherRemoteIds;
+    // Per-installation AnyDesk detail: which id each install answers on, the binary that owns it,
+    // and whether an unattended password is set. A PC can run a standard AnyDesk and a custom MSI
+    // build side by side, so "the AnyDesk password" is ambiguous without knowing which install is
+    // meant - this is what lets the dashboard ask. passwordSet is a boolean by design; the hash
+    // itself is never read on the device, so there is nothing sensitive to store here.
+    if (body.anydeskInstalls !== undefined) {
+      row.anydesk_installs = Array.isArray(body.anydeskInstalls)
+        ? body.anydeskInstalls.slice(0, 10).map((a: any) => ({
+            id: String(a?.id || '').slice(0, 40),
+            exe: String(a?.exe || '').slice(0, 300),
+            service: String(a?.service || '').slice(0, 100),
+            passwordSet: !!a?.passwordSet,
+          })).filter((a: any) => a.id)
+        : [];
+    }
     if (body.broadsignPlayerId !== undefined) row.broadsign_player_id = body.broadsignPlayerId ? String(body.broadsignPlayerId).slice(0, 100) : null;
     if (body.grassfishBoxId !== undefined) row.grassfish_box_id = body.grassfishBoxId ? String(body.grassfishBoxId).slice(0, 100) : null;
     if (body.os !== undefined) row.os_name = body.os ? String(body.os).slice(0, 200) : null;
