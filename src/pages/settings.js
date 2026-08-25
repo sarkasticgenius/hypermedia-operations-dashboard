@@ -585,9 +585,11 @@ function renderWorkspaceDirectoryAgentCard(settings) {
           <span><b>Fleet (all PCs):</b> ${shell.version ? `v${shell.version}${shell.publishedAt ? ` - ${new Date(shell.publishedAt).toLocaleString()}` : ''}` : '<span class="muted">nothing published yet</span>'}</span>
           <span><b>Test PCs:</b> ${canary.version ? `v${canary.version}${canary.publishedAt ? ` - ${new Date(canary.publishedAt).toLocaleString()}` : ''}${canary.version > (shell.version || 0) ? ' <span class="badge b-amber">awaiting promotion</span>' : ' <span class="muted">(same as fleet)</span>'}` : '<span class="muted">nothing published yet</span>'}</span>
         </div>
+        ${shell.frozen ? `<div class="small" style="margin-bottom:8px;padding:8px 10px;border-radius:6px;background:var(--row-alt);border-left:3px solid #c0392b;"><b>Fleet updates are frozen.</b> Every PC except the test machines (${AGENT_CANARY_HOSTNAMES.join(', ')}) is pinned to v${shell.frozenAtVersion ?? shell.version ?? 0} and will not self-update, even if a newer version is published. The test PCs are unaffected.${shell.frozenAt ? ` Frozen ${new Date(shell.frozenAt).toLocaleString()}.` : ''}</div>` : ''}
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.publishWorkspaceDirectoryAgentShell()">Publish to Test PCs</button>
-          <button type="button" class="btn-outline btn-sm" ${canary.version && canary.version > (shell.version || 0) ? '' : 'disabled title="Publish to the test PCs first, and confirm it works there"'} onclick="App.promoteWorkspaceDirectoryAgentShell()">Roll Out to All PCs${canary.version && canary.version > (shell.version || 0) ? ` (v${canary.version})` : ''}</button>
+          <button type="button" class="btn-outline btn-sm" ${shell.frozen ? 'disabled title="Fleet updates are frozen - unfreeze first"' : (canary.version && canary.version > (shell.version || 0) ? '' : 'disabled title="Publish to the test PCs first, and confirm it works there"')} onclick="App.promoteWorkspaceDirectoryAgentShell()">Roll Out to All PCs${canary.version && canary.version > (shell.version || 0) ? ` (v${canary.version})` : ''}</button>
+          <button type="button" class="btn-outline btn-sm" onclick="App.toggleWorkspaceFleetUpdateFreeze(${shell.frozen ? 'false' : 'true'})">${shell.frozen ? 'Unfreeze Fleet Updates' : 'Freeze Fleet Updates'}</button>
         </div>
       </div>
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
@@ -695,6 +697,32 @@ export async function publishWorkspaceDirectoryAgentShell() {
 // so reaching every signage PC is always an explicit decision rather than a side effect of
 // publishing. Copies the canary script verbatim rather than rebuilding from source, so what the
 // fleet receives is byte-identical to what was actually tested.
+// Pins every non-test PC to the agent version it is already running, so nothing reaches the fleet
+// until an admin explicitly lifts it - a hold that survives someone later hitting Publish or Roll
+// Out, rather than relying on nobody clicking. Enforced at the endpoint too (see
+// workspace-directory-agent-shell): a frozen fleet is served its pinned version, so agents see no
+// difference and never even download a script. The test PCs keep updating normally, which is the
+// whole point - work continues on them while the fleet holds still.
+export async function toggleWorkspaceFleetUpdateFreeze(freeze) {
+  const settings = STATE.pageData.settings?.data || {};
+  const shell = settings.workspaceDirectoryAgentShell || {};
+  if (!shell.version) { toast('Nothing has been published yet, so there is nothing to freeze.', 'error'); return; }
+  try {
+    await saveSetting('workspaceDirectoryAgentShell', {
+      ...shell,
+      frozen: !!freeze,
+      // Captured at freeze time so the pin is to what the fleet is ACTUALLY running now, not to
+      // whatever version happens to be current later on.
+      frozenAtVersion: freeze ? shell.version : null,
+      frozenAt: freeze ? new Date().toISOString() : null,
+    });
+    await logAudit(freeze ? 'Freeze Digital Directory fleet updates' : 'Unfreeze Digital Directory fleet updates', freeze ? `pinned at v${shell.version}` : '');
+    invalidate('settings');
+    toast(freeze ? `Fleet frozen at v${shell.version} - only the test PCs will update.` : 'Fleet updates resumed.');
+    setState({});
+  } catch (e) { toast(e.message || 'Could not change the freeze state', 'error'); }
+}
+
 export async function promoteWorkspaceDirectoryAgentShell() {
   const settings = STATE.pageData.settings?.data || {};
   const canary = settings.workspaceDirectoryAgentShellCanary;

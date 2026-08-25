@@ -55,6 +55,7 @@ Deno.serve(async (req) => {
     let version = shellRow?.value?.version || 0;
 
     const hostname = (new URL(req.url).searchParams.get('hostname') || '').trim();
+    let isTestPc = false;
     if (hostname) {
       const { data: canaryRow } = await adminClient.from('app_settings').select('value')
         .eq('key', 'workspaceDirectoryAgentShellCanary').maybeSingle();
@@ -62,10 +63,28 @@ Deno.serve(async (req) => {
       // Compared case-insensitively: Windows hostnames are case-insensitive, and an admin typing
       // "hm-office-test" into the dashboard should not silently fail to match "HM-OFFICE-TEST".
       const targets = (canary?.hostnames || []).map((h: string) => String(h).trim().toUpperCase());
-      if (canary?.script && targets.includes(hostname.toUpperCase())) {
+      isTestPc = targets.includes(hostname.toUpperCase());
+      if (canary?.script && isTestPc) {
         script = canary.script;
         version = canary.version || 0;
       }
+    }
+
+    // An admin hold on fleet updates ("Freeze Fleet Updates" in Settings). Enforced HERE rather
+    // than only by disabling the button, so the hold cannot be undone by someone publishing again
+    // later - the fleet keeps being told the version it is already running, so every agent's own
+    // version check matches, and it never downloads a script at all. Zero bytes on a metered SIM,
+    // and no code change reaches a signage PC nobody can walk up to.
+    //
+    // Test PCs are deliberately exempt: freezing exists so work can continue on them while the
+    // rest of the fleet holds still. An agent that sends no hostname is treated as fleet, the same
+    // safe default used for canary routing above.
+    if (shellRow?.value?.frozen && !isTestPc) {
+      const pinned = shellRow?.value?.frozenAtVersion ?? version;
+      const metaOnlyFrozen = new URL(req.url).searchParams.get('meta') === '1';
+      return new Response(JSON.stringify(metaOnlyFrozen ? { version: pinned } : { script: '', version: pinned }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,
+      });
     }
 
     const metaOnly = new URL(req.url).searchParams.get('meta') === '1';
