@@ -4,6 +4,7 @@ import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice, lis
 import { listSimCards } from '../data/simCards.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { canEdit, canDelete } from '../auth.js';
+import { AGENT_CANARY_HOSTNAMES } from './settings.js';
 import { esc, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
@@ -685,6 +686,8 @@ export function renderWorkspaceDirectory() {
       <div style="display:flex;gap:8px;">
         <button class="btn-sm" title="Pull fresh inventory (or push each one's queued command) within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.bulkForceWorkspaceInventoryPull()">Force Selected</button>
         <button class="btn-sm" onclick="App.openWorkspaceBulkDeployModal()">Deploy to Selected</button>
+        <button class="btn-sm" title="Hold these PCs at the agent version they are running now - no self-update until re-enabled" onclick="App.bulkToggleWorkspaceDeviceUpdates(true)">Disable Updates</button>
+        <button class="btn-sm" title="Let these PCs self-update again - each jumps straight to the latest published version, not through the ones it missed" onclick="App.bulkToggleWorkspaceDeviceUpdates(false)">Enable Updates</button>
         <button class="btn-sm" onclick="App.clearWorkspaceSelection()">Clear Selection</button>
       </div>
     </div>` : ''}
@@ -876,6 +879,62 @@ export async function clearWorkspacePendingCommand(deviceId) {
     toast('Pending command cleared');
     setState({});
   } catch (e) { toast(e.message || 'Failed to clear command', 'error'); }
+}
+
+// Holds one PC at the agent version it is running, or lets it move again. Aimed per-device rather
+// than fleet-wide because most of these machines drive signage in malls nobody can walk up to, so
+// "which PCs are allowed to move" is a different question from "which build is published" - the
+// canary/stable split answers the second, this answers the first.
+//
+// Pins to whatever version that device's channel is serving right now, since that is what it is
+// running. Stored on the device rather than derived later so the pin cannot drift when someone
+// publishes again - that drift is exactly what this switch exists to prevent.
+//
+// Re-enabling does not replay anything it missed: the agent compares what it has against what is
+// published now and fetches that one build, so it jumps straight to the latest.
+export async function toggleWorkspaceDeviceUpdates(deviceId, disable) {
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const device = devices.find((x) => x.id === deviceId);
+  const settings = STATE.pageData.settings?.data || {};
+  const isTestPc = AGENT_CANARY_HOSTNAMES.some((h) => h.toUpperCase() === String(device?.hostname || '').toUpperCase());
+  const channelVersion = isTestPc
+    ? (settings.workspaceDirectoryAgentShellCanary?.version || settings.workspaceDirectoryAgentShell?.version || null)
+    : (settings.workspaceDirectoryAgentShell?.version || null);
+  try {
+    await updateWorkspaceDevice(deviceId, {
+      updates_disabled: !!disable,
+      updates_pinned_version: disable ? channelVersion : null,
+    });
+    await logAudit(disable ? 'Disable agent updates for device' : 'Enable agent updates for device', `${device?.hostname || deviceId}${disable && channelVersion ? ` (pinned at v${channelVersion})` : ''}`);
+    invalidate('workspaceDevices');
+    toast(disable
+      ? `${device?.hostname || 'Device'} held${channelVersion ? ` at v${channelVersion}` : ''} - it will not update until re-enabled.`
+      : `${device?.hostname || 'Device'} will pick up the latest published version on its next check-in.`);
+    setState({});
+  } catch (e) { toast(e.message || 'Could not change the update setting', 'error'); }
+}
+
+// Same hold, applied to every currently-selected device at once - the practical way to freeze a
+// whole venue or an entire network before trying a build, without clicking through them one by one.
+export async function bulkToggleWorkspaceDeviceUpdates(disable) {
+  const ids = STATE.workspaceDirectorySelectedIds || [];
+  if (!ids.length) { toast('Select at least one device first', 'error'); return; }
+  const settings = STATE.pageData.settings?.data || {};
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  try {
+    await Promise.all(ids.map((id) => {
+      const d = devices.find((x) => x.id === id);
+      const isTestPc = AGENT_CANARY_HOSTNAMES.some((h) => h.toUpperCase() === String(d?.hostname || '').toUpperCase());
+      const channelVersion = isTestPc
+        ? (settings.workspaceDirectoryAgentShellCanary?.version || settings.workspaceDirectoryAgentShell?.version || null)
+        : (settings.workspaceDirectoryAgentShell?.version || null);
+      return updateWorkspaceDevice(id, { updates_disabled: !!disable, updates_pinned_version: disable ? channelVersion : null });
+    }));
+    await logAudit(disable ? 'Disable agent updates (bulk)' : 'Enable agent updates (bulk)', `${ids.length} device(s)`);
+    invalidate('workspaceDevices');
+    toast(disable ? `Updates held on ${ids.length} device(s).` : `Updates resumed on ${ids.length} device(s) - each picks up the latest version.`);
+    setState({ workspaceDirectorySelectedIds: [] });
+  } catch (e) { toast(e.message || 'Could not change the update setting', 'error'); }
 }
 
 // "Check Now" on a device's Data Usage panel - re-runs that PC's mydata.du.ae check on demand
@@ -1180,6 +1239,12 @@ registerModal('workspaceDetails', (data) => {
   return `
     <h3>${esc(d.hostname)}</h3>
     <div class="small muted" style="margin-bottom:10px;">${d.last_seen ? `Last check-in ${esc(fmtRelativeTime(d.last_seen))}` : 'Never checked in'} &middot; Agent v${esc(d.agent_version || '-')}</div>
+    ${editOk ? `<div class="small" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;${d.updates_disabled ? 'padding:8px 10px;border-radius:6px;background:var(--row-alt);border-left:3px solid #c0392b;' : ''}">
+      <span>${d.updates_disabled
+        ? `<b>Agent updates held</b>${d.updates_pinned_version ? ` at v${d.updates_pinned_version}` : ''} - this PC will not self-update until re-enabled.`
+        : 'Agent updates enabled - this PC self-updates to whatever version is published for it.'}</span>
+      <button class="btn-sm" onclick="App.toggleWorkspaceDeviceUpdates('${d.id}', ${d.updates_disabled ? 'false' : 'true'})">${d.updates_disabled ? 'Enable Updates' : 'Disable Updates'}</button>
+    </div>` : ''}
 
     <div class="card-head" style="margin-top:4px;"><h3 style="font-size:13px;">Remote Access</h3></div>
     <div style="margin-bottom:12px;">${remoteAccessCell(d)}</div>

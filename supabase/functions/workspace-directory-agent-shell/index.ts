@@ -70,6 +70,28 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Per-device hold ("Updates" toggle on the Digital Directory page). Checked BEFORE the
+    // fleet-wide freeze because it is the more specific instruction: a device explicitly held by an
+    // admin stays held whether or not the fleet as a whole is moving, and that includes test PCs -
+    // if someone deliberately pinned one, a canary publish must not quietly override them.
+    //
+    // Re-enabling deliberately does NOT replay the versions the device missed. The agent only
+    // compares what it has against what is published RIGHT NOW and fetches that single build, so a
+    // machine that sat out several publishes jumps straight to the newest one.
+    if (hostname) {
+      const { data: deviceRow } = await adminClient.from('workspace_devices')
+        .select('updates_disabled, updates_pinned_version').eq('hostname', hostname).maybeSingle();
+      if (deviceRow?.updates_disabled) {
+        // Falls back to the version this device's own channel is serving when no pin was recorded
+        // - that is what it is already running, so its version check still matches and it stays put.
+        const pinned = deviceRow.updates_pinned_version ?? version;
+        const metaOnlyDevice = new URL(req.url).searchParams.get('meta') === '1';
+        return new Response(JSON.stringify(metaOnlyDevice ? { version: pinned } : { script: '', version: pinned }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,
+        });
+      }
+    }
+
     // An admin hold on fleet updates ("Freeze Fleet Updates" in Settings). Enforced HERE rather
     // than only by disabling the button, so the hold cannot be undone by someone publishing again
     // later - the fleet keeps being told the version it is already running, so every agent's own
