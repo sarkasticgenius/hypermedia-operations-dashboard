@@ -313,9 +313,24 @@ function locationCellHtml(d, matches) {
   return `<span title="From the matched ${esc(first.source)} screen, not set manually">${esc(venue)} <span class="muted">(screen)</span></span>`;
 }
 
+// HTML rendering of a match, with the screen name (or count) bolded so it's the thing the eye
+// catches first in a scan-heavy column - the source/venue stay plain. Kept separate from
+// matchedScreenLabel rather than embedding markup there, since that plain-text version also feeds
+// the row search index (see the `screen:` hay field below) - esc()'d before display, which would
+// turn real <b> tags into literal "&lt;b&gt;" text instead of rendering them.
+function matchedScreenHtmlLabel({ source, rows }) {
+  if (rows.length === 1) {
+    const r = rows[0];
+    return `${esc(source)}: <b>${esc(r.name)}</b>${r.venue ? ` @ ${esc(r.venue)}` : ''}`;
+  }
+  const venues = [...new Set(rows.map((r) => r.venue).filter(Boolean))];
+  const where = venues.length === 1 ? venues[0] : `${venues.length} venues`;
+  return `${esc(source)}: <b>${rows.length} screens</b> @ ${esc(where)}`;
+}
+
 function matchedScreenHtml(matches) {
   if (!matches || !matches.length) return '<span class="small muted">-</span>';
-  return matches.map((m) => `<div class="small">${esc(matchedScreenLabel(m))}</div>`).join('');
+  return matches.map((m) => `<div class="small">${matchedScreenHtmlLabel(m)}</div>`).join('');
 }
 
 // A diagonally-striped fill with the percentage centered inside the bar itself, rather than as
@@ -1331,7 +1346,7 @@ registerModal('workspaceDetails', (data) => {
     <div class="card-head"><h3 style="font-size:13px;">Matched Broadsign/Grassfish Screen</h3></div>
     <div class="small" style="margin-bottom:12px;">
       ${matches.length
-        ? matches.map((m) => `<div>${esc(matchedScreenLabel(m))}</div>`).join('')
+        ? matches.map((m) => `<div>${matchedScreenHtmlLabel(m)}</div>`).join('')
         : `<span class="muted">No match${(d.broadsign_player_id || d.grassfish_box_id) ? ` (ID ${esc([d.broadsign_player_id, d.grassfish_box_id].filter(Boolean).join(', '))} not found in Asset Inventory)` : ' - no Broadsign/Grassfish player detected on this PC'}</span>`}
       ${(d.broadsign_player_id || d.grassfish_box_id) ? `<div class="small muted" style="margin-top:4px;">${[d.broadsign_player_id ? `Broadsign player: ${esc(d.broadsign_player_id)}` : '', d.grassfish_box_id ? `Grassfish box: ${esc(d.grassfish_box_id)}` : ''].filter(Boolean).join(' &middot; ')}</div>` : ''}
     </div>
