@@ -1020,6 +1020,18 @@ $TaskName = "WorkspaceDirectoryAgent"
 $PollTaskName = "WorkspaceDirectoryAgentPoll"
 $TrayTaskName = "WorkspaceDirectoryAgentTray"
 $DuScrapeTaskName = "WorkspaceDirectoryAgentDuScrape"
+# The test machines, baked in so ONE script behaves correctly everywhere - the build promoted to the
+# fleet is byte-identical to the one signed off on the test PCs, which is the whole point of having
+# a canary. Anything host-specific therefore has to be decided at runtime, by the agent, rather than
+# by generating a second variant that was never actually tested.
+$TestPcHostnames = @(${AGENT_CANARY_HOSTNAMES.map((h) => `'${h}'`).join(', ')})
+$IsTestPc = $TestPcHostnames -contains $env:COMPUTERNAME
+# Test PCs poll every minute instead of every 20 so a queued command, a forced check-in or a newly
+# published build lands while someone is still sitting there watching for it - waiting out a
+# 20-minute cycle for each step made verifying a fix take most of a day. The fleet keeps the
+# 20-minute cadence: these PCs are on metered cellular SIMs, and polling 20x more often would cost
+# 20x the check-ins on exactly the data plan this whole feature exists to conserve.
+$PollIntervalMinutes = if ($IsTestPc) { 1 } else { 20 }
 $StateDir = "$env:ProgramData\\WorkspaceDirectoryAgent"
 $InstalledScriptPath = Join-Path $StateDir "Install-JstarAgent.ps1"
 $PendingResultFile = Join-Path $StateDir "pending-command-result.json"
@@ -2827,7 +2839,7 @@ if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
 # ~20 minutes' latency and a small request are an easy trade for both of those.
 try {
     $PollAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$InstalledScriptPath\`" -PollOnce"
-    $PollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 20)
+    $PollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $PollIntervalMinutes)
     $PollTrigger.Repetition.Duration = ""
     # Tighter bound than the main task's - a poll cycle is either a light check-in or, at worst,
     # a forced full one with a single queued command (already capped at 3 minutes by
@@ -2838,7 +2850,7 @@ try {
     if (Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue) {
         Set-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Settings $PollSettings | Out-Null
     } else {
-        Register-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Settings $PollSettings -Description "Checks every 20 minutes for a Force Inventory Pull request from the dashboard - runs fully hidden, no UI." | Out-Null
+        Register-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Settings $PollSettings -Description "Checks for a Force Inventory Pull request from the dashboard - every minute on a test PC, every 20 minutes on the fleet. Runs fully hidden, no UI." | Out-Null
     }
     Write-Host "Scheduled task '$PollTaskName' installed (checks every 20 minutes, no UI)." -ForegroundColor Green
 } catch {
