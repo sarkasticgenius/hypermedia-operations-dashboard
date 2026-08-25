@@ -815,31 +815,42 @@ function Get-OtherRemoteIds($anydeskIds) {
 # could not see it. Falls back to scanning user profiles for the machines running RustDesk purely
 # interactively.
 function Get-RustDeskId {
-    # Every backslash below is DOUBLED and the regex is single-quoted, because this whole script is
-    # built inside a JavaScript template literal, which consumes backslash escape sequences before
-    # PowerShell ever sees them - including inside comments, which is how the FIRST attempt at this
-    # very comment broke the script. v48 shipped with single backslashes here and the result was not
-    # a subtly wrong path but a script that would not parse AT ALL, which stopped three agents dead.
-    $candidates = @("$env:WinDir\\ServiceProfiles\\LocalService\\AppData\\Roaming\\RustDesk\\config\\RustDesk.toml")
-    $userRoot = Join-Path $env:SystemDrive "Users"
-    if (Test-Path $userRoot) {
-        foreach ($profileDir in (Get-ChildItem -Path $userRoot -Directory -ErrorAction SilentlyContinue)) {
-            $candidates += (Join-Path $profileDir.FullName "AppData\\Roaming\\RustDesk\\config\\RustDesk.toml")
+    # Asks RustDesk itself rather than reading its config. The TOML looked like the obvious source
+    # and is not one: on a real install the keys present are enc_id, password, salt, key_pair,
+    # key_confirmed - the id is stored ENCRYPTED as enc_id, so no amount of regex tuning would ever
+    # have found it, and RustDesk2.toml holds only rendezvous_server/nat_type/serial. --get-id is
+    # the documented way to read it and returned 487425731 on the test machine.
+    #
+    # Backslashes are DOUBLED throughout and the regex is single-quoted: this script is generated
+    # inside a JavaScript template literal, which eats single backslash escapes before PowerShell
+    # sees them. That is exactly what broke agent v48 and took three PCs offline.
+    $exe = @("$env:ProgramFiles\\RustDesk\\rustdesk.exe", "\${env:ProgramFiles(x86)}\\RustDesk\\rustdesk.exe") |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $exe) { return $null }
+    # Bounded like every other external call in this file. This runs inside the check-in path, so a
+    # hung process here would stall the whole check-in, not just the RustDesk lookup - and output is
+    # redirected to a file because that is the only way Start-Process can capture stdout.
+    $outFile = Join-Path $env:TEMP ("rustdesk-id-" + [guid]::NewGuid().ToString("N") + ".txt")
+    try {
+        $proc = Start-Process -FilePath $exe -ArgumentList "--get-id" -PassThru -WindowStyle Hidden -RedirectStandardOutput $outFile
+        if (-not $proc.WaitForExit(10000)) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            return $null
         }
+        # The redirected handle is released a moment after the process itself exits.
+        Start-Sleep -Milliseconds 250
+        $raw = Get-Content -Path $outFile -Raw -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        $id = $raw.Trim()
+        # Only accept something that actually looks like a RustDesk id. Without this, an error
+        # message or a usage banner on stdout would be reported to the dashboard AS the id.
+        if ($id -match '^[0-9]{6,}$') { return $id }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -Path $outFile -Force -ErrorAction SilentlyContinue
     }
-    foreach ($path in $candidates) {
-        if (-not (Test-Path $path)) { continue }
-        # Read as LINES rather than -Raw plus a split: the line-ending pattern a split needs has to
-        # survive this template, and in v48 it did not - it arrived as two real newlines. Get-Content
-        # already returns lines, so there is nothing left to escape.
-        foreach ($line in (Get-Content -Path $path -ErrorAction SilentlyContinue)) {
-            # Anchored to a whole line so it matches the top-level "id" key, not enc_id or id_server.
-            # Single-quoted so the pattern is literal, with '' for the quote character RustDesk
-            # actually writes - a double-quoted PowerShell string cannot carry a bare " here.
-            if ($line -match '^\\s*id\\s*=\\s*[''"]?([A-Za-z0-9]+)[''"]?\\s*$') { return $matches[1] }
-        }
-    }
-    return $null
 }
 
 # Same discovery approach Broadsign's own player leaves on disk (and the same fallback file/keyword
