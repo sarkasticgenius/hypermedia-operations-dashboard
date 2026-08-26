@@ -9,7 +9,7 @@ import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 import { renderInfoBanner } from '../lib/onboarding.js';
 
-// The section/link list already lives in the sidebar under Workspace (Maintenance/Digital
+// The section/link list already lives in the sidebar under its own nav group (Maintenance/Digital
 // Campaigns/pDOOH panels), so this page just shows the selected link's live view - no
 // duplicate list here.
 export function renderDashboards() {
@@ -38,7 +38,7 @@ export function renderDashboards() {
   // below whenever the page was taller than the iframe wanted to be.
   return `<div style="display:flex;flex-direction:column;height:100%;">
     ${admin ? `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;flex-shrink:0;">
-      <span>Links are managed from the sidebar under Workspace. Click Edit next to a link there to update its name or URL. If a link shows blank, its site may block embedding - use "Open in new tab" as a fallback.</span>
+      <span>Links are managed from the sidebar under ${esc(groupTitle)}. Click Edit next to a link there to update its name or URL. If a link shows blank, its site may block embedding - use "Open in new tab" as a fallback.</span>
       <button class="btn-sm" style="white-space:nowrap;" onclick='App.addDashLink("${activeSection.id}")'>+ Add Link to ${esc(groupTitle)}</button>
     </div>` : renderInfoBanner('dashboardsIntro', 'If a link shows blank, its site may block embedding - use "Open in new tab" as a fallback.', false)}
     <div class="dash-frame-wrap">

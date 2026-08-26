@@ -1103,8 +1103,8 @@ function buildWorkspaceDirectoryAgentScript(secret, uninstallPasswordHash) {
 # The 6-hourly and 20-minute cycles (-Once/-PollOnce below) are always fully headless - no window,
 # tray icon, or notification - since these PCs drive signage screens and nothing there may ever show
 # up over the content on screen. There IS a taskbar tray icon (-Tray below, in whichever user is
-# logged in) for at-a-glance status and a manual "Force Inventory Pull" button, similar to GLPI Agent
-# Monitor - but it auto-hides itself the instant Broadsign's or Grassfish's own player process is
+# logged in) for at-a-glance status and a manual "Force Inventory Pull" button - but it auto-hides
+# itself the instant Broadsign's or Grassfish's own player process is
 # actually running, so it can never appear over live public-facing content either.
 
 param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce, [string]$RunCommandFile, [switch]$Tray, [switch]$DuScrapeOnce)
@@ -1204,7 +1204,7 @@ if ($PSCommandPath -and $PSCommandPath -ne $InstalledScriptPath) {
     }
 }
 
-# A small GLPI-Agent-Monitor-style taskbar icon: a status window on double-click (last check-in
+# The Jstar Agent taskbar icon: a status window on double-click (last check-in
 # time/result), "Force Inventory Pull" and "View Agent Logs" on the context menu. Runs as the
 # logged-in user (see the AtLogOn task registered below, and -Tray excluded from self-elevation
 # above), NOT as SYSTEM - a SYSTEM-run task executes in the non-interactive Session 0 and can never

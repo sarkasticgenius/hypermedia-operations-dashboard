@@ -3,15 +3,16 @@
 // conditions that can't be detected from inside a single check-in/sync itself, since each is about
 // something ABSENT, or about state that lives across multiple syncs, rather than a value that
 // arrives in one request body:
-//   - A Digital Directory PC going offline. Mirrors isOnline()/STALE_AFTER_MINUTES in
-//     workspaceDirectory.js exactly (30 minutes since last_seen).
+//   - A Digital Directory PC going offline, and the same PC coming back. Mirrors
+//     isOnline()/STALE_AFTER_MINUTES in workspaceDirectory.js exactly (30 minutes since last_seen).
 //   - A device's DU data-usage scrape going silently stale (48h+ with no fresh reading, while the
 //     device is otherwise online and checking in fine). See DU_STALE_AFTER_HOURS below for why -
 //     this exact blind spot let TOTEM-8's SIM run down to 91% used with nobody told.
-//   - A Broadsign/Grassfish screen newly going offline. location_sub_assets only ever holds
-//     CURRENTLY offline rows, and broadsign-sync/grassfish-sync fully wipe+reinsert their rows on
-//     every sync - so "newly offline" is tracked separately in workspace_offline_screens, keyed by
-//     (source, location, screen name), which IS stable sync to sync even though the row ids aren't.
+//   - A Broadsign/Grassfish screen newly going offline, and the same screen coming back.
+//     location_sub_assets only ever holds CURRENTLY offline rows, and broadsign-sync/grassfish-sync
+//     fully wipe+reinsert their rows on every sync - so "newly offline" is tracked separately in
+//     workspace_offline_screens, keyed by (source, location, screen name), which IS stable sync to
+//     sync even though the row ids aren't. Recovery is that key disappearing from the offline set.
 //   - A Digital Directory device developing a NEW problem (not full offline - antivirus disabled, a
 //     popup appearing, etc.). workspace_devices.problems_last_alerted is the baseline; anything in
 //     the current problems list that wasn't in that baseline is "new".
@@ -137,7 +138,10 @@ Deno.serve(async (req) => {
     const staleMs = STALE_AFTER_MINUTES * 60 * 1000;
     const now = Date.now();
     const newlyOffline: { id: string; hostname: string; broadsignPlayerId: string | null; grassfishBoxId: string | null }[] = [];
-    const recovered: string[] = [];
+    // Carries the same shape as newlyOffline (not just ids) so the recovery message can name the
+    // screen/venue through buildLabelFor, exactly like the going-offline message does - being told
+    // "PC-48210B335B81 is back" without knowing which screen that is means looking it up by hand.
+    const recovered: { id: string; hostname: string; broadsignPlayerId: string | null; grassfishBoxId: string | null; offlineSince: string | null }[] = [];
     const newlyDuStale: { id: string; hostname: string; broadsignPlayerId: string | null; grassfishBoxId: string | null; lastScraped: string | null }[] = [];
     const duRecovered: string[] = [];
     const newProblemDevices: { id: string; hostname: string; broadsignPlayerId: string | null; grassfishBoxId: string | null; newOnes: string[]; allProblems: string[] }[] = [];
@@ -148,7 +152,7 @@ Deno.serve(async (req) => {
       if (isOffline && !d.offline_alerted_at) {
         newlyOffline.push({ id: d.id, hostname: d.hostname, broadsignPlayerId: d.broadsign_player_id, grassfishBoxId: d.grassfish_box_id });
       } else if (!isOffline && d.offline_alerted_at) {
-        recovered.push(d.id);
+        recovered.push({ id: d.id, hostname: d.hostname, broadsignPlayerId: d.broadsign_player_id, grassfishBoxId: d.grassfish_box_id, offlineSince: d.offline_alerted_at });
       }
 
       // New-problem check runs regardless of online/offline - a device that just went offline still
@@ -181,7 +185,7 @@ Deno.serve(async (req) => {
       await adminClient.from('workspace_devices').update({ offline_alerted_at: new Date().toISOString() }).in('id', newlyOffline.map((d) => d.id));
     }
     if (recovered.length) {
-      await adminClient.from('workspace_devices').update({ offline_alerted_at: null }).in('id', recovered);
+      await adminClient.from('workspace_devices').update({ offline_alerted_at: null }).in('id', recovered.map((d) => d.id));
     }
     if (newlyDuStale.length) {
       await adminClient.from('workspace_devices').update({ du_stale_alerted_at: new Date().toISOString() }).in('id', newlyDuStale.map((d) => d.id));
@@ -200,6 +204,30 @@ Deno.serve(async (req) => {
         ? `${labelFor(newlyOffline[0])} went offline (no check-in for ${STALE_AFTER_MINUTES}+ minutes).`
         : `${newlyOffline.length} devices went offline (no check-in for ${STALE_AFTER_MINUTES}+ minutes): ${newlyOffline.map(labelFor).join(', ')}.`;
       results.notified = await postSlack(adminClient, supabaseUrl, anonKey, text);
+    }
+
+    // The going-offline alert had no counterpart, so a device coming back was silent - the flag was
+    // cleared in the database and nothing was said, leaving whoever saw the offline message with no
+    // way to learn it had resolved except by opening the dashboard. Same edge-triggered batching as
+    // every other condition here: one message per scan, fired only on the transition.
+    if (recovered.length) {
+      const labelFor = await buildLabelFor(adminClient, recovered);
+      // Measured from when the OFFLINE ALERT fired, not from last_seen - last_seen has already been
+      // updated by the check-in that brought it back, so it now reads seconds ago and would make
+      // every outage look instant. offline_alerted_at is the last timestamp that still refers to
+      // the outage itself. It lags the true start by up to one scan interval, hence "about".
+      const downLabel = (iso: string | null) => {
+        if (!iso) return '';
+        const mins = Math.round((now - new Date(iso).getTime()) / 60000);
+        if (mins < 60) return ` after about ${mins} minute${mins === 1 ? '' : 's'}`;
+        const hours = mins / 60;
+        if (hours < 24) return ` after about ${hours.toFixed(hours < 10 ? 1 : 0)} hours`;
+        return ` after about ${Math.round(hours / 24)} day${Math.round(hours / 24) === 1 ? '' : 's'}`;
+      };
+      const text = recovered.length === 1
+        ? `:white_check_mark: ${labelFor(recovered[0])} is back online${downLabel(recovered[0].offlineSince)}.`
+        : `:white_check_mark: ${recovered.length} devices are back online: ${recovered.map((d) => `${labelFor(d)}${downLabel(d.offlineSince)}`).join(', ')}.`;
+      results.recoveryNotified = await postSlack(adminClient, supabaseUrl, anonKey, text);
     }
     results.newlyOffline = newlyOffline.length;
     results.recovered = recovered.length;
@@ -244,10 +272,14 @@ Deno.serve(async (req) => {
     const currentKeySet = new Set(currentScreens.map((s) => `${s.source}|${s.location_id}|${s.name}`));
 
     const { data: knownOffline } = await adminClient.from('workspace_offline_screens').select('id, source, location_id, screen_key');
-    const knownKeyToId = new Map(((knownOffline || []) as any[]).map((k) => [`${k.source}|${k.location_id}|${k.screen_key}`, k.id]));
+    // Keeps the whole row, not just the id: recovery is announced by NAME and venue like the
+    // going-offline message, and once the row is deleted below there is nothing left to look it up
+    // from - location_sub_assets only holds screens that are still offline.
+    const knownKeyToRow = new Map(((knownOffline || []) as any[]).map((k) => [`${k.source}|${k.location_id}|${k.screen_key}`, k]));
 
-    const newlyOfflineScreens = currentScreens.filter((s) => !knownKeyToId.has(`${s.source}|${s.location_id}|${s.name}`));
-    const recoveredScreenIds = [...knownKeyToId.entries()].filter(([key]) => !currentKeySet.has(key)).map(([, id]) => id);
+    const newlyOfflineScreens = currentScreens.filter((s) => !knownKeyToRow.has(`${s.source}|${s.location_id}|${s.name}`));
+    const recoveredScreens = [...knownKeyToRow.entries()].filter(([key]) => !currentKeySet.has(key)).map(([, row]) => row);
+    const recoveredScreenIds = recoveredScreens.map((r) => r.id);
 
     if (newlyOfflineScreens.length) {
       await adminClient.from('workspace_offline_screens')
@@ -280,6 +312,34 @@ Deno.serve(async (req) => {
         });
       const text = `:red_circle: ${newlyOfflineScreens.length} screen(s) newly offline:\n${lines.join('\n')}`;
       results.screensNotified = await postSlack(adminClient, supabaseUrl, anonKey, text);
+    }
+
+    // Counterpart to the newly-offline message above. Without it a screen's recovery was only ever
+    // a silent row delete, so an admin who saw ":red_circle: IBM-GF-MPI-8B newly offline" was never
+    // told it came back - the same one-sided reporting the device path had.
+    if (recoveredScreens.length) {
+      const locIds = [...new Set(recoveredScreens.map((s) => s.location_id))];
+      const { data: locRows } = await adminClient.from('locations').select('id, name').in('id', locIds);
+      const locNameById = new Map(((locRows || []) as any[]).map((l) => [l.id, l.name]));
+      // Grouped by source+location and capped identically to the offline message - a whole mall
+      // coming back at once is exactly as common as it dropping at once (one power event, both
+      // directions), so it needs the same treatment rather than one line per screen.
+      const bySourceLoc = new Map<string, { source: string; locName: string; names: string[] }>();
+      for (const s of recoveredScreens) {
+        const key = `${s.source}|${s.location_id}`;
+        const entry = bySourceLoc.get(key) || { source: s.source, locName: locNameById.get(s.location_id) || 'Unassigned', names: [] };
+        entry.names.push(s.screen_key || 'Unnamed screen');
+        bySourceLoc.set(key, entry);
+      }
+      const MAX_NAMES_PER_LOCATION = 15;
+      const lines = [...bySourceLoc.values()].sort((a, b) => b.names.length - a.names.length)
+        .map((e) => {
+          const shown = e.names.slice(0, MAX_NAMES_PER_LOCATION).join(', ');
+          const more = e.names.length > MAX_NAMES_PER_LOCATION ? ` +${e.names.length - MAX_NAMES_PER_LOCATION} more` : '';
+          return `• [${e.source === 'broadsign' ? 'Broadsign' : 'Grassfish'}] ${e.locName} (${e.names.length}): ${shown}${more}`;
+        });
+      const text = `:white_check_mark: ${recoveredScreens.length} screen(s) back online:\n${lines.join('\n')}`;
+      results.screenRecoveryNotified = await postSlack(adminClient, supabaseUrl, anonKey, text);
     }
     results.newlyOfflineScreens = newlyOfflineScreens.length;
     results.recoveredScreens = recoveredScreenIds.length;
