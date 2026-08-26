@@ -3115,7 +3115,21 @@ $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
 # are deliberately generous relative to what a normal run should ever need (a full 6-hourly
 # check-in with a queued Run Command's own 3-minute child-process timeout baked in) while still
 # guaranteeing the fleet self-heals from any hang within well under a day rather than up to 3.
-$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew
+# -AllowStartIfOnBatteries and -DontStopIfGoingOnBatteries on EVERY task this script registers,
+# because PowerShell's own defaults for both are the opposite and they are silently fatal here:
+# New-ScheduledTaskSettingsSet defaults DisallowStartIfOnBatteries=True AND StopIfGoingOnBatteries
+# =True, so Windows refuses to start the task while a machine is on battery and KILLS it mid-run
+# the moment the machine switches to battery. The agent then goes completely silent - no check-in,
+# no poll, no self-update - on a PC that is powered on and working perfectly, and the dashboard
+# correctly-but-uselessly reports it Offline with no way to tell that apart from a real outage.
+# Confirmed live on AE1PC119 (26 Aug 2026): running on battery, agent stopped reporting, every
+# registered task carried DisallowStartIfOnBatteries=True.
+#
+# This stayed invisible for as long as the fleet was mains-powered signage PCs, which never leave
+# AC. It is not a laptop-only concern though: a signage PC behind a UPS reports as battery-powered
+# for the duration of any mains blip, which is exactly the moment monitoring needs to keep working
+# rather than switch itself off.
+$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 try {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Set-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($RepeatTrigger, $StartupTrigger) -Principal $Principal -Settings $Settings | Out-Null
@@ -3178,7 +3192,7 @@ try {
     # Invoke-PendingCommand's own child-process timeout), so it should never legitimately run
     # anywhere near this long. Bounding it well under the 20-minute repeat interval means a hang
     # here self-heals in time for the VERY NEXT scheduled trigger, not just "eventually."
-    $PollSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
+    $PollSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     if (Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue) {
         Set-ScheduledTask -TaskName $PollTaskName -Action $PollAction -Trigger $PollTrigger -Principal $Principal -Settings $PollSettings | Out-Null
     } else {
@@ -3201,7 +3215,7 @@ try {
     $DuPrincipal = New-ScheduledTaskPrincipal -GroupId "S-1-5-32-545" -RunLevel Limited
     # Bounded well above a normal scrape (a browser launch plus page render) but far short of the
     # 3-day default, so a wedged browser cannot block the next attempt indefinitely.
-    $DuSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
+    $DuSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     if (Get-ScheduledTask -TaskName $DuScrapeTaskName -ErrorAction SilentlyContinue) {
         Set-ScheduledTask -TaskName $DuScrapeTaskName -Action $DuAction -Principal $DuPrincipal -Settings $DuSettings | Out-Null
     } else {
@@ -3227,7 +3241,7 @@ try {
     # of Register-ScheduledTask's underlying CIM call doing its own name-to-SID lookup, which the
     # well-known SID form sidesteps entirely since it needs no lookup at all.
     $TrayPrincipal = New-ScheduledTaskPrincipal -GroupId "S-1-5-32-545" -RunLevel Limited
-    $TraySettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    $TraySettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     # -ErrorAction Stop on both: Register-/Set-ScheduledTask surface a failed underlying CIM call as a
     # NON-terminating error by default, which a bare try/catch does not catch - confirmed live, this
     # let a real registration failure fall straight through to the unconditional "installed" success
