@@ -12,10 +12,16 @@
 // response schemas (adv_name, c_name, a_name, cr_name, s_name, p_name, playouts, impressions,
 // impressions_ontarget, revenue, auctions, requests, bids, wins, cpm, calls, etc).
 //
-// One day of /stats-ads alone can be 15k+ rows, so date-range tabs default to yesterday only
+// One day of /stats-ads alone can be 15k+ rows, so date-range tabs default to a single day
 // (not the API's own 30-day default) to keep the initial load fast - a 30-day pull that size
 // risks the edge function or browser choking on the response, which is what silently produced an
 // empty Reporting page even after the API connection itself was confirmed working.
+//
+// That single day is TODAY, not yesterday - confirmed live that AiOO's stats have no same-day
+// lag (a same-day pull returned 16,439 rows, right in line with a completed day's ~16k), so
+// there's no data-completeness reason to look a day back by default. Today's own totals are
+// necessarily partial and grow over the course of the day - that's inherent to viewing an
+// in-progress day, not a symptom of anything broken, same as any live dashboard.
 import { STATE, setState, loadData, toast } from '../state.js';
 import { loadingCard } from '../modals.js';
 import { supabase } from '../supabaseClient.js';
@@ -58,10 +64,8 @@ const DSP_SUM_FIELDS = [
 ];
 
 function defaultDateRange() {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  const yesterday = d.toISOString().slice(0, 10);
-  return { start: yesterday, end: yesterday };
+  const today = new Date().toISOString().slice(0, 10);
+  return { start: today, end: today };
 }
 
 async function fetchReportingStats(endpoint, params = {}) {
@@ -1553,7 +1557,7 @@ export function renderReporting() {
           <button class="btn btn-orange" type="button" ${loading ? 'disabled' : ''} onclick="App.applyReportingFilter()">${loading ? 'Loading...' : 'Apply Date Filter'}</button>
           ${raw ? `<button class="btn-outline btn-sm" type="button" onclick="App.downloadTabExcel()">Download Excel</button>` : ''}
         </div>
-        <div class="desc" style="margin-top:6px;">Defaults to yesterday only - a single day can already be 15k+ rows, so widen the range with care.</div>
+        <div class="desc" style="margin-top:6px;">Defaults to today only (partial, still growing) - a single day can already be 15k+ rows, so widen the range with care.</div>
       </div>
       ${errorMsg ? `<div class="login-error" style="margin-bottom:14px;">${esc(errorMsg)}</div>` : ''}
       ${tab === 'trafficSheet' && STATE.reportingDspsError ? `<div class="login-error" style="margin-bottom:14px;">Programmatic data: ${esc(STATE.reportingDspsError)}</div>` : ''}
