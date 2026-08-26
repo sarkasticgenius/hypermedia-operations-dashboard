@@ -1108,7 +1108,7 @@ function buildWorkspaceDirectoryAgentScript(secret, uninstallPasswordHash) {
 # itself the instant Broadsign's or Grassfish's own player process is
 # actually running, so it can never appear over live public-facing content either.
 
-param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce, [string]$RunCommandFile, [switch]$Tray, [switch]$DuScrapeOnce)
+param([switch]$Once, [switch]$Uninstall, [switch]$PollOnce, [string]$RunCommandFile, [switch]$Tray, [switch]$DuScrapeOnce, [switch]$Service)
 
 $CheckinUrl = "${checkinUrl}"
 $CollectorUrl = "${collectorUrl}"
@@ -1176,6 +1176,14 @@ $RenamedFromFile = Join-Path $StateDir "renamed-from.txt"
 $CollectorCacheFile = Join-Path $StateDir "collector-cache.ps1"
 $CollectorVersionFile = Join-Path $StateDir "collector-cache-version.txt"
 $UninstallPasswordHash = "${uninstallHash}"
+# Windows Service identity (see the WinSW install block and the -Service branch far below). One
+# fixed, pinned build - github.com/winsw/winsw v2.12.0, WinSW.NET461.exe - verified by SHA-256
+# before it is ever executed, never trusted just because the download succeeded.
+$ServiceName = "WorkspaceDirectoryAgentSvc"
+$ServiceExePath = Join-Path $StateDir "$ServiceName.exe"
+$ServiceXmlPath = Join-Path $StateDir "$ServiceName.xml"
+$WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe"
+$WinSwSha256 = "B5066B7BBDFBA1293E5D15CDA3CAAEA88FBEAB35BD5B38C41C913D492AADFC4F"
 
 # Self-elevate if not already running as Administrator (needed to register/unregister the
 # SYSTEM-level task either way, install OR uninstall). Skipped for -Once/-PollOnce - both only ever
@@ -1444,6 +1452,20 @@ function Invoke-UninstallCleanup {
     Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
     Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
     Get-ScheduledTask -TaskName $TrayTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    # Must run BEFORE the Remove-Item below deletes $ServiceExePath out from under it - stop+uninstall
+    # via WinSW itself when it's still on disk, falling back to sc.exe delete (which needs no exe at
+    # all) for the rare case the wrapper is already gone but Windows still has the service registered.
+    if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+        try {
+            if (Test-Path $ServiceExePath) {
+                & $ServiceExePath stop 2>&1 | Out-Null
+                & $ServiceExePath uninstall 2>&1 | Out-Null
+            } else {
+                Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+                & sc.exe delete $ServiceName | Out-Null
+            }
+        } catch {}
+    }
     Stop-TrayProcesses
     Remove-Item -Path $StateDir -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -1588,6 +1610,17 @@ function Invoke-SelfUpdate($OriginalArgs) {
             # installed and skips straight past its own self-update instead of fetching again.
             Set-Content -Path $ShellVersionFile -Value $publishedVersion -Encoding utf8 -NoNewline
             Write-AgentLog "Agent updated to published version $publishedVersion - re-running with the new logic now."
+            if ($OriginalArgs -and $OriginalArgs.ContainsKey('Service') -and $OriginalArgs['Service']) {
+                # A -Service process is meant to run for weeks or months straight. Recursing in-place
+                # like the branch below would add one stack frame per future update for as long as it
+                # stays up, eventually exhausting it - a slow-motion version of exactly the kind of
+                # self-inflicted outage this whole redesign exists to rule out. Exiting non-zero
+                # instead hands control back to WinSW, whose onfailure policy (see the service XML
+                # below) relaunches the script fresh - a clean process that just reads the file
+                # already written above, not a recursive call into it.
+                Write-AgentLog "Exiting for a clean service restart onto the new version."
+                exit 111
+            }
             if ($OriginalArgs -and $OriginalArgs.Count -gt 0) {
                 & $InstalledScriptPath @OriginalArgs
             } else {
@@ -3203,6 +3236,91 @@ try {
     Write-Warning "Could not register the poll task: $($_.Exception.Message)"
 }
 
+# Installs (or verifies) the Windows Service that replaces the two Scheduled Tasks just above with
+# one long-running process (see the -Service branch far below) - a genuine SCM-managed service can be
+# both started at boot AND restarted on a crash, which is the one combination Scheduled Tasks have
+# already proven fragile at here (see the -AllowStartIfOnBatteries fix elsewhere in this file). This
+# is what makes "install this agent exactly once, everything after that ships from the dashboard"
+# actually true, rather than true until the next edge case Scheduled Tasks don't handle.
+#
+# WinSW (github.com/winsw/winsw) is fetched over plain HTTPS from its own pinned GitHub release and
+# verified against a pinned SHA-256 before it is EVER executed - the same never-trust-a-download
+# discipline as the self-update parse-check above, just applied to a binary instead of a script. A
+# hash mismatch refuses the install outright rather than running unverified code as SYSTEM.
+#
+# Deliberately never removes the two tasks above - only DISABLES them, and only once the service is
+# confirmed actually Running. That keeps them as a real, currently-correct, one-command recovery path
+# (Enable-ScheduledTask) for as long as this PC exists, rather than something that would need to be
+# fully re-installed from scratch if the service ever needed to be abandoned. A PC where the download
+# fails, the hash doesn't match, or the service won't start simply keeps running on the Scheduled
+# Tasks exactly as it does today, and retries the service install again on its next 6-hourly cycle.
+$ServiceOk = $false
+try {
+    $existingSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $existingSvc) {
+        if (-not (Test-Path $ServiceExePath)) {
+            Write-Host "Downloading service wrapper (WinSW $ServiceName)..."
+            $downloadPath = "$ServiceExePath.download"
+            Invoke-WebRequest -Uri $WinSwUrl -OutFile $downloadPath -TimeoutSec 60 -UseBasicParsing
+            $actualHash = (Get-FileHash -Path $downloadPath -Algorithm SHA256).Hash
+            if ($actualHash -ne $WinSwSha256) {
+                Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue
+                throw "Downloaded service wrapper hash $actualHash does not match the pinned $WinSwSha256 - refusing to install it."
+            }
+            Move-Item $downloadPath $ServiceExePath -Force
+        }
+        $svcArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$InstalledScriptPath\`" -Service"
+        # onfailure/restart covers both an actual crash and the deliberate exit(111) in
+        # Invoke-SelfUpdate's Service-aware branch above - WinSW cannot tell those apart from the
+        # exit code alone, which is fine: a fresh relaunch is the correct response to both.
+        # resetfailure keeps a PC that is genuinely crash-looping from ever being seen as "healthy
+        # again" just because an hour passed with no restarts - see resetfailure's own 1-hour window.
+        $svcXml = @"
+<service>
+  <id>$ServiceName</id>
+  <name>Hypermedia Digital Directory Agent</name>
+  <description>Long-running check-in loop for the Hypermedia Operations Dashboard. Installed once - every future change ships from the dashboard's own Publish button, never by touching this PC directly.</description>
+  <executable>powershell.exe</executable>
+  <arguments>$svcArguments</arguments>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>3</keepFiles>
+  </log>
+  <onfailure action="restart" delay="10 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <stoptimeout>15 sec</stoptimeout>
+</service>
+"@
+        Set-Content -Path $ServiceXmlPath -Value $svcXml -Encoding utf8
+        # Captured (not discarded) specifically for the failure path below - WinSW reports its own
+        # errors (e.g. "already exists", a permissions problem) on stdout/stderr, and with 1500 PCs
+        # potentially hitting this, "did not reach Running state" with no further detail would mean
+        # re-deriving the cause from scratch on every single one instead of just reading the log.
+        $installOutput = & $ServiceExePath install 2>&1 | Out-String
+        Start-Sleep -Seconds 2
+        $startOutput = & $ServiceExePath start 2>&1 | Out-String
+    } elseif ($existingSvc.Status -ne 'Running') {
+        Start-Service -Name $ServiceName -ErrorAction Stop
+    }
+    Start-Sleep -Seconds 3
+    $checkedSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    $ServiceOk = [bool]($checkedSvc -and $checkedSvc.Status -eq 'Running')
+    if ($ServiceOk) {
+        Write-Host "Service '$ServiceName' is running." -ForegroundColor Green
+        if ((Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue).State -ne 'Disabled') {
+            Disable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null
+            Disable-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue | Out-Null
+            Write-AgentLog "Migrated to the Windows Service - the old 6-hourly and 20-minute Scheduled Tasks are now disabled (not removed; still available as a manual recovery path)."
+        }
+    } else {
+        $detail = (@($installOutput, $startOutput) | Where-Object { $_ }) -join ' | '
+        Write-Warning "Service '$ServiceName' did not reach Running state - keeping the Scheduled Task fallback active. Will retry on the next cycle. $detail"
+        Write-AgentLog "Service install/start did not reach Running: $detail"
+    }
+} catch {
+    Write-Warning "Could not install/start the agent service - keeping the Scheduled Task fallback active: $($_.Exception.Message)"
+}
+
 # The on-demand task that carries the DU scrape into the logged-in user's session (see
 # Start-DuScrapeInUserSession for why that is the only place a headless browser renders). No
 # trigger at all - it exists purely to be started by the SYSTEM check-in when a scrape is due, so
@@ -3261,10 +3379,48 @@ try {
     Write-Warning "Could not register the tray task: $($_.Exception.Message)"
 }
 
-# Every 20-minute poll checks in - lightly (see Invoke-Checkin's -Light handling above) unless a
-# Force Inventory Pull is waiting, in which case it does the real thing instead. A cheap GET decides
-# which, first:
-if ($PollOnce) {
+# Suppresses two known interruption classes at the source, since detecting them after the fact
+# turned out to be more trouble than it's worth on a real signage PC (see below):
+#  - Windows Action Center/toast notifications, via the Explorer policy key.
+#  - Chrome/Edge's own "Show notifications?" permission prompt bar, via a browser policy - this one
+#    can't be caught by watching for popups at all, since it renders INSIDE the browser's own window,
+#    not as a separate one.
+# Deliberately does NOT touch anything under Windows Defender/Security Center - an earlier version
+# also disabled its notification toasts via HKLM:\SOFTWARE\Microsoft\Windows Defender Security
+# Center\Notifications, which is close to a textbook "malware disables the antivirus" signature -
+# Defender's own AMSI scanner flagged the whole script as malicious content and blocked every fresh
+# install outright the moment that shipped. A later version also tried detecting arbitrary unexpected
+# popups generically (EnumWindows + a screenshot of whatever was found) as a fallback for anything
+# not covered by the two keys below - AMSI blocked that too, for the same reason: window enumeration
+# + screen capture + uploading the result over the network is close to the definition of spyware,
+# regardless of intent, and no amount of removing the Defender-specific key alone fixed it. Both were
+# pulled entirely rather than reworked further, since a working install matters far more than being
+# able to catch a stray popup on screen.
+# Called on every real check-in (the flagless/-Once path below AND the -Service loop's own heavy
+# branch further down, never the lightweight poll) rather than install time only - the outer shell
+# self-updates from the published agent-shell version on every run (Invoke-SelfUpdate above), so this
+# reaches the whole already-installed fleet the same way any other shell change does, no per-machine
+# re-install needed. Cheap/idempotent, so calling it every heavy cycle also means it self-heals if
+# something else resets these keys.
+function Set-NotificationSuppressionPolicy {
+    try {
+        New-Item -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" -Name "DisableNotificationCenter" -Value 1 -Type DWord -Force
+        foreach ($browserKey in @("HKLM:\\SOFTWARE\\Policies\\Google\\Chrome", "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge")) {
+            New-Item -Path $browserKey -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $browserKey -Name "DefaultNotificationsSetting" -Value 2 -Type DWord -Force
+        }
+        Write-AgentLog "Applied signage notification-suppression policy (Action Center + Chrome/Edge permission prompts)."
+    } catch {
+        Write-Warning "Could not apply notification-suppression policy: $($_.Exception.Message)"
+    }
+}
+
+# Checks in - lightly (see Invoke-Checkin's -Light handling above) unless a Force Inventory Pull is
+# waiting, in which case it does the real thing instead. A cheap GET decides which, first. Shared by
+# the old -PollOnce Scheduled Task (still the fallback path - see the WinSW install block above) and
+# the new -Service loop below, so both stay behaviorally identical rather than two copies drifting.
+function Invoke-PollCycle {
     $forceRequested = $false
     try {
         $resp = Invoke-RestMethod -Method Get -Uri ($ForceStatusUrl + "?hostname=" + $env:COMPUTERNAME) -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 10
@@ -3295,43 +3451,53 @@ if ($PollOnce) {
         # actually large enough to matter on a metered cellular SIM) more often than it needs to.
         Invoke-Checkin -Light
     }
+}
+
+if ($PollOnce) {
+    Invoke-PollCycle
     exit
 }
 
-# Suppresses two known interruption classes at the source, since detecting them after the fact
-# turned out to be more trouble than it's worth on a real signage PC (see below):
-#  - Windows Action Center/toast notifications, via the Explorer policy key.
-#  - Chrome/Edge's own "Show notifications?" permission prompt bar, via a browser policy - this one
-#    can't be caught by watching for popups at all, since it renders INSIDE the browser's own window,
-#    not as a separate one.
-# Deliberately does NOT touch anything under Windows Defender/Security Center - an earlier version
-# also disabled its notification toasts via HKLM:\SOFTWARE\Microsoft\Windows Defender Security
-# Center\Notifications, which is close to a textbook "malware disables the antivirus" signature -
-# Defender's own AMSI scanner flagged the whole script as malicious content and blocked every fresh
-# install outright the moment that shipped. A later version also tried detecting arbitrary unexpected
-# popups generically (EnumWindows + a screenshot of whatever was found) as a fallback for anything
-# not covered by the two keys below - AMSI blocked that too, for the same reason: window enumeration
-# + screen capture + uploading the result over the network is close to the definition of spyware,
-# regardless of intent, and no amount of removing the Defender-specific key alone fixed it. Both were
-# pulled entirely rather than reworked further, since a working install matters far more than being
-# able to catch a stray popup on screen.
-# Runs on every real check-in (fresh install AND the 6-hourly -Once cycle, skipped only for the
-# lightweight 20-minute -PollOnce path via the exit above) rather than install time only - the outer
-# shell self-updates from the published agent-shell version on every run (Invoke-SelfUpdate above),
-# so this reaches the whole already-installed fleet the same way any other shell change does, no
-# per-machine re-install needed. Cheap/idempotent, so running it every cycle also means it self-heals
-# if something else resets these keys.
-try {
-    New-Item -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" -Name "DisableNotificationCenter" -Value 1 -Type DWord -Force
-    foreach ($browserKey in @("HKLM:\\SOFTWARE\\Policies\\Google\\Chrome", "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge")) {
-        New-Item -Path $browserKey -Force -ErrorAction SilentlyContinue | Out-Null
-        Set-ItemProperty -Path $browserKey -Name "DefaultNotificationsSetting" -Value 2 -Type DWord -Force
+# The permanent, install-once replacement for the two Scheduled Tasks above: one process that stays
+# resident for as long as the PC is on, doing exactly what they did (a light poll every
+# $PollIntervalMinutes, a full heavy check-in roughly every 6 hours) from inside a single loop instead
+# of two independent OS-level triggers. WinSW (see the install block above) launches this via
+# "-Service" and restarts it automatically - on a crash, AND deliberately on every self-update (see
+# the Service-aware branch in Invoke-SelfUpdate above) - so this PC never again needs anyone
+# physically at it for a shell-level change: publishing a new version here is now the ONLY way this
+# loop's own behavior ever changes.
+#
+# $lastHeavy lives only in memory, not on disk - a service restart (self-update or crash) simply
+# resets its own 6-hour clock, which in the worst case means one heavy check-in arrives a little
+# early. That's a negligible, self-correcting cost next to persisting and parsing a timestamp file on
+# every single iteration for a savings that only ever matters in the same rare moment the process was
+# about to restart anyway.
+if ($Service) {
+    Write-AgentLog "Service loop starting (PID $PID)."
+    $lastHeavy = [datetime]::MinValue
+    while ($true) {
+        try {
+            Invoke-SelfUpdate $PSBoundParameters
+            if (((Get-Date) - $lastHeavy).TotalHours -ge 6) {
+                Set-NotificationSuppressionPolicy
+                Invoke-Checkin
+                $lastHeavy = Get-Date
+            } else {
+                Invoke-PollCycle
+            }
+        } catch {
+            # Deliberately swallowed rather than left to crash the process: WinSW's onfailure policy
+            # would restart it anyway, but that would also reset every in-memory timer, so it's
+            # strictly better to log, wait out this one cycle, and try again in place.
+            Write-AgentLog "Service loop iteration failed (continuing): $($_.Exception.Message)"
+        }
+        Start-Sleep -Seconds ($PollIntervalMinutes * 60)
     }
-    Write-AgentLog "Applied signage notification-suppression policy (Action Center + Chrome/Edge permission prompts)."
-} catch {
-    Write-Warning "Could not apply notification-suppression policy: $($_.Exception.Message)"
 }
+
+# Flagless/-Once fall-through only (the -Service loop applies this itself on its own heavy branch,
+# see Set-NotificationSuppressionPolicy's own header for why it can't just run once at install time).
+Set-NotificationSuppressionPolicy
 
 Invoke-Checkin
 `;
