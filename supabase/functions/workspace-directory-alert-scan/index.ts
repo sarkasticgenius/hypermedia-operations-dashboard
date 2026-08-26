@@ -220,8 +220,13 @@ Deno.serve(async (req) => {
         if (!iso) return '';
         const mins = Math.round((now - new Date(iso).getTime()) / 60000);
         if (mins < 60) return ` after about ${mins} minute${mins === 1 ? '' : 's'}`;
+        // One decimal only when it actually adds something - a flat toFixed(1) rendered a clean
+        // five-hour outage as "5.0 hours", which reads like spurious precision rather than detail.
         const hours = mins / 60;
-        if (hours < 24) return ` after about ${hours.toFixed(hours < 10 ? 1 : 0)} hours`;
+        if (hours < 24) {
+          const shown = hours < 10 ? Number(hours.toFixed(1)) : Math.round(hours);
+          return ` after about ${shown} hour${shown === 1 ? '' : 's'}`;
+        }
         return ` after about ${Math.round(hours / 24)} day${Math.round(hours / 24) === 1 ? '' : 's'}`;
       };
       const text = recovered.length === 1
