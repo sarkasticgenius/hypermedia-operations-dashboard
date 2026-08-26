@@ -575,6 +575,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentScript()">Download Install Script (.ps1)</button>
           <button type="button" class="btn-outline btn-sm" onclick="App.downloadWorkspaceDirectoryAgentBatch()">Download Launcher (.bat)</button>
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentUninstallBatch()">Download Uninstall Launcher (.bat)</button>
+          <button type="button" class="btn-outline btn-sm" ${cfg.secret ? 'title="Copies a single PowerShell line to your clipboard - paste it into a PowerShell window on the target PC (e.g. over AnyDesk) instead of transferring both files. Always fetches whatever\'s currently published, live."' : 'disabled title="Save a secret first"'} onclick="App.copyWorkspaceDirectoryInstallCommand()">Copy One-Line Install Command</button>
         </div>
       </form>
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
@@ -3339,6 +3340,38 @@ export function downloadWorkspaceDirectoryAgentScript() {
   const secret = settings.workspaceDirectoryAgent?.secret;
   if (!secret) { toast('Save a secret first', 'error'); return; }
   downloadTextFile(buildWorkspaceDirectoryAgentScript(secret, settings.workspaceDirectoryAgent?.uninstallPasswordHash), 'Install-JstarAgent.ps1');
+}
+
+// A single pasteable line for a remote/AnyDesk session, in place of pushing the .ps1 and .bat over
+// separately and double-clicking the batch file - fetches the CURRENTLY PUBLISHED script from the
+// same endpoint Invoke-SelfUpdate itself polls (workspace-directory-agent-shell, canary-aware by
+// hostname), so this always installs whatever's live right now rather than a build that could have
+// gone stale sitting on a USB stick or in Downloads.
+//
+// Saved to a temp FILE and run via -File rather than piped straight into iex - the installed script
+// relocates itself on first run by copying $PSCommandPath to its protected install location (see
+// that block's own comment), and $PSCommandPath is only ever populated when PowerShell is executing
+// an actual file. Running the fetched text through iex/Invoke-Expression leaves $PSCommandPath
+// empty, so that relocation step would silently no-op - not fail loudly, just skip - and every
+// scheduled task registered afterward would point at a file that was never actually written,
+// failing at the OS level with no explanation ever reaching Write-AgentLog.
+//
+// No explicit elevation here: the script re-launches itself with -Verb RunAs when it isn't already
+// Administrator (see the self-elevation block near the top of buildWorkspaceDirectoryAgentScript),
+// so requesting it a second time here would just mean two UAC prompts instead of one.
+function buildWorkspaceDirectoryOneLinerInstallCommand(secret) {
+  const agentShellUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-agent-shell`;
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return `$r = Invoke-RestMethod -Uri "${agentShellUrl}?hostname=$env:COMPUTERNAME" -Headers @{ 'x-agent-secret' = '${secret}'; 'apikey' = '${anonKey}' }; $f = Join-Path $env:TEMP 'Install-JstarAgent.ps1'; Set-Content -Path $f -Value $r.script -Encoding utf8 -NoNewline; powershell.exe -NoProfile -ExecutionPolicy Bypass -File $f`;
+}
+
+export function copyWorkspaceDirectoryInstallCommand() {
+  const settings = STATE.pageData.settings?.data || {};
+  const secret = settings.workspaceDirectoryAgent?.secret;
+  if (!secret) { toast('Save a secret first', 'error'); return; }
+  navigator.clipboard?.writeText(buildWorkspaceDirectoryOneLinerInstallCommand(secret))
+    .then(() => toast('Install command copied - paste into PowerShell on the target PC'))
+    .catch(() => toast('Could not copy to clipboard', 'error'));
 }
 
 // Plain double-clickable launcher, same idea as the reference Jstar agent's own .cmd wrapper -
