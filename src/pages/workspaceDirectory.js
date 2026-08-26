@@ -528,6 +528,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
       ${editOk ? `<button class="btn-sm" onclick="App.openWorkspaceEditModal('${d.id}')">Edit</button>` : ''}
       ${editOk ? `<button class="btn-sm" title="Rename the Windows computer name on this PC - it applies the change and restarts itself" onclick="App.openWorkspaceRenameModal('${d.id}')">Rename</button>` : ''}
       ${editOk ? `<button class="btn-sm" title="${d.force_checkin_requested ? 'Already requested and still pending - click to re-request' : (d.pending_command ? 'Push the queued Run Command to this PC now' : 'Pull fresh inventory from this PC now')} - within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force${d.force_checkin_requested ? ' Again' : ''}</button>` : ''}
+      ${editOk ? `<button class="btn-sm" title="Restart this PC now - no one needs to be there, it comes back on its own within a minute or two" onclick="App.restartWorkspaceDevice('${d.id}')">Restart</button>` : ''}
       ${deleteOk ? `<button class="btn-sm" onclick="App.removeWorkspaceDevice('${d.id}')">Delete</button>` : ''}
     </td>
   </tr>`;
@@ -1048,6 +1049,34 @@ export async function checkWorkspaceDataUsage(deviceId) {
   } catch (e) { toast(e.message || 'Failed to queue data usage check', 'error'); }
 }
 
+// A plain queued Run Command rather than a dedicated marker (unlike ::DUCHECK) - a restart has no
+// figures to fold into a check-in payload, so there is nothing here for a special handler to do
+// that a Run Command doesn't already do on its own: SYSTEM always has the rights to restart the
+// machine it runs on, no elevation prompt to worry about the way an interactive user would hit one.
+//
+// -Force rather than a plain restart - these are unattended kiosks, so there is no one at the
+// keyboard to click through an app asking to save its work, and a restart that silently waits on
+// that forever is worse than one that just happens. Confirmed client-side first: this is the one
+// button here disruptive enough (drops whatever is on screen, however briefly) that a stray click
+// deserves a chance to back out, the same treatment "Roll Out to All PCs" already gets.
+export async function restartWorkspaceDevice(deviceId) {
+  try {
+    const devices = STATE.pageData.workspaceDevices?.data || [];
+    const device = devices.find((x) => x.id === deviceId);
+    if (!confirm(`Restart ${device?.hostname || 'this PC'} now?\n\nIt will drop offline briefly and come back on its own - no one needs to be there.`)) return;
+    const queued = device?.pending_command;
+    if (queued) {
+      toast('This PC already has a different command queued - clear it first, then restart.', 'error');
+      return;
+    }
+    await updateWorkspaceDevice(deviceId, { pending_command: 'Restart-Computer -Force', force_checkin_requested: true });
+    await logAudit('Restart Digital Directory device', device?.hostname || deviceId);
+    invalidate('workspaceDevices');
+    toast('Restart queued - this PC picks it up within ~20 minutes.');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to queue restart', 'error'); }
+}
+
 // One button, two effects depending on what's already true of the device - not really "pull" as a
 // separate concept from "push": a forced check-in ALWAYS runs Invoke-Checkin, which (per the agent
 // shell) executes any pending_command as part of that same check-in before reporting back - so if
@@ -1351,7 +1380,10 @@ registerModal('workspaceDetails', (data) => {
       ${(d.broadsign_player_id || d.grassfish_box_id) ? `<div class="small muted" style="margin-top:4px;">${[d.broadsign_player_id ? `Broadsign player: ${esc(d.broadsign_player_id)}` : '', d.grassfish_box_id ? `Grassfish box: ${esc(d.grassfish_box_id)}` : ''].filter(Boolean).join(' &middot; ')}</div>` : ''}
     </div>
 
-    <div class="card-head"><h3 style="font-size:13px;">Problems</h3></div>
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <h3 style="font-size:13px;">Problems</h3>
+      ${editOk ? `<button class="btn-sm" title="Restart this PC now - the same thing clicking Restart on a Windows Security/Update prompt would do, without needing to be physically there or remoted in" onclick="App.restartWorkspaceDevice('${d.id}')">Restart PC</button>` : ''}
+    </div>
     <div style="margin-bottom:12px;">${problemsHtml}${ignoredProblemsHtml}</div>
 
     <div class="card-head"><h3 style="font-size:13px;">Antivirus</h3></div>
