@@ -2562,8 +2562,10 @@ function Get-DuDataUsageViaDom {
 # enumeration + screenshot + network upload is close to a textbook spyware signature); this is a
 # much smaller, more ordinary use of the Windows API that does neither of those two things.
 $Script:ExpectedVisibleProcesses = @(
-    'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost',
+    'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost',
     'TextInputHost', 'ScreenClippingHost', 'LockApp',
+    # StartMenuExperienceHost is deliberately NOT here - see the player-aware check in
+    # Get-UnexpectedWindows below. It's only harmless when nothing is supposed to be on screen.
     # Broadsign's/Grassfish's actual player processes are the short "bsp"/"gfPlayer", not
     # "broadsignplayer"/"broadsign"/"grassfishplayer"/"grassfish" - none of those longer strings is a
     # substring of the real short name, so both were being flagged as an "unexpected" popup on every
@@ -2586,6 +2588,13 @@ function Get-UnexpectedWindows {
         [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
 '@
 
+    # Same two process names and same question the Jstar Agent tray icon already asks
+    # (Test-SignagePlayerRunning, -Tray branch above) to decide whether it must stay hidden - but
+    # defined again here rather than shared, because -Tray and this SYSTEM check-in are separate
+    # invocations of the script that never run in the same process and so can't share a variable.
+    # Checked once per call, not once per window, since every window this cycle gets the same answer.
+    $playerRunning = [bool](Get-Process -Name 'bsp', 'gfplayer' -ErrorAction SilentlyContinue)
+
     $found = New-Object System.Collections.Generic.List[object]
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
         $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -and $_.MainWindowTitle.Trim()
@@ -2599,6 +2608,14 @@ function Get-UnexpectedWindows {
         if ([WorkspaceDirectoryAgent.Win32]::IsIconic($hWnd)) { return }
 
         $procName = $_.ProcessName
+        # The Start Menu is ordinary desktop use on a back-office PC, or a signage PC between
+        # content-player restarts - nothing is supposed to be showing there anyway. The moment the
+        # player IS running, though, this PC is supposed to be full-screen on live public-facing
+        # content, and the Start Menu sitting on top of that is exactly the case this whole detector
+        # exists to catch - so it's the one process name that isn't unconditionally allowed the way
+        # every other entry in $Script:ExpectedVisibleProcesses is.
+        if ($procName -eq 'StartMenuExperienceHost' -and -not $playerRunning) { return }
+
         $isExpected = $false
         foreach ($allowed in $Script:ExpectedVisibleProcesses) {
             if ($procName -match [regex]::Escape($allowed)) { $isExpected = $true; break }
