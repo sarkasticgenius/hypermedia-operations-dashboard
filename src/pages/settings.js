@@ -3700,9 +3700,6 @@ function renderIntegrationsTab() {
       { name: 'fromName', label: 'From Name (optional)' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
     ], 'sendgrid-send')}
-    ${integrationField(settings, 'glpiFeed', 'GLPI CSV Feed', [
-      { name: 'csvUrl', label: 'CSV URL' }, { name: 'autoRefreshMinutes', label: 'Auto-refresh (minutes)', type: 'number' },
-    ])}
     ${integrationField(settings, 'campaignFeed', 'Campaign Sheet Feed', [
       { name: 'sheetUrl', label: 'Published Sheet CSV URL' }, { name: 'autoRefreshMinutes', label: 'Auto-refresh (minutes)', type: 'number' },
     ])}

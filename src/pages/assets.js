@@ -96,7 +96,6 @@ function renderInventoryView(data) {
       rental ? (a.date_of_rent ? `Rented: ${fmtDate(a.date_of_rent)}` : null) : (a.warranty_expiry ? `Warranty: ${fmtDate(a.warranty_expiry)}` : null),
       rental && a.maintenance_location ? `At: ${a.maintenance_location}` : null,
       a.maintenance_contractor ? `Contractor: ${a.maintenance_contractor}` : null,
-      a.source === 'glpi' ? '<span class="badge b-blue">GLPI</span>' : null,
     ].filter(Boolean).join(' · ');
     return `
       <tr style="${a.status === 'Faulty' ? 'background:#fdecea;' : ''}">
