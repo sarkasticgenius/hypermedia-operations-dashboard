@@ -1196,7 +1196,22 @@ $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Pri
 if (-not $Once -and -not $PollOnce -and -not $RunCommandFile -and -not $Tray -and -not $DuScrapeOnce -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $reElevateArgs = "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`""
     if ($Uninstall) { $reElevateArgs += " -Uninstall" }
-    Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs
+    try {
+        Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs -ErrorAction Stop
+    } catch {
+        # -Verb RunAs needs an interactive desktop session to show the UAC consent prompt - it
+        # cannot succeed over PsExec/WinRM/an RMM tool running as a plain admin ACCOUNT (as opposed
+        # to SYSTEM), and fails immediately and totally: nothing past this point ever runs, so the
+        # PC never even attempts a check-in and simply never appears on the dashboard, with nothing
+        # anywhere to explain why. Confirmed live 27 Aug 2026 - rolled out to many PCs at once over
+        # a remote/bulk tool, none of them registered. $StateDir/$LogFile don't exist yet this early
+        # (that copy-into-place happens further down), so this is surfaced to $env:TEMP instead -
+        # the one place guaranteed writable and findable without already having a working install.
+        $msg = "Could not self-elevate - this needs an interactive desktop for the UAC prompt, which fails silently when run over PsExec/WinRM/an RMM tool as a plain admin ACCOUNT. Run it AS SYSTEM instead (e.g. 'psexec -s ...', or your RMM's 'run as SYSTEM/LocalSystem' option) - SYSTEM already satisfies the admin check above and skips this step entirely. $($_.Exception.Message)"
+        Write-Warning $msg
+        try { Add-Content -Path (Join-Path $env:TEMP "JstarAgent-install-error.log") -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - $msg" -Encoding utf8 -ErrorAction SilentlyContinue } catch {}
+        exit 1
+    }
     exit
 }
 
