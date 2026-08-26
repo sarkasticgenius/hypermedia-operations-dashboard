@@ -1608,7 +1608,7 @@ function Invoke-PendingCommand($command) {
     }
 
     # A dashboard-queued "Check Data Usage" (the button on a device's Details panel): re-runs the
-    # mydata.du.ae scrape right now instead of waiting for the next 8 AM boundary.
+    # mydata.du.ae scrape right now instead of waiting for the next daily boundary.
     #
     # Deliberately NOT implemented as the plain Run Command "Get-DuDataUsage | ConvertTo-Json" that
     # an admin could type by hand: that only ever lands as text in Last Command Output, so the
@@ -1764,15 +1764,23 @@ function Get-DuScrapeBrowserPath {
 # The last attempt's timestamp, outcome and (for faults) reason, kept locally so ordinary check-ins
 # can re-report it without re-running the scrape. Written twice per scrape - once up front to hold
 # the once-a-day gate even if the scrape never returns, once after with the real outcome.
-# A stable, host-specific spread across the anchor hour, not a random one - random would pick a
+# A stable, host-specific spread across the anchor window, not a random one - random would pick a
 # different offset every agent restart, which defeats the point: this PC's quiet slot has to stay
 # put day to day so it doesn't wander back into the pile-up it was moved out of. Confirmed live on
 # 24 Aug 2026: every device in the fleet anchored to the same 08:00 clock second, so eleven
 # headless browsers hit mydata.du.ae inside the same 19-minute window and eleven came back empty;
 # the one device that DIDN'T pile up that morning (a late gate on a machine returning from an
-# outage) was also the one that worked. Spreading each host's own anchor across the hour after 8 AM
+# outage) was also the one that worked. Spreading each host's own anchor across the window
 # is the direct fix for that collision, whatever exactly it is in the du portal or the headless
 # launch that a pile-up triggers.
+#
+# 300 minutes (a 5-hour window, 03:00-07:59 local) rather than the 55 it started as, because that
+# 55 was sized for a 12-device fleet and does not survive the planned growth to ~1500 PCs: the same
+# 55-minute spread would pack ~27 devices into every minute, a far denser burst than the one that
+# already caused the 24 Aug collision, against a root cause that was never actually identified.
+# 300 brings that back to ~5 per minute. The window ENDS at 8 AM rather than starting there so
+# every device has reported before the 08:00 Dubai daily Slack digest reads the figures - on the
+# old 8-9 AM anchor the digest fired first and reported yesterday's numbers for most of the fleet.
 #
 # .NET's own string hashing is deliberately randomized per process (a security property, not a bug)
 # so it can't be used here - this hand-rolled FNV-1a is fixed across restarts by construction, and
@@ -1794,7 +1802,7 @@ function Get-DuJitterMinutes {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:COMPUTERNAME)
     [uint64]$hash = 2166136261
     foreach ($b in $bytes) { $hash = (($hash -bxor [uint64]$b) * 16777619) % 4294967296 }
-    return [int]($hash % 55)
+    return [int]($hash % 300)
 }
 
 # Applies a one-shot secret handed down by workspace-directory-force-status. Currently only an
@@ -1869,14 +1877,14 @@ function Get-DuScrapeState {
     return $state
 }
 
-# Whether a scrape is due right now, from this host's own jittered slot in the 8-9 AM hour plus the
-# hourly retry a FAULT earns. 'nodata' is pointedly not retried - it is a stable, correct answer
+# Whether a scrape is due right now, from this host's own jittered slot in the 3-8 AM window plus
+# the hourly retry a FAULT earns. 'nodata' is pointedly not retried - it is a stable, correct answer
 # (no du SIM behind this connection), and retrying it hourly would relaunch a browser every hour
 # forever on every Wi-Fi/LAN machine in the fleet to re-learn the same thing.
 function Test-DuScrapeDue($state) {
     $lastAttempt = if ($state -and $state.at) { try { [datetime]$state.at } catch { $null } } else { $null }
-    $todayEightAm = (Get-Date -Hour 8 -Minute 0 -Second 0 -Millisecond 0).AddMinutes((Get-DuJitterMinutes))
-    $boundary = if ((Get-Date) -lt $todayEightAm) { $todayEightAm.AddDays(-1) } else { $todayEightAm }
+    $todayAnchor = (Get-Date -Hour 3 -Minute 0 -Second 0 -Millisecond 0).AddMinutes((Get-DuJitterMinutes))
+    $boundary = if ((Get-Date) -lt $todayAnchor) { $todayAnchor.AddDays(-1) } else { $todayAnchor }
     $faulted = @('nobrowser', 'error', 'pending') -contains $state.outcome
     $retryDue = $faulted -and $lastAttempt -and (((Get-Date) - $lastAttempt).TotalMinutes -ge 60)
     return (-not $lastAttempt) -or ($lastAttempt -lt $boundary) -or $retryDue
@@ -2662,9 +2670,11 @@ function Invoke-Checkin([switch]$Light) {
     #     the last time it was SENT - a 6-hourly cycle with nothing new still checks in (Online/
     #     Offline/Issues above still go out), it just omits these specific fields that cycle.
     #   - Heavy (volumes, hardware components, the installed-software list): gated purely by the
-    #     SAME 8 AM boundary as the DU scrape below, independent of Light/full - whichever check-in
-    #     first crosses 8 AM carries them (if changed), same as it carries that day's DU numbers,
-    #     rather than these waiting on the separately-timed 6-hourly schedule.
+    #     SAME daily boundary as the DU scrape below, independent of Light/full - whichever check-in
+    #     first crosses this host's slot carries them (if changed), same as it carries that day's DU
+    #     numbers, rather than these waiting on the separately-timed 6-hourly schedule. Widening the
+    #     DU jitter therefore spreads the heavy inventory refresh across the same window too, which
+    #     is the same pile-up argument applied to the other once-a-day burst of work.
     # anydeskInstalls was omitted here when it was first added, which meant it rode along on every
     # 20-minute check-in uncapped instead of being gated like every other moderate field - exactly
     # the silent per-cycle data cost this tiering exists to prevent.
@@ -2706,7 +2716,7 @@ function Invoke-Checkin([switch]$Light) {
     }
 
     # Launching a browser is slow, so this only runs once a day, anchored to this host's own slot in
-    # the 8-9 AM local hour (see Get-DuJitterMinutes) rather than "N hours since the last attempt" -
+    # the 3-8 AM local window (see Get-DuJitterMinutes) rather than "N hours since the last attempt" -
     # a rolling window drifts earlier every day it's checked slightly early (a PollOnce cycle that
     # happens to land at, say, 19:55 would push the next day's scrape to 15:55, then 11:55, and so
     # on), which stops lining up with a predictable time of day to look at the numbers. Comparing
@@ -2716,8 +2726,8 @@ function Invoke-Checkin([switch]$Light) {
     # clock second is exactly what took down 11 of 12 devices on 24 Aug 2026 (see Get-DuJitterMinutes
     # for the evidence). On a brand-new install (no state file yet)
     # this is due immediately, same as before - the first-ever check-in already collects a baseline
-    # reading rather than waiting for the next 8 AM. The gate still advances on every ATTEMPT, not
-    # just success, so a temporarily-unreachable page retries at tomorrow's 8 AM rather than looping
+    # reading rather than waiting for the next window. The gate still advances on every ATTEMPT, not
+    # just success, so a temporarily-unreachable page retries at tomorrow's slot rather than looping
     # every cycle for the rest of today.
     # The state file holds a JSON record of the last attempt ({ at, outcome, note }) rather than the
     # bare timestamp it used to - the outcome has to survive between cycles so it can be re-reported
@@ -2759,7 +2769,7 @@ function Invoke-Checkin([switch]$Light) {
     # identical to one that had never tried - all three sat on "Not checked" indefinitely, which is
     # how DR2-FOODCOURT spent four days quietly failing every morning with nothing to show for it.
     # And re-sending it every cycle means an agent that has just updated reports what it already
-    # knows on its very next check-in, rather than the answer only appearing after the next 8 AM.
+    # knows on its very next check-in, rather than the answer only appearing after the next slot.
     if ($duState -and $duState.at) {
         $data.duScrapeAttemptedAt = $duState.at
         if ($duState.outcome) { $data.duScrapeOutcome = $duState.outcome }
@@ -2800,7 +2810,7 @@ function Invoke-Checkin([switch]$Light) {
     # The scrape-attempt trio rides the same "only if it changed" rule as the moderate tier rather
     # than a schedule of its own. It's re-derived from stored state on EVERY cycle, so an agent that
     # has just updated (or one whose earlier check-in failed to send) reports what it already knows
-    # on its very next check-in instead of the answer waiting for tomorrow's 8 AM - but it only
+    # on its very next check-in instead of the answer waiting for tomorrow's slot - but it only
     # actually costs bytes on the cycles where the answer is new, which is at most once a day and
     # usually far rarer, since a device's outcome rarely changes from one day to the next.
     $duSnapshot = [ordered]@{}

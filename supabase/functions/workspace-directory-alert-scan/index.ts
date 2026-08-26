@@ -36,8 +36,8 @@ const corsHeaders = {
 // Matches STALE_AFTER_MINUTES in src/pages/workspaceDirectory.js exactly - see that file for why
 // this specific value (30 min = 1.5x the agent's 20-minute poll cycle) rather than something else.
 const STALE_AFTER_MINUTES = 30;
-// The DU scrape is meant to run once a day (anchored to each host's own slot in the 8-9 AM Dubai
-// hour) - 48h gives a full extra day of slack before calling it stale, so one missed jittered slot
+// The DU scrape is meant to run once a day (anchored to each host's own slot in the 3-8 AM Dubai
+// window) - 48h gives a full extra day of slack before calling it stale, so one missed jittered slot
 // or a single Wi-Fi/offline blip doesn't false-alarm, while two consecutive misses still surfaces
 // within a day of the second one rather than sitting silent for a week like DR2-FOODCOURT did.
 const DU_STALE_AFTER_HOURS = 48;

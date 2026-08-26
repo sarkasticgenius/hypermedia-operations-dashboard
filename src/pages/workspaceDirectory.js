@@ -310,7 +310,7 @@ function locationCellHtml(d, matches) {
   const first = (matches || [])[0];
   const venue = first?.rows?.[0]?.venue;
   if (!venue) return '-';
-  return `<span title="From the matched ${esc(first.source)} screen, not set manually">${esc(venue)} <span class="muted">(screen)</span></span>`;
+  return `<span title="From the matched ${esc(first.source)} screen, not set manually">${esc(venue)}</span>`;
 }
 
 // HTML rendering of a match, with the screen name (or count) bolded so it's the thing the eye
@@ -453,7 +453,7 @@ function dataUsageCellHtml(d, sim) {
       const detail = d.du_scrape_note || 'The scrape could not be completed.';
       return phoneHtml || `<span class="small" style="color:#c0392b;" title="${esc(detail)}${d.du_scrape_attempted_at ? ` (last tried ${esc(fmtRelativeTime(d.du_scrape_attempted_at))})` : ''}">Check failed</span>`;
     }
-    return phoneHtml || '<span class="small muted" title="This PC has not been checked for a SIM yet - the scrape runs once a day, anchored to 08:00 local time. Once it has run, this becomes a usage bar, Wi-Fi / LAN, or Check failed.">Not checked</span>';
+    return phoneHtml || '<span class="small muted" title="This PC has not been checked for a SIM yet - the scrape runs once a day, in this PC\'s own slot between 03:00 and 08:00 local time. Once it has run, this becomes a usage bar, Wi-Fi / LAN, or Check failed.">Not checked</span>';
   }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
   const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
@@ -492,7 +492,7 @@ function duScrapeStatusHtml(d) {
     case 'pending':
       return `<div class="small muted" style="margin-top:6px;">SIM check started${when} but never reported an outcome - it was interrupted before it finished.</div>`;
     default:
-      return '<div class="small muted" style="margin-top:6px;">This PC has not reported a SIM check yet. It runs once a day, on the first check-in after 08:00 local time.</div>';
+      return '<div class="small muted" style="margin-top:6px;">This PC has not reported a SIM check yet. It runs once a day, on the first check-in after this PC\'s own slot between 03:00 and 08:00 local time.</div>';
   }
 }
 
@@ -733,7 +733,7 @@ export function renderWorkspaceDirectory() {
     </div>` : ''}
     <div class="card">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES}+ minutes (a light check-in runs every 20 minutes; remote-access/OS/antivirus info updates roughly every 6 hours when changed; software/hardware/disk info and the DU data-usage scrape update once a day at 8 AM).${editOk ? ' Tick devices below to deploy a command (install/uninstall software, etc.) to several at once.' : ''}</div></div>
+        <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES}+ minutes (a light check-in runs every 20 minutes; remote-access/OS/antivirus info updates roughly every 6 hours when changed; software/hardware/disk info and the DU data-usage scrape update once a day, in each PC's own slot between 3 AM and 8 AM).${editOk ? ' Tick devices below to deploy a command (install/uninstall software, etc.) to several at once.' : ''}</div></div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <input placeholder="Search hostname, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
           <button class="btn-sm" title="Reload this page's data without refreshing the whole app" onclick="App.refreshWorkspaceDirectory()">&#8635; Refresh</button>
@@ -1019,7 +1019,7 @@ export async function bulkToggleWorkspaceDeviceUpdates(disable) {
 }
 
 // "Check Now" on a device's Data Usage panel - re-runs that PC's mydata.du.ae check on demand
-// rather than waiting for its next 8 AM boundary, which is the difference between answering "what
+// rather than waiting for its next daily slot, which is the difference between answering "what
 // is this PC using right now" in twenty minutes and answering it tomorrow.
 //
 // Queued as the ::DUCHECK marker rather than as a literal "Get-DuDataUsage" Run Command, because
