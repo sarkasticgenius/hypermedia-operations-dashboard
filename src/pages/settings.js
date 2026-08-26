@@ -1156,6 +1156,17 @@ $DuHandoffFile = Join-Path $DuHandoffDir "du-result.json"
 $Script:DuStateTarget = $DuScrapeStateFile
 $Script:DuIsUserSession = $false
 $PopupStateFile = Join-Path $StateDir "last-unexpected-windows.txt"
+# Written by the Tray's own timer (see -Tray branch below), in the SAME Users-writable folder the
+# DU handoff already uses - no separate ACL grant needed. SYSTEM only ever reads this file; it
+# never scans for popups itself any more. See the header on Get-UnexpectedWindows for why: a scan
+# from Session 0 (where every SYSTEM check-in runs) finds nothing at all, regardless of what is
+# actually on screen. Confirmed live on PC-88AEDD6212C8, 26 Aug 2026 - a Windows Security dialog
+# ("Actions needed in Microsoft Defender") was visibly covering the signage content, and a
+# Get-Process scan from the check-in still returned zero windowed processes. No Slack alert had
+# fired, and could never have fired, no matter how the allowlist was configured - the scan itself
+# was blind, the same way the DU scrape was blind from Session 0 before it was moved into the
+# user's session (see $DuHandoffFile above).
+$PopupHandoffFile = Join-Path $DuHandoffDir "popup-result.json"
 $ModerateSnapshotFile = Join-Path $StateDir "last-moderate-snapshot.json"
 $HeavySnapshotFile = Join-Path $StateDir "last-heavy-snapshot.json"
 $DuSnapshotFile = Join-Path $StateDir "last-du-scrape-snapshot.json"
@@ -1202,6 +1213,95 @@ if ($PSCommandPath -and $PSCommandPath -ne $InstalledScriptPath) {
     } catch {
         Write-Warning "Could not relocate to a protected install location, continuing from the current path instead: $($_.Exception.Message)"
     }
+}
+
+# Signage PCs should show ONLY their own player/browser content full-screen - Windows Update's own
+# "Setup"/"restart to finish installing" prompt, or some other app's error dialog, is itself the
+# problem regardless of what caused it (real examples: a fuel-pump screen showing a stray app
+# window, a Yas Mall totem with an open Windows dialog and taskbar visible over the ad content).
+# Reports EVERY window that's actually visible and not minimized right now (there can genuinely be
+# more than one stacked on screen at once), excluding the player/browser/remote-access tools below -
+# a background/minimized Task Manager or admin console that isn't actually covering the player
+# doesn't count, but anything currently rendered on screen does, regardless of whether it happens to
+# have keyboard focus. Get-Process already exposes each window's handle with no extra API call
+# needed to find it; checking whether THAT handle is visible/not-minimized takes two small Win32
+# calls (IsWindowVisible/IsIconic) per already-titled window, not a raw system-wide enumeration.
+# An earlier version instead enumerated EVERY window in the system (EnumWindows) and captured a
+# screenshot on top of that, which got blocked twice by Windows Defender's AMSI scanner (window
+# enumeration + screenshot + network upload is close to a textbook spyware signature); this is a
+# much smaller, more ordinary use of the Windows API that does neither of those two things.
+#
+# Defined up here, well ABOVE where it is actually called from (the -Tray branch immediately below,
+# and Invoke-Checkin far below) rather than down with the rest of the SYSTEM-side collector
+# functions, because PowerShell does not hoist function definitions - a "function Foo {...}"
+# statement only becomes callable once the interpreter's linear top-to-bottom pass actually reaches
+# it (see the near-identical note on Invoke-DuScrape's placement further down). The -Tray branch
+# runs almost immediately after this point in the script, so this has to be defined before it, not
+# after.
+$Script:ExpectedVisibleProcesses = @(
+    'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost',
+    'TextInputHost', 'ScreenClippingHost', 'LockApp',
+    # StartMenuExperienceHost is deliberately NOT here - see the player-aware check in
+    # Get-UnexpectedWindows below. It's only harmless when nothing is supposed to be on screen.
+    # Broadsign's/Grassfish's actual player processes are the short "bsp"/"gfPlayer", not
+    # "broadsignplayer"/"broadsign"/"grassfishplayer"/"grassfish" - none of those longer strings is a
+    # substring of the real short name, so both were being flagged as an "unexpected" popup on every
+    # single networked screen. Kept the older/longer names too in case some builds still use them.
+    'bsp', 'broadsignplayer', 'broadsign', 'gfplayer', 'grassfishplayer', 'grassfish',
+    'chrome', 'msedge', 'iexplore',
+    'powershell', 'powershell_ise', 'pwsh', 'conhost', 'cmd',
+    # The remote-access tools this whole agent depends on (Get-Problems elsewhere in this script
+    # separately flags their ABSENCE as its own problem) - their own window should never itself count
+    # as an unexpected popup, they're required to be there.
+    'anydesk', 'teamviewer'
+)
+# SystemSettings (the Settings app) is deliberately NOT allowlisted, unlike a normal office PC -
+# Windows Update's own "restart to finish installing" / setup prompts often render through it, and
+# an unattended signage PC has no legitimate reason for that app to ever be open on screen anyway.
+
+function Get-UnexpectedWindows {
+    Add-Type -ErrorAction SilentlyContinue -Namespace WorkspaceDirectoryAgent -Name Win32 -MemberDefinition @'
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+'@
+
+    # Same two process names and same question the Jstar Agent tray icon already asks
+    # (Test-SignagePlayerRunning, -Tray branch above) to decide whether it must stay hidden - but
+    # defined again here rather than shared, because -Tray and this SYSTEM check-in are separate
+    # invocations of the script that never run in the same process and so can't share a variable.
+    # Checked once per call, not once per window, since every window this cycle gets the same answer.
+    $playerRunning = [bool](Get-Process -Name 'bsp', 'gfplayer' -ErrorAction SilentlyContinue)
+
+    $found = New-Object System.Collections.Generic.List[object]
+    Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -and $_.MainWindowTitle.Trim()
+    } | ForEach-Object {
+        $hWnd = $_.MainWindowHandle
+        # A minimized or otherwise not-actually-visible window (Task Manager sitting in the
+        # taskbar, an admin console tucked away) still reports a MainWindowTitle via Get-Process
+        # regardless of its on-screen state - these two checks are what actually distinguish
+        # "genuinely displayed right now" from "merely exists somewhere".
+        if (-not [WorkspaceDirectoryAgent.Win32]::IsWindowVisible($hWnd)) { return }
+        if ([WorkspaceDirectoryAgent.Win32]::IsIconic($hWnd)) { return }
+
+        $procName = $_.ProcessName
+        # The Start Menu is ordinary desktop use on a back-office PC, or a signage PC between
+        # content-player restarts - nothing is supposed to be showing there anyway. The moment the
+        # player IS running, though, this PC is supposed to be full-screen on live public-facing
+        # content, and the Start Menu sitting on top of that is exactly the case this whole detector
+        # exists to catch - so it's the one process name that isn't unconditionally allowed the way
+        # every other entry in $Script:ExpectedVisibleProcesses is.
+        if ($procName -eq 'StartMenuExperienceHost' -and -not $playerRunning) { return }
+
+        $isExpected = $false
+        foreach ($allowed in $Script:ExpectedVisibleProcesses) {
+            if ($procName -match [regex]::Escape($allowed)) { $isExpected = $true; break }
+        }
+        if (-not $isExpected) {
+            $found.Add([pscustomobject]@{ title = $_.MainWindowTitle.Trim(); process = $procName })
+        }
+    }
+    return $found
 }
 
 # The Jstar Agent taskbar icon: a status window on double-click (last check-in
@@ -1278,9 +1378,34 @@ if ($Tray) {
         [System.Windows.Forms.MessageBox]::Show((Get-TrayStatusText), "Jstar Agent Monitor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
     })
 
+    # Also drives the popup scan every tick (see Get-UnexpectedWindows, defined well above this
+    # branch for exactly this reason) - this is the ONLY place in the whole agent that can ever see
+    # the actual desktop. A SYSTEM check-in runs in Session 0, which cannot see another session's
+    # windows at all: confirmed live on PC-88AEDD6212C8, 26 Aug 2026 - a Windows Security dialog was
+    # visibly covering the signage content and a Session-0 scan still found zero windowed processes,
+    # so no popup could ever have been reported, regardless of what the allowlist said. Writing an
+    # in-process function call onto an already-running Timer costs nothing extra - unlike spawning a
+    # new powershell.exe for it, which is exactly what the note right below this warns against.
+    # Written on every tick regardless of whether the result changed; SYSTEM's own check-in already
+    # does the "is this actually new" comparison against $PopupStateFile; duplicating that logic here
+    # would just be a second place for the two to disagree.
     $visibilityTimer = New-Object System.Windows.Forms.Timer
     $visibilityTimer.Interval = 30000
-    $visibilityTimer.add_Tick({ $notifyIcon.Visible = -not (Test-SignagePlayerRunning) })
+    $visibilityTimer.add_Tick({
+        $notifyIcon.Visible = -not (Test-SignagePlayerRunning)
+        try {
+            $unexpected = @(Get-UnexpectedWindows)
+            New-Item -ItemType Directory -Path $DuHandoffDir -Force -ErrorAction SilentlyContinue | Out-Null
+            (@{ at = (Get-Date).ToUniversalTime().ToString("o"); unexpected = $unexpected } | ConvertTo-Json -Compress -Depth 4) |
+                Set-Content -Path $PopupHandoffFile -Encoding utf8 -NoNewline
+        } catch {
+            # Silently skipped, same as every other best-effort write in this agent - a scan that
+            # fails to persist this tick tries again in 30 seconds, and SYSTEM's staleness check
+            # (see Invoke-Checkin) already treats an old handoff as "no data" rather than trusting it
+            # forever, so a few missed ticks in a row degrade gracefully instead of reporting stale
+            # popup state as current.
+        }
+    })
     $visibilityTimer.Start()
 
     # NOTE: the tray deliberately does NOT drive the DU scrape. An earlier version had a 5-minute
@@ -2546,87 +2671,6 @@ function Get-DuDataUsageViaDom {
     }
 }
 
-# Signage PCs should show ONLY their own player/browser content full-screen - Windows Update's own
-# "Setup"/"restart to finish installing" prompt, or some other app's error dialog, is itself the
-# problem regardless of what caused it (real examples: a fuel-pump screen showing a stray app
-# window, a Yas Mall totem with an open Windows dialog and taskbar visible over the ad content).
-# Reports EVERY window that's actually visible and not minimized right now (there can genuinely be
-# more than one stacked on screen at once), excluding the player/browser/remote-access tools below -
-# a background/minimized Task Manager or admin console that isn't actually covering the player
-# doesn't count, but anything currently rendered on screen does, regardless of whether it happens to
-# have keyboard focus. Get-Process already exposes each window's handle with no extra API call
-# needed to find it; checking whether THAT handle is visible/not-minimized takes two small Win32
-# calls (IsWindowVisible/IsIconic) per already-titled window, not a raw system-wide enumeration.
-# An earlier version instead enumerated EVERY window in the system (EnumWindows) and captured a
-# screenshot on top of that, which got blocked twice by Windows Defender's AMSI scanner (window
-# enumeration + screenshot + network upload is close to a textbook spyware signature); this is a
-# much smaller, more ordinary use of the Windows API that does neither of those two things.
-$Script:ExpectedVisibleProcesses = @(
-    'explorer', 'dwm', 'ApplicationFrameHost', 'ShellExperienceHost', 'SearchHost',
-    'TextInputHost', 'ScreenClippingHost', 'LockApp',
-    # StartMenuExperienceHost is deliberately NOT here - see the player-aware check in
-    # Get-UnexpectedWindows below. It's only harmless when nothing is supposed to be on screen.
-    # Broadsign's/Grassfish's actual player processes are the short "bsp"/"gfPlayer", not
-    # "broadsignplayer"/"broadsign"/"grassfishplayer"/"grassfish" - none of those longer strings is a
-    # substring of the real short name, so both were being flagged as an "unexpected" popup on every
-    # single networked screen. Kept the older/longer names too in case some builds still use them.
-    'bsp', 'broadsignplayer', 'broadsign', 'gfplayer', 'grassfishplayer', 'grassfish',
-    'chrome', 'msedge', 'iexplore',
-    'powershell', 'powershell_ise', 'pwsh', 'conhost', 'cmd',
-    # The remote-access tools this whole agent depends on (Get-Problems elsewhere in this script
-    # separately flags their ABSENCE as its own problem) - their own window should never itself count
-    # as an unexpected popup, they're required to be there.
-    'anydesk', 'teamviewer'
-)
-# SystemSettings (the Settings app) is deliberately NOT allowlisted, unlike a normal office PC -
-# Windows Update's own "restart to finish installing" / setup prompts often render through it, and
-# an unattended signage PC has no legitimate reason for that app to ever be open on screen anyway.
-
-function Get-UnexpectedWindows {
-    Add-Type -ErrorAction SilentlyContinue -Namespace WorkspaceDirectoryAgent -Name Win32 -MemberDefinition @'
-        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-'@
-
-    # Same two process names and same question the Jstar Agent tray icon already asks
-    # (Test-SignagePlayerRunning, -Tray branch above) to decide whether it must stay hidden - but
-    # defined again here rather than shared, because -Tray and this SYSTEM check-in are separate
-    # invocations of the script that never run in the same process and so can't share a variable.
-    # Checked once per call, not once per window, since every window this cycle gets the same answer.
-    $playerRunning = [bool](Get-Process -Name 'bsp', 'gfplayer' -ErrorAction SilentlyContinue)
-
-    $found = New-Object System.Collections.Generic.List[object]
-    Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -and $_.MainWindowTitle.Trim()
-    } | ForEach-Object {
-        $hWnd = $_.MainWindowHandle
-        # A minimized or otherwise not-actually-visible window (Task Manager sitting in the
-        # taskbar, an admin console tucked away) still reports a MainWindowTitle via Get-Process
-        # regardless of its on-screen state - these two checks are what actually distinguish
-        # "genuinely displayed right now" from "merely exists somewhere".
-        if (-not [WorkspaceDirectoryAgent.Win32]::IsWindowVisible($hWnd)) { return }
-        if ([WorkspaceDirectoryAgent.Win32]::IsIconic($hWnd)) { return }
-
-        $procName = $_.ProcessName
-        # The Start Menu is ordinary desktop use on a back-office PC, or a signage PC between
-        # content-player restarts - nothing is supposed to be showing there anyway. The moment the
-        # player IS running, though, this PC is supposed to be full-screen on live public-facing
-        # content, and the Start Menu sitting on top of that is exactly the case this whole detector
-        # exists to catch - so it's the one process name that isn't unconditionally allowed the way
-        # every other entry in $Script:ExpectedVisibleProcesses is.
-        if ($procName -eq 'StartMenuExperienceHost' -and -not $playerRunning) { return }
-
-        $isExpected = $false
-        foreach ($allowed in $Script:ExpectedVisibleProcesses) {
-            if ($procName -match [regex]::Escape($allowed)) { $isExpected = $true; break }
-        }
-        if (-not $isExpected) {
-            $found.Add([pscustomobject]@{ title = $_.MainWindowTitle.Trim(); process = $procName })
-        }
-    }
-    return $found
-}
-
 # Compares a group of fields against what was last actually SENT to the server (a local JSON
 # snapshot file, not just the freshly-collected value) - used to gate the moderate (6-hourly) and
 # heavy (8am-anchored) payload tiers below, so a check-in only pays the bytes for them when
@@ -2702,11 +2746,47 @@ function Invoke-Checkin([switch]$Light) {
     # Only reported when the detected set actually CHANGES from last time (a local state file
     # tracks the last-reported titles) - the same stray Windows Update prompt sitting there for
     # hours shouldn't get resent every 20 minutes, only the moment something new shows up (or the
-    # existing one finally clears). Runs on every check-in (light or full) since it's cheap -
-    # Get-Process, no network calls, no screen capture.
+    # existing one finally clears).
+    #
+    # The call below is a deliberate no-op left in place, not a real scan: this check-in runs as
+    # SYSTEM in Session 0, which cannot see another session's windows AT ALL - Get-Process there
+    # returns zero windowed processes for every process regardless of what is actually on screen.
+    # Confirmed live on PC-88AEDD6212C8, 26 Aug 2026: a Windows Security dialog was visibly covering
+    # the signage content and this call still found nothing, meaning no popup could ever have been
+    # reported from here, independent of the allowlist. The real scan runs continuously in the
+    # Tray's own timer (the only part of this agent that actually runs in the interactive session -
+    # see its add_Tick handler), which drops its result in $PopupHandoffFile for check-in to read.
+    # Left here anyway as a harmless fallback for the (SYSTEM-only) rare edge case where genuinely
+    # no one is logged in and yet a window somehow rendered in Session 0 - costs nothing to keep,
+    # Get-Process with no matches is effectively free.
     try {
         $__unexpected = @(Get-UnexpectedWindows)
     } catch { $__unexpected = @() }
+    # Prefers the Tray's handoff whenever it exists and isn't stale - stale meaning older than two
+    # scan intervals (60s), which is generous enough to absorb one missed tick without silently
+    # trusting a Tray that crashed or a user who logged off an hour ago. A stale or unparsable
+    # handoff is treated as "no data" and simply falls back to the (always-empty) SYSTEM-side result
+    # above, rather than reporting a since-resolved popup forever.
+    if (Test-Path $PopupHandoffFile) {
+        try {
+            $popupHandoff = Get-Content -Path $PopupHandoffFile -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+            # Deliberately (Get-Date), not (Get-Date).ToUniversalTime() - a bare [datetime] cast of a
+            # "...Z"-suffixed string returns Kind=Local, correctly SHIFTED to the local-time
+            # equivalent of that UTC instant (confirmed live: casting "10:54Z" on a UTC+4 box yields
+            # 14:54 Local, not 10:54 relabelled). That's already Test-DuScrapeDue's exact pattern for
+            # comparing $lastAttempt against $boundary - both sides Local-kind and mutually
+            # consistent. Subtracting a Utc-kind "now" against that Local-kind value here instead
+            # would silently produce a huge Sign-flipped offset equal to the machine's UTC offset,
+            # which on this fleet (UTC+4) manifests as a large NEGATIVE age - and a negative number
+            # is always -le any positive threshold, so the staleness check would never trigger at
+            # all, no matter how old the handoff actually was. Caught by an explicit round-trip test
+            # before shipping, not left to be discovered on a real device.
+            $handoffAgeSeconds = if ($popupHandoff.at) { ((Get-Date) - [datetime]$popupHandoff.at).TotalSeconds } else { [double]::PositiveInfinity }
+            if ($handoffAgeSeconds -le 60) {
+                $__unexpected = @($popupHandoff.unexpected | ForEach-Object { [pscustomobject]@{ title = $_.title; process = $_.process } })
+            }
+        } catch {}
+    }
     $__unexpectedKey = (($__unexpected | ForEach-Object { "$($_.title)|$($_.process)" }) | Sort-Object) -join ';'
     $__lastPopupKey = if (Test-Path $PopupStateFile) { Get-Content -Path $PopupStateFile -Raw -ErrorAction SilentlyContinue } else { '' }
     if ($__unexpectedKey -ne $__lastPopupKey) {
@@ -3029,18 +3109,20 @@ try {
     Write-Warning "Could not register the scheduled task: $($_.Exception.Message)"
 }
 
-# The one folder a logged-in (non-admin) user is allowed to write, so the tray-launched scrape can
-# hand its result back to SYSTEM - see $DuHandoffFile for why the scrape has to run in that session
-# at all. Scoped to this sub-folder ONLY, never $StateDir itself: that holds Install-JstarAgent.ps1,
-# which SYSTEM executes every cycle, so making it user-writable would let any logged-in user swap in
-# their own script and have SYSTEM run it. (OI)(CI)M grants modify on the folder and anything
-# created inside it. Re-applied every cycle because this whole block is idempotent by design, so a
-# machine that had the folder removed or its ACL reset repairs itself within one cycle.
+# The one folder a logged-in (non-admin) user is allowed to write, so the Tray can hand results back
+# to SYSTEM - both the once-a-day DU scrape (see $DuHandoffFile) and the continuous popup scan (see
+# $PopupHandoffFile) drop their output here now; neither can run anywhere SYSTEM's own Session 0
+# could read it directly. Scoped to this sub-folder ONLY, never $StateDir itself: that holds
+# Install-JstarAgent.ps1, which SYSTEM executes every cycle, so making it user-writable would let any
+# logged-in user swap in their own script and have SYSTEM run it. (OI)(CI)M grants modify on the
+# folder and anything created inside it. Re-applied every cycle because this whole block is
+# idempotent by design, so a machine that had the folder removed or its ACL reset repairs itself
+# within one cycle.
 try {
     New-Item -ItemType Directory -Path $DuHandoffDir -Force -ErrorAction SilentlyContinue | Out-Null
     & icacls.exe $DuHandoffDir /grant "*S-1-5-32-545:(OI)(CI)M" /T /C | Out-Null
 } catch {
-    Write-Warning "Could not grant the logged-in user write access to the DU handoff folder - the user-session scrape will not be able to report back: $($_.Exception.Message)"
+    Write-Warning "Could not grant the logged-in user write access to the handoff folder - the user-session scrape and popup scan will not be able to report back: $($_.Exception.Message)"
 }
 
 # Chocolatey's bootstrapper is skipped entirely once choco.exe is already on PATH, so re-checking
