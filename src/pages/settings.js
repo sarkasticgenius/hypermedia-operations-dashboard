@@ -2789,13 +2789,30 @@ function Invoke-Checkin([switch]$Light) {
     }
     $__unexpectedKey = (($__unexpected | ForEach-Object { "$($_.title)|$($_.process)" }) | Sort-Object) -join ';'
     $__lastPopupKey = if (Test-Path $PopupStateFile) { Get-Content -Path $PopupStateFile -Raw -ErrorAction SilentlyContinue } else { '' }
+    # Added to $data.problems on EVERY cycle a popup is present, not only the cycle where the set
+    # first changed - workspace-directory-checkin overwrites the stored problems column outright on
+    # every check-in rather than merging, so a payload that only carries the popup on the ONE cycle
+    # it was first noticed gets silently erased by the very next (unchanged) cycle's payload, which
+    # has nothing in it to say the popup is still there. Confirmed live on HM-OFFICE-TEST, 26 Aug
+    # 2026: the 16:17:49 check-in successfully reported it, and it was gone from the database again
+    # by 16:18:53 - the popup itself never moved, only the report of it did, because that next
+    # cycle's key matched the previous one and skipped adding it. The alert-scan runs every 20
+    # minutes; a report that only exists in the database for the ~60-70 seconds between two canary
+    # polls is realistically never going to be caught by it, which is exactly why no Slack alert
+    # ever fired despite the detection genuinely working.
+    if ($__unexpected.Count -gt 0) {
+        $popupSummary = ($__unexpected | ForEach-Object { "$($_.title) ($($_.process))" }) -join '; '
+        $existingProblems = @($data.problems) | Where-Object { $_ }
+        $data.problems = @($existingProblems + "Unexpected window/popup detected: $popupSummary")
+    }
+    # The state file and log line stay gated on an actual CHANGE, same as before - that part was
+    # never the bug. Logging "still there" every 20-60 seconds for as long as a popup sits on screen
+    # would just be noise; the fix above only needed to stop erasing the SERVER's copy, not to make
+    # the LOCAL log any chattier.
     if ($__unexpectedKey -ne $__lastPopupKey) {
         New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
         Set-Content -Path $PopupStateFile -Value $__unexpectedKey -Encoding utf8 -NoNewline
         if ($__unexpected.Count -gt 0) {
-            $popupSummary = ($__unexpected | ForEach-Object { "$($_.title) ($($_.process))" }) -join '; '
-            $existingProblems = @($data.problems) | Where-Object { $_ }
-            $data.problems = @($existingProblems + "Unexpected window/popup detected: $popupSummary")
             Write-AgentLog "Popup/unexpected window detected: $popupSummary"
         } else {
             Write-AgentLog "Previously-detected popup/unexpected window is gone."
