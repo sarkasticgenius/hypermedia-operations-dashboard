@@ -965,8 +965,27 @@ export function setTrafficSheetBridgeNetwork(key) {
 // values are themselves seasonal/per-campaign branding (see bridgeNetworksAvailable above), so
 // "which networks are bridge-only" has to be derived from this same pull, not hardcoded. Mutates
 // the venue objects in place - safe since this is freshly-fetched data with no other holders yet.
+// Word-boundary matched (same care as FOC_MARKETING_PATTERN above, and for the same reason - a
+// plain substring check would false-positive on "_test2" or "Test-Drive Campaign" style names) so
+// "test" only matches as its own standalone word. A campaign named with an unrelated real word that
+// happens to contain "test" (e.g. a genuine "Speed Test" or "Taste Test" promotion) would still be
+// caught here since the word itself is real, not a false positive on substring alone - there's no
+// way to tell those apart from a QA/placeholder booking by name alone, so if that ever turns out to
+// matter this would need the same kind of contract-based admin override focMarketingOverrideIds()
+// already has, not a smarter regex.
+const TEST_CAMPAIGN_PATTERN = /\btest\b/i;
+function isTestCampaign(campaign) {
+  return TEST_CAMPAIGN_PATTERN.test((campaign.campaignName || '').replace(/[_-]+/g, ' '));
+}
+
+// Filters out test/QA campaigns as early as possible - right after the raw fetch, shared by both
+// consumers of fetchTrafficSheetCampaigns (Traffic Sheet's own fetch below and the Client Campaigns
+// Monitor) - so a test campaign can never appear anywhere downstream: not in Today's Active
+// Campaigns, not in any tab, not in the Excel export (built from these same already-filtered
+// arrays - see regularCampaigns/regularRows below), and not surfaced to an actual client on Client
+// Campaigns Monitor.
 function normalizeBridgeVenueTypes(data) {
-  const campaigns = data?.campaigns || [];
+  const campaigns = (data?.campaigns || []).filter((c) => !isTestCampaign(c));
   const bridgeNetworks = new Set();
   campaigns.forEach((c) => (c.venues || []).forEach((v) => {
     if ((v.venueType || '').toUpperCase() === 'METRO OUTDOOR' && v.network) bridgeNetworks.add(v.network);
@@ -976,6 +995,7 @@ function normalizeBridgeVenueTypes(data) {
       if ((v.venueType || '').toUpperCase() === 'OUTDOOR' && bridgeNetworks.has(v.network)) v.venueType = 'METRO OUTDOOR';
     }));
   }
+  data.campaigns = campaigns;
   return data;
 }
 
