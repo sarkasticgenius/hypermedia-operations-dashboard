@@ -1216,10 +1216,10 @@ $WinSwSha256 = "B5066B7BBDFBA1293E5D15CDA3CAAEA88FBEAB35BD5B38C41C913D492AADFC4F
 # isolation) or, if it somehow succeeded, run it as a different, non-visible session instead.
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $Once -and -not $PollOnce -and -not $RunCommandFile -and -not $Tray -and -not $DuScrapeOnce -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $reElevateArgs = "-NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`""
+    $reElevateArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$PSCommandPath\`""
     if ($Uninstall) { $reElevateArgs += " -Uninstall" }
     try {
-        Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs -ErrorAction Stop
+        Start-Process powershell.exe -ArgumentList $reElevateArgs -Verb RunAs -WindowStyle Hidden -ErrorAction Stop
     } catch {
         # -Verb RunAs needs an interactive desktop session to show the UAC consent prompt - it
         # cannot succeed over PsExec/WinRM/an RMM tool running as a plain admin ACCOUNT (as opposed
@@ -3160,7 +3160,7 @@ if ($RunCommandFile) {
 # physical reinstall. Register-/Set-ScheduledTask are idempotent and cheap, so running this every
 # cycle costs nothing and means any future task-level fix (like the ExecutionTimeLimit below)
 # actually reaches the whole fleet within one 6-hour cycle of publishing, same as everything else.
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File \`"$InstalledScriptPath\`" -Once"
+$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$InstalledScriptPath\`" -Once"
 # [TimeSpan]::MaxValue as -RepetitionDuration overflows Task Scheduler's XML duration format on
 # some Windows builds ("The task XML contains a value which is incorrectly formatted or out of
 # range", confirmed live) - Task Scheduler's own convention for "repeat indefinitely" is an
