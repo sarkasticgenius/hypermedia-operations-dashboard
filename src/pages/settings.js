@@ -3206,11 +3206,15 @@ try {
 }
 
 # Chocolatey's bootstrapper is skipped entirely once choco.exe is already on PATH, so re-checking
-# every 6-hourly cycle (rather than fresh-install only) is cheap and self-heals if it's ever removed -
+# every heavy cycle (rather than fresh-install only) is cheap and self-heals if it's ever removed -
 # lets a Run Command queued from the dashboard, or a future bulk deployment, always reach for
 # "choco install -y <pkg>" without depending on winget/App Installer already being present (it isn't
-# on every Windows 10 build these back-office/kiosk PCs run).
-if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
+# on every Windows 10 build these back-office/kiosk PCs run). A function (not inline) so the
+# -Service loop's own heavy branch further down can call it too, the same reason
+# Set-NotificationSuppressionPolicy is a function - a check that only ran from the now-disabled
+# Scheduled Task fallback would quietly stop self-healing the moment a PC migrates to the service.
+function Install-ChocolateyIfMissing {
+    if (Get-Command choco.exe -ErrorAction SilentlyContinue) { return }
     try {
         Write-Host "Installing Chocolatey (package manager used by queued Run Commands)..."
         Set-ExecutionPolicy Bypass -Scope Process -Force
@@ -3221,6 +3225,7 @@ if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
         Write-Warning "Could not install Chocolatey - choco-based Run Commands won't work on this PC until it's installed manually: $($_.Exception.Message)"
     }
 }
+Install-ChocolateyIfMissing
 
 # Runs -PollOnce every 20 minutes, entirely headless as SYSTEM (no tray icon, no window, no
 # notification - these PCs drive signage screens, so nothing may ever pop up on top of the
@@ -3495,6 +3500,7 @@ if ($Service) {
             Invoke-SelfUpdate $PSBoundParameters
             if (((Get-Date) - $lastHeavy).TotalHours -ge 6) {
                 Set-NotificationSuppressionPolicy
+                Install-ChocolateyIfMissing
                 Invoke-Checkin
                 $lastHeavy = Get-Date
             } else {
