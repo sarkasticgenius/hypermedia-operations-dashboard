@@ -27,7 +27,14 @@ export function normalizeVenueText(s) {
 // branch's logo could show correctly on Traffic Sheet while showing bare initials on Locations for
 // the identical real-world store.
 const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR', 'NAKHEEL PAVILION'];
-const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour', 'NAKHEEL PAVILION': 'Nakheel Pavilion' };
+// NAKHEEL PAVILION maps to "Dubai Retail" (the actual operator of these community retail
+// pavilions), not "Nakheel Pavilion" itself - that canonical name was cached against nakheel.com
+// (the master developer, not the retail operator), and worse, the individual per-branch names
+// (e.g. "Nakheel Pavilion - Al Furjan West") were each independently cached against pavilion-kl.com
+// - Pavilion Kuala Lumpur, an unrelated Malaysian shopping mall Brandfetch's Search false-matched
+// on the word "Pavilion" alone. Confirmed by the pavilions' own already-correct Traffic Sheet
+// entries (many raw spelling variants of "X Pavilion(s)") all resolving to dubairetail.ae already.
+const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour', 'NAKHEEL PAVILION': 'Dubai Retail' };
 
 // Returns the canonical chain brand name if `name` belongs to one of the chains above, or null if
 // it doesn't (a plain mall/venue name that should just be looked up as-is by the caller).
