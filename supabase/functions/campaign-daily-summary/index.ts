@@ -14,8 +14,11 @@
 // WHY IT IS COUNTS-FIRST RATHER THAN A LIST OF EVERYTHING
 // Printing every active campaign works at 18 and collapses at 208, which is what this account runs
 // on a normal day. A 208-line post is not a report, it is a wall that hides the line that mattered.
-// So each section leads with its numbers, and only things that CHANGED today (campaigns starting or
-// ending, tickets raised) are listed - everything else is still exactly as it was this morning.
+// So each section leads with its numbers, and only things that CHANGED today (tickets raised) are
+// listed by name - everything else is still exactly as it was this morning. Campaigns starting/
+// ending today are counted, not named, for the same reason: on a normal day that list alone can
+// run past 200 rows, which turns an ops alert into a wall of campaign names nobody scans. Anyone
+// who needs the actual names has Traffic Sheet/Client Campaigns Monitor for that.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
@@ -58,11 +61,6 @@ function formatDate(iso: string): string {
   return `${d} ${months[Number(m) - 1] || m} ${y}`;
 }
 
-function campaignLine(c: any): string {
-  const networks = Array.isArray(c.networks) && c.networks.length ? ` | ${c.networks.join(', ')}` : '';
-  return `• ${c.campaignName || '(unnamed)'}${networks} | ${formatDate(c.startDate)} - ${formatDate(c.endDate)}`;
-}
-
 function listSection(title: string, rows: string[]): string {
   if (!rows.length) return '';
   const shown = rows.slice(0, MAX_LISTED).join('\n');
@@ -103,11 +101,16 @@ Deno.serve(async (req) => {
       const byStatus = new Map<string, number>();
       for (const c of activeToday) byStatus.set(c.status || 'Unknown', (byStatus.get(c.status || 'Unknown') || 0) + 1);
       const statusLine = [...byStatus.entries()].sort((a, b) => b[1] - a[1]).map(([s, n]) => `${s} ${n}`).join(' · ');
+      const startedToday = campaigns.filter((c) => c.startDate === today).length;
+      const endingToday = campaigns.filter((c) => c.endDate === today).length;
+      // Counts only, no per-campaign names/dates - this section alone can run past 200 rows on a
+      // normal day (see the file header), which turned an "ops alert" into a wall of campaign names
+      // nobody was scanning. Every other section already led with numbers; this just drops the
+      // list underneath them too instead of keeping it as the one exception.
       parts.push(
         `\n:dart: *Campaigns* - ${activeToday.length} active today`
         + (statusLine ? `\n${statusLine}` : '')
-        + listSection('*Started today*', campaigns.filter((c) => c.startDate === today).map(campaignLine))
-        + listSection('*Ending today*', campaigns.filter((c) => c.endDate === today).map(campaignLine)),
+        + (startedToday || endingToday ? `\nStarted today: ${startedToday} · Ending today: ${endingToday}` : ''),
       );
     } catch (e) {
       parts.push(`\n:dart: *Campaigns* - unavailable (${e instanceof Error ? e.message : String(e)})`);
