@@ -13,7 +13,8 @@ import { logAudit } from '../lib/audit.js';
 import { listClients } from '../data/clients.js';
 import { listApprovalsForClient, upsertPendingApproval, approveCampaign, markCampaignLive } from '../data/campaignApprovals.js';
 import { notifySlack } from '../data/slack.js';
-import { fetchTrafficSheetCampaigns, normalizeVenueText, statusBadge, renderDayGrid } from './trafficSheet.js';
+import { fetchTrafficSheetCampaigns, statusBadge, renderDayGrid } from './trafficSheet.js';
+import { normalizeVenueText } from '../data/locationStats.js';
 import { renderTabs } from '../lib/tabs.js';
 
 const ALL_CLIENTS_KEY = '__all__';

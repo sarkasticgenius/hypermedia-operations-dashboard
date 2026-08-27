@@ -9,9 +9,50 @@ import { fmtRelativeTime } from '../lib/format.js';
 // fails. They're all the same real-world brand (Dubai Metro, run by RTA), so route every one to a
 // single shared lookup name instead - one cached result covers the whole network.
 const METRO_RAIL_CHAINS = new Set(['Red Line', 'Green Line', 'Metro Bridges', 'Expo Line']);
+
+// Uppercases + normalizes spelling/separator quirks seen in the real API data (US "CENTER" vs UK
+// "CENTRE", hyphens vs spaces) so keyword/prefix matches don't need a variant per quirk. Shared by
+// canonicalChainBrandName below and by Traffic Sheet's own venue-grouping logic (trafficSheet.js),
+// which is why this lives here rather than in that file - Locations needed the exact same text
+// normalization and importing it the other way around (trafficSheet.js -> here) would have been
+// backwards, since trafficSheet.js already imports MAF_MALL_VENUE_KEYWORDS from this file.
+export function normalizeVenueText(s) {
+  return (s || '').toUpperCase().replace(/CENTER/g, 'CENTRE').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// Multi-branch retail chains where the individual branch name (e.g. "Union Coop AL BARSHA") has no
+// logo of its own cached - only the chain's own name does - so every branch needs to resolve to
+// that ONE canonical name for the brand-logo lookup to ever succeed. Originally only applied to
+// Traffic Sheet's venue names; Locations never got the same treatment, which is exactly why a chain
+// branch's logo could show correctly on Traffic Sheet while showing bare initials on Locations for
+// the identical real-world store.
+const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR', 'NAKHEEL PAVILION'];
+const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour', 'NAKHEEL PAVILION': 'Nakheel Pavilion' };
+
+// Returns the canonical chain brand name if `name` belongs to one of the chains above, or null if
+// it doesn't (a plain mall/venue name that should just be looked up as-is by the caller).
+export function canonicalChainBrandName(name) {
+  const normalized = normalizeVenueText(name);
+  for (const prefix of LOGO_CHAIN_PREFIXES) {
+    if (normalized.startsWith(prefix)) return LOGO_CHAIN_NAMES[prefix];
+  }
+  // Majid Al Futtaim malls are entered in Locations with a "MAF-"/"MAF- " prefix (a grouping/
+  // labeling convenience) that a Brandfetch lookup was never actually run against - only the plain
+  // mall name (e.g. "Ajman City Centre") is cached with a real logo; the "MAF-..." variant is
+  // cached as a confirmed FAILED search. Stripping the prefix here reuses the already-good cache
+  // entry instead of needing a fresh Brandfetch search for every MAF property.
+  const mafStripped = normalized.replace(/^MAF\s+/, '');
+  if (mafStripped !== normalized) {
+    // The one MAF entry that isn't just a stray prefix - "Mall of Emirates" (missing "the") is
+    // cached under "Mall of the Emirates" specifically.
+    return mafStripped === 'MALL OF EMIRATES' ? 'Mall of the Emirates' : mafStripped;
+  }
+  return null;
+}
+
 export function brandNameForLocation(loc) {
   if (loc.chain && METRO_RAIL_CHAINS.has(loc.chain)) return 'Dubai Metro Rail';
-  return loc.name;
+  return canonicalChainBrandName(loc.name) || loc.name;
 }
 
 export function resolveMembers(loc, allLocations) {

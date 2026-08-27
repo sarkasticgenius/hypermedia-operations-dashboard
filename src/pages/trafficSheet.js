@@ -48,7 +48,7 @@
 import { STATE, setState, loadData, invalidate, toast } from '../state.js';
 import { loadingCard } from '../modals.js';
 import { getAllSettings, getSetting, saveSetting } from '../data/settings.js';
-import { MAF_MALL_VENUE_KEYWORDS } from '../data/locationStats.js';
+import { MAF_MALL_VENUE_KEYWORDS, normalizeVenueText, canonicalChainBrandName } from '../data/locationStats.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin } from '../auth.js';
 import { esc, jsAttr, todayISO } from '../lib/format.js';
@@ -177,12 +177,6 @@ function defaultDateRange() {
   return monthBounds(defaultMonth());
 }
 
-// Uppercases + normalizes spelling/separator quirks seen in the real API data (US "CENTER" vs UK
-// "CENTRE", hyphens vs spaces) so keyword matches don't need a variant per quirk.
-export function normalizeVenueText(s) {
-  return (s || '').toUpperCase().replace(/CENTER/g, 'CENTRE').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
 function toTitleCase(s) {
   return s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -304,8 +298,10 @@ export function venueRawKeyForScreens(name, venueType) {
 //     groupings with no real external brand or logo to find - searching for "Royals Entry" or
 //     "PALM-DUBAI ZUMUROD" will only ever return an unrelated company by coincidence of wording.
 //   - Everything else (malls, named venues) -> the venue name itself, unchanged.
-const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR', 'NAKHEEL PAVILION'];
-const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour', 'NAKHEEL PAVILION': 'Nakheel Pavilion' };
+// The chain-prefix collapse itself (LULU/Union Coop/ADCOOP/ENOC/Carrefour/Nakheel Pavilion -> their
+// one canonical brand name) now lives in canonicalChainBrandName (data/locationStats.js), shared
+// with brandNameForLocation on the Locations page - a branch venue used to resolve to a logo here
+// but to bare initials there, since Locations had no equivalent collapse at all.
 const METRO_FALLBACK_BRAND = 'Dubai Metro Rail';
 function isMetroVenue(venue) {
   const venueType = (venue.venueType || '').toUpperCase();
@@ -319,11 +315,7 @@ export function brandNameForVenue(venue) {
     const stripped = name.replace(/^Metro (Bridge|Station)\s*-\s*/i, '').trim();
     return stripped || METRO_FALLBACK_BRAND;
   }
-  const normalized = normalizeVenueText(name);
-  for (const prefix of LOGO_CHAIN_PREFIXES) {
-    if (normalized.startsWith(prefix)) return LOGO_CHAIN_NAMES[prefix];
-  }
-  return name || null;
+  return canonicalChainBrandName(name) || name || null;
 }
 
 // Fallback brand shown (via brandLogoTag's fallbackName arg) when a Metro/Bridges station has no
