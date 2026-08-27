@@ -523,14 +523,7 @@ function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
     <td class="small">${esc(d.logged_in_user || '-')}</td>
     <td>${problemCount ? `<span class="badge b-red">${problemCount} issue${problemCount === 1 ? '' : 's'}</span>` : '<span class="badge b-blue">OK</span>'}</td>
     <td class="small">${d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : 'never'}${d.force_checkin_requested ? '<div class="small muted">(pull requested)</div>' : ''}</td>
-    <td style="white-space:nowrap;">
-      <button class="btn-sm" onclick="App.openWorkspaceDetailsModal('${d.id}')">Details</button>
-      ${editOk ? `<button class="btn-sm" onclick="App.openWorkspaceEditModal('${d.id}')">Edit</button>` : ''}
-      ${editOk ? `<button class="btn-sm" title="Rename the Windows computer name on this PC - it applies the change and restarts itself" onclick="App.openWorkspaceRenameModal('${d.id}')">Rename</button>` : ''}
-      ${editOk ? `<button class="btn-sm" title="${d.force_checkin_requested ? 'Already requested and still pending - click to re-request' : (d.pending_command ? 'Push the queued Run Command to this PC now' : 'Pull fresh inventory from this PC now')} - within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">Force${d.force_checkin_requested ? ' Again' : ''}</button>` : ''}
-      ${editOk ? `<button class="btn-sm" title="Restart this PC now - no one needs to be there, it comes back on its own within a minute or two" onclick="App.restartWorkspaceDevice('${d.id}')">Restart</button>` : ''}
-      ${deleteOk ? `<button class="btn-sm" onclick="App.removeWorkspaceDevice('${d.id}')">Delete</button>` : ''}
-    </td>
+    <td class="actions-cell" style="white-space:nowrap;">${rowActionsCellHtml(d, editOk, deleteOk)}</td>
   </tr>`;
 }
 
@@ -568,15 +561,24 @@ function fmtGb(gb) {
 // the cost of a screen's worth of vertical space above the table. The over-80% banner still
 // surfaces the one case that genuinely needs attention without scrolling.)
 
-const WD_PAGE_SIZE = 25;
+// 10 by default (same idea as Asset Inventory's own page-size select) rather than a fixed 25 - most
+// visits are checking on a handful of specific PCs via the search box above, not reading straight
+// down the list, so a shorter default page loads/scans faster and 25 or 50 is one click away for
+// whoever actually wants the longer view.
+const WD_PAGE_SIZE_OPTIONS = [10, 25, 50];
+const WD_DEFAULT_PAGE_SIZE = 10;
+function currentWdPageSize() {
+  return WD_PAGE_SIZE_OPTIONS.includes(STATE.wdPageSize) ? STATE.wdPageSize : WD_DEFAULT_PAGE_SIZE;
+}
 
 // Numbered pager, rendered both above and below the table so a long page doesn't force a scroll
 // back to the top to change page. Collapses to first / last / a window around the current page once
 // there are more pages than fit comfortably, rather than printing every number.
-function wdPagerHtml(curPage, totalPages, totalRows) {
+function wdPagerHtml(curPage, totalPages, totalRows, pageSize) {
   const summary = `<span class="small muted">${totalRows} device${totalRows === 1 ? '' : 's'}${totalPages > 1 ? ` &middot; page ${curPage} of ${totalPages}` : ''}</span>`;
+  const pageSizeSelect = `<select onchange="App.setWorkspaceDirectoryPageSize(this.value)" title="Devices per page" style="padding:5px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--text);">${WD_PAGE_SIZE_OPTIONS.map((n) => `<option value="${n}" ${pageSize === n ? 'selected' : ''}>${n} / page</option>`).join('')}</select>`;
   if (totalPages <= 1) {
-    return `<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:8px 4px;">${summary}</div>`;
+    return `<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:8px 4px;">${summary}${pageSizeSelect}</div>`;
   }
 
   const numbers = [];
@@ -598,6 +600,7 @@ function wdPagerHtml(curPage, totalPages, totalRows) {
 
   return `<div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:8px 4px;flex-wrap:wrap;">
     ${summary}
+    ${pageSizeSelect}
     <button class="btn-sm" ${curPage <= 1 ? 'disabled' : ''} onclick="App.setWorkspaceDirectoryPage(${curPage - 1})">Prev</button>
     ${buttons}
     <button class="btn-sm" ${curPage >= totalPages ? 'disabled' : ''} onclick="App.setWorkspaceDirectoryPage(${curPage + 1})">Next</button>
@@ -697,12 +700,13 @@ export function renderWorkspaceDirectory() {
   const sortedIds = sorted.map((d) => d.id);
   const allSelected = sortedIds.length > 0 && sortedIds.every((id) => selectedIds.has(id));
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / WD_PAGE_SIZE));
+  const wdPageSize = currentWdPageSize();
+  const totalPages = Math.max(1, Math.ceil(sorted.length / wdPageSize));
   // Clamped rather than trusted: a search that shrinks the result set can leave the stored page
   // number past the end, which would otherwise render an empty table with no obvious way back.
   const curPage = Math.min(Math.max(1, STATE.wdPage || 1), totalPages);
-  const pageRows = sorted.slice((curPage - 1) * WD_PAGE_SIZE, curPage * WD_PAGE_SIZE);
-  const pagerHtml = wdPagerHtml(curPage, totalPages, sorted.length);
+  const pageRows = sorted.slice((curPage - 1) * wdPageSize, curPage * wdPageSize);
+  const pagerHtml = wdPagerHtml(curPage, totalPages, sorted.length, wdPageSize);
 
   const colCount = editOk ? 14 : 13;
   const rows = pageRows.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, simById.get(d.sim_card_id))).join('')
@@ -766,7 +770,9 @@ export function renderWorkspaceDirectory() {
             ${sortTh('workspaceDevices', 'user', 'Logged-in User', 19, 'center')}
             ${sortTh('workspaceDevices', 'problems', 'Issues', 10, 'center')}
             ${sortTh('workspaceDevices', 'lastSeen', 'Last Seen', 27, 'center')}
-            <th style="width:18ch;"></th>
+            <!-- Was 18ch, sized for the old six-pill row - one icon button needs a fraction of
+                 that, and the reclaimed width is exactly the point of the kebab-menu redesign. -->
+            <th style="width:44px;"></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -792,6 +798,7 @@ export function refreshWorkspaceDirectory() {
 export function setWorkspaceDirectorySearch(value) { setState({ workspaceDirectorySearch: value, wdPage: 1 }); }
 
 export function setWorkspaceDirectoryPage(page) { setState({ wdPage: Math.max(1, Number(page) || 1) }); }
+export function setWorkspaceDirectoryPageSize(size) { setState({ wdPageSize: Number(size), wdPage: 1 }); }
 
 export function toggleWorkspaceSelection(id, checked) {
   const cur = new Set(STATE.workspaceDirectorySelectedIds || []);
@@ -860,15 +867,91 @@ export async function saveWorkspaceEditForm(event, deviceId) {
 }
 
 // Row-level click-through to Details. Anything the user aimed at a real control - the select
-// checkbox, Details/Edit/Rename/Force/Delete, a Remote Access link, the copy-ID button inside the
-// remote chips - must keep doing only its own thing, so those are filtered out before opening.
-// Text selection is also respected: dragging to highlight a hostname or IP shouldn't be punished
-// with a modal on mouse-up.
+// checkbox, the row's own kebab menu, a Remote Access link, the copy-ID button inside the remote
+// chips - must keep doing only its own thing, so those are filtered out before opening. Text
+// selection is also respected: dragging to highlight a hostname or IP shouldn't be punished with a
+// modal on mouse-up.
 export function openWorkspaceDetailsFromRow(event, deviceId) {
   if (event.target.closest('button, a, input, select, textarea, label')) return;
   const selection = window.getSelection();
   if (selection && String(selection).length > 0) return;
   openModal('workspaceDetails', { deviceId });
+}
+
+// Small inline icon set for the per-row kebab menu (see rowActionsCellHtml) - kept as plain SVG
+// strings rather than an icon font/library so a row's actions cost nothing beyond this file.
+const ROW_ACTION_ICONS = {
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  rename: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>',
+  force: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+  restart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
+  delete: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+  kebab: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>',
+};
+
+// Replaces what used to be up to six equal-weight pills per row (Details/Edit/Rename/Force/
+// Restart/Delete) with one icon button. Details is dropped entirely rather than moved into the
+// menu - clicking anywhere on the row already opens it (see openWorkspaceDetailsFromRow above), so
+// it was a second control doing the same thing the row itself already does.
+//
+// The menu's real markup lives in an inert <template> here, not in a sibling <div> - a <template>'s
+// content is never laid out or painted, so it can't be clipped by the table's own
+// "overflow-x:auto" wrapper (a plain hidden div nested in that wrapper would be). toggleWorkspaceRowMenu
+// below clones it into a position:fixed element appended straight to <body> instead, which sidesteps
+// that clipping and any table-scroll clipping entirely.
+function rowActionsCellHtml(d, editOk, deleteOk) {
+  if (!editOk && !deleteOk) return '';
+  const items = [
+    editOk && `<button onclick="App.openWorkspaceEditModal('${d.id}')">${ROW_ACTION_ICONS.edit}Edit</button>`,
+    editOk && `<button title="Rename the Windows computer name on this PC - it applies the change and restarts itself" onclick="App.openWorkspaceRenameModal('${d.id}')">${ROW_ACTION_ICONS.rename}Rename</button>`,
+    editOk && `<button title="${d.force_checkin_requested ? 'Already requested and still pending - click to re-request' : (d.pending_command ? 'Push the queued Run Command to this PC now' : 'Pull fresh inventory from this PC now')} - within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">${ROW_ACTION_ICONS.force}Force${d.force_checkin_requested ? ' Again' : ''}</button>`,
+    editOk && `<button title="Restart this PC now - no one needs to be there, it comes back on its own within a minute or two" onclick="App.restartWorkspaceDevice('${d.id}')">${ROW_ACTION_ICONS.restart}Restart</button>`,
+  ].filter(Boolean);
+  return `
+    <button class="icon-btn" title="More actions" onclick="App.toggleWorkspaceRowMenu(event, '${d.id}')">${ROW_ACTION_ICONS.kebab}</button>
+    <template id="rowmenu-tpl-${d.id}">
+      ${items.join('')}
+      ${deleteOk ? `${items.length ? '<hr>' : ''}<button class="danger" onclick="App.removeWorkspaceDevice('${d.id}')">${ROW_ACTION_ICONS.delete}Delete</button>` : ''}
+    </template>`;
+}
+
+// Body-appended (not inline in the row - see rowActionsCellHtml above) so it can never be clipped
+// by the table's scroll wrapper, and so exactly one can ever be open regardless of which row's
+// button was clicked. Closed on the next click anywhere (including a click on one of its own
+// items - the item's own onclick already ran by the time the bubble reaches here), on any scroll
+// (capture:true - the table's own scroll container doesn't bubble scroll events to document at
+// all), and on resize, so it can never end up floating over the wrong spot after the page moves.
+function closeWorkspaceRowMenu() {
+  const existing = document.getElementById('workspace-row-menu-active');
+  if (existing) existing.remove();
+}
+document.addEventListener('click', closeWorkspaceRowMenu);
+document.addEventListener('scroll', closeWorkspaceRowMenu, true);
+window.addEventListener('resize', closeWorkspaceRowMenu);
+
+export function toggleWorkspaceRowMenu(event, deviceId) {
+  event.stopPropagation();
+  const reopening = document.getElementById('workspace-row-menu-active')?.dataset.forDevice === deviceId;
+  closeWorkspaceRowMenu();
+  if (reopening) return;
+  const tpl = document.getElementById(`rowmenu-tpl-${deviceId}`);
+  if (!tpl) return;
+  const btnRect = event.currentTarget.getBoundingClientRect();
+  const menu = document.createElement('div');
+  menu.id = 'workspace-row-menu-active';
+  menu.className = 'row-menu';
+  menu.dataset.forDevice = deviceId;
+  menu.innerHTML = tpl.innerHTML;
+  menu.style.top = `${btnRect.bottom + 4}px`;
+  menu.style.right = `${window.innerWidth - btnRect.right}px`;
+  document.body.appendChild(menu);
+  // Flips above the button instead of below it only when it would otherwise run off the bottom of
+  // the viewport - checked after appending since the menu's real height depends on how many items
+  // this row actually has (Edit/Rename/Force/Restart are each permission-gated).
+  const menuRect = menu.getBoundingClientRect();
+  if (menuRect.bottom > window.innerHeight) {
+    menu.style.top = `${btnRect.top - menuRect.height - 4}px`;
+  }
 }
 
 export function openWorkspaceAnyDeskPasswordModal(deviceId) {

@@ -250,6 +250,23 @@ th.tleft,td.tleft{text-align:left;}
 .zebra td button.btn-sm{background:transparent;}
 .zebra td button.btn-sm:hover{background:var(--row-hover);}
 
+/* Replaces the "5 buttons edge-to-edge" actions column described above on the Digital Directory
+   table: one icon button per row opens a menu instead. The menu itself (.row-menu) is appended
+   straight to <body> at click time (see toggleWorkspaceRowMenu in workspaceDirectory.js), not
+   nested in the row, so it's never clipped by the table's own horizontal-scroll wrapper. */
+.actions-cell{text-align:right;}
+.icon-btn{width:28px;height:28px;padding:0;border-radius:7px;border:1px solid transparent;background:transparent;color:var(--text-dim);display:inline-flex;align-items:center;justify-content:center;}
+.icon-btn:hover{background:var(--row-hover);color:var(--text);border-color:var(--border);}
+.icon-btn svg{width:15px;height:15px;}
+.row-menu{position:fixed;z-index:45;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 32px var(--shadow-color);min-width:172px;padding:6px;}
+.row-menu button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:8px 10px;border:none;background:none;color:var(--text);font-size:12.5px;font-weight:500;border-radius:7px;}
+.row-menu button:hover{background:var(--bg);}
+.row-menu button svg{width:14px;height:14px;color:var(--text-dim);flex-shrink:0;}
+.row-menu hr{border:none;border-top:1px solid var(--border);margin:5px 2px;}
+.row-menu button.danger{color:var(--red);}
+.row-menu button.danger svg{color:var(--red);}
+.row-menu button.danger:hover{background:var(--red-bg);}
+
 .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700;}
 .b-green{background:var(--green-bg);color:var(--green);}
 .b-gray{background:var(--gray-bg);color:var(--gray);}
