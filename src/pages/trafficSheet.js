@@ -294,22 +294,29 @@ export function venueRawKeyForScreens(name, venueType) {
 //     (every branch of Nakheel Pavilion previously failed Search individually - real example:
 //     "Nakheel Pavilion - Al Furjan West"/"...Discovery Gardens"/"...International City" etc all
 //     came back "No match found" on their own, before this was added).
-//   - Royals/Gems (network ROYALS/GEMS) -> null, no lookup at all. These are internal-only screen
-//     groupings with no real external brand or logo to find - searching for "Royals Entry" or
-//     "PALM-DUBAI ZUMUROD" will only ever return an unrelated company by coincidence of wording.
+//   - Royals/Gems (network ROYALS/GEMS) -> "Palm Dubai" (the same manually-supplied Palm Jumeirah
+//     aerial photo as the Palm Dubai screen-network locations - see LOGO_CHAIN_NAMES in
+//     data/locationStats.js). These are internal-only screen groupings on the Palm with no real
+//     external company brand to search for - searching for "Royals Entry" or "PALM-DUBAI ZUMUROD"
+//     would only ever return an unrelated company by coincidence of wording, which is exactly why
+//     this is a fixed manual name rather than a live Search lookup: safe to propose as a
+//     search-candidate name too (see gatherTrafficSheetVenueNames in settings.js), since "Palm
+//     Dubai" itself is never actually searched once it's already cached.
 //   - Everything else (malls, named venues) -> the venue name itself, unchanged.
-// The chain-prefix collapse itself (LULU/Union Coop/ADCOOP/ENOC/Carrefour/Nakheel Pavilion -> their
-// one canonical brand name) now lives in canonicalChainBrandName (data/locationStats.js), shared
-// with brandNameForLocation on the Locations page - a branch venue used to resolve to a logo here
-// but to bare initials there, since Locations had no equivalent collapse at all.
+// The chain-prefix collapse itself (LULU/Union Coop/ADCOOP/ENOC/Carrefour/Nakheel Pavilion/Palm
+// Dubai -> their one canonical brand name) now lives in canonicalChainBrandName
+// (data/locationStats.js), shared with brandNameForLocation on the Locations page - a branch venue
+// used to resolve to a logo here but to bare initials there, since Locations had no equivalent
+// collapse at all.
 const METRO_FALLBACK_BRAND = 'Dubai Metro Rail';
+const ROYALS_GEMS_BRAND = 'Palm Dubai';
 function isMetroVenue(venue) {
   const venueType = (venue.venueType || '').toUpperCase();
   return venueType === 'METRO' || venueType === 'METRO OUTDOOR';
 }
 export function brandNameForVenue(venue) {
   const network = (venue.network || '').toUpperCase();
-  if (network.includes('ROYALS') || network.includes('GEMS')) return null;
+  if (network.includes('ROYALS') || network.includes('GEMS')) return ROYALS_GEMS_BRAND;
   const name = (venue.venue || '').trim();
   if (isMetroVenue(venue)) {
     const stripped = name.replace(/^Metro (Bridge|Station)\s*-\s*/i, '').trim();

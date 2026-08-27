@@ -26,7 +26,7 @@ export function normalizeVenueText(s) {
 // Traffic Sheet's venue names; Locations never got the same treatment, which is exactly why a chain
 // branch's logo could show correctly on Traffic Sheet while showing bare initials on Locations for
 // the identical real-world store.
-const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR', 'NAKHEEL PAVILION'];
+const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR', 'NAKHEEL PAVILION', 'PALM DUBAI'];
 // NAKHEEL PAVILION maps to "Dubai Retail" (the actual operator of these community retail
 // pavilions), not "Nakheel Pavilion" itself - that canonical name was cached against nakheel.com
 // (the master developer, not the retail operator), and worse, the individual per-branch names
@@ -34,7 +34,16 @@ const LOGO_CHAIN_PREFIXES = ['LULU', 'UNION COOP', 'ADCOOP', 'ENOC', 'CARREFOUR'
 // - Pavilion Kuala Lumpur, an unrelated Malaysian shopping mall Brandfetch's Search false-matched
 // on the word "Pavilion" alone. Confirmed by the pavilions' own already-correct Traffic Sheet
 // entries (many raw spelling variants of "X Pavilion(s)") all resolving to dubairetail.ae already.
-const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour', 'NAKHEEL PAVILION': 'Dubai Retail' };
+//
+// PALM DUBAI - the internal screen-network points on Palm Jumeirah (Fairouz Underpass, Ruby Totem,
+// Zumorod Megacom) have no real external brand to search for at all - not a chain of stores, just
+// physical locations on the Palm. "Palm Dubai" is a manually-supplied aerial photo of the island
+// (see brandfetch-lookup's manualLogosBase64 mode), not a Brandfetch result. "PALM DUBAI" (post-
+// normalizeVenueText, so it also matches the hyphenated "PALM-DUBAI ZUMUROD" naming variant) covers
+// every branch with one lookup, same shape as every other chain prefix here. Note: this is
+// deliberately NOT the same "Palm Jumeirah Mall" location - that's a genuine separate mall with its
+// own real, already-correct logo (nakheelmall.ae) and must never be collapsed into this.
+const LOGO_CHAIN_NAMES = { LULU: 'LULU', 'UNION COOP': 'Union Coop', ADCOOP: 'ADCOOP', ENOC: 'ENOC', CARREFOUR: 'Carrefour', 'NAKHEEL PAVILION': 'Dubai Retail', 'PALM DUBAI': 'Palm Dubai' };
 
 // Returns the canonical chain brand name if `name` belongs to one of the chains above, or null if
 // it doesn't (a plain mall/venue name that should just be looked up as-is by the caller).

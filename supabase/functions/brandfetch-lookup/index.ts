@@ -99,15 +99,23 @@ async function storeManualLogoImage(adminClient: any, name: string, imageUrl: st
     if (!contentType.startsWith('image/')) return null;
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (!bytes.length) return null;
-    const ext = contentType.includes('png') ? 'png' : contentType.includes('svg') ? 'svg' : contentType.includes('webp') ? 'webp' : 'jpg';
-    const path = `manual-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.${ext}`;
-    const { error } = await adminClient.storage.from(LOGO_BUCKET).upload(path, bytes, { contentType, upsert: true });
-    if (error) return null;
-    const { data } = adminClient.storage.from(LOGO_BUCKET).getPublicUrl(path);
-    return data?.publicUrl || null;
+    return uploadManualLogoBytes(adminClient, name, bytes, contentType);
   } catch (_) {
     return null;
   }
+}
+
+// Same re-hosting as storeManualLogoImage above, for an image that was never reachable at a URL in
+// the first place - a local file the admin has on their own machine (e.g. pasted into chat), sent
+// here as base64 rather than fetched. Shares the exact upload/path/upsert logic so both routes
+// produce identically-shaped brand_logos rows.
+async function uploadManualLogoBytes(adminClient: any, name: string, bytes: Uint8Array, contentType: string): Promise<string | null> {
+  const ext = contentType.includes('png') ? 'png' : contentType.includes('svg') ? 'svg' : contentType.includes('webp') ? 'webp' : 'jpg';
+  const path = `manual-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.${ext}`;
+  const { error } = await adminClient.storage.from(LOGO_BUCKET).upload(path, bytes, { contentType, upsert: true });
+  if (error) return null;
+  const { data } = adminClient.storage.from(LOGO_BUCKET).getPublicUrl(path);
+  return data?.publicUrl || null;
 }
 
 async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string, anonKey: string): Promise<boolean> {
@@ -207,6 +215,32 @@ Deno.serve(async (req) => {
         const imageUrl = String(entry?.imageUrl || '').trim();
         if (!name || !imageUrl) continue;
         const logo_url = await storeManualLogoImage(adminClient, name, imageUrl);
+        if (logo_url) {
+          await adminClient.from('brand_logos').upsert({
+            name, logo_url, fetched_at: new Date().toISOString(), error: null,
+          }, { onConflict: 'name' });
+        }
+        results.push({ name, logo_url });
+      }
+      const summary = `Re-hosted ${results.filter((r) => r.logo_url).length} of ${results.length} manual logo(s).`;
+      return new Response(JSON.stringify({ summary, results }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 });
+    }
+
+    // Same idea as manualLogos above, for a local file with no URL of its own (e.g. an admin's own
+    // screenshot) - the caller sends the raw bytes as base64 instead:
+    // { manualLogosBase64: [{ name, base64, contentType }] }
+    if (Array.isArray(body.manualLogosBase64)) {
+      const results: { name: string; logo_url: string | null }[] = [];
+      for (const entry of body.manualLogosBase64) {
+        const name = String(entry?.name || '').trim();
+        const base64 = String(entry?.base64 || '').trim();
+        const contentType = String(entry?.contentType || 'image/png').trim();
+        if (!name || !base64) continue;
+        let logo_url: string | null = null;
+        try {
+          const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+          if (bytes.length) logo_url = await uploadManualLogoBytes(adminClient, name, bytes, contentType);
+        } catch (_) { /* leaves logo_url null - reported below like any other failure */ }
         if (logo_url) {
           await adminClient.from('brand_logos').upsert({
             name, logo_url, fetched_at: new Date().toISOString(), error: null,
