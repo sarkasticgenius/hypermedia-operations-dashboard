@@ -613,7 +613,13 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
     }
     return `
       <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttr(s.venue)}')" title="Click to filter to this location">
-        <td>${brandLogoTag(brandNameForVenue(s), 22, brandFallbackForVenue(s))} ${esc(s.venue)}</td>
+        <!-- brandNameForVenue() returns null for Royals/Gems on purpose (no real external brand
+             exists, so it must never be proposed as a Brandfetch search candidate - see
+             gatherTrafficSheetVenueNames in settings.js). Falling back to the raw venue name HERE
+             only asks brandLogoTag to check the already-cached table (it never searches live), so
+             it's safe: worst case is the same initials badge every other uncached name gets,
+             instead of literally nothing rendering for every Royals/Gems row. -->
+        <td>${brandLogoTag(brandNameForVenue(s) || s.venue, 22, brandFallbackForVenue(s))} ${esc(s.venue)}</td>
         <td>${esc(s.venueType || '-')}</td>
         <td>${esc(s.network)}</td>
         <td class="tright">${screens}</td>
@@ -702,7 +708,9 @@ function todayListTable(campaigns, emptyText, rosterByNetwork, isFocSection) {
     return `
     <tr>
       <td class="tleft">${esc(c.campaignName || '')}</td>
-      <td class="tleft">${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]), 18, brandFallbackForVenue((c.__matchedVenues || [])[0])) : ''} ${esc(describeMatchedVenues(c, rosterByNetwork))}</td>
+      <!-- Same Royals/Gems fallback as the venue table above - brandNameForVenue's null there is a
+           deliberate "never search for this" signal, not a "never display anything" one. -->
+      <td class="tleft">${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]) || (c.__matchedVenues || [])[0].venue, 18, brandFallbackForVenue((c.__matchedVenues || [])[0])) : ''} ${esc(describeMatchedVenues(c, rosterByNetwork))}</td>
       <td class="tsheet-nowrap">${statusBadge(c.status)}</td>
       <td class="tsheet-nowrap">${esc(c.startDate || '')}</td>
       <td class="tsheet-nowrap">${esc(c.endDate || '')}</td>

@@ -16,6 +16,12 @@
 // poll even though it changes maybe a few times a year - roughly 22MB per device per month of
 // pure waste on a metered plan.
 //
+// GRACE-PERIOD SECRET ROTATION: workspaceDirectoryAgent.value also carries an optional
+// previousSecret/previousSecretExpiresAt pair, written by Settings whenever the secret actually
+// changes - accepted here too (until it expires) for the same reason as every other endpoint an
+// already-installed agent calls: it's still running with the OLD secret hardcoded until its next
+// self-update actually lands.
+//
 // Same shared-secret auth as workspace-directory-checkin (x-agent-secret), not a user session.
 // GET only, no request body.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
@@ -24,6 +30,17 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-agent-secret',
 };
+
+// True if `provided` matches either the current secret, or a not-yet-expired previous one (see the
+// grace-period comment above). Centralized so every caller applies the exact same rule.
+function secretIsValid(cfg: any, provided: string | null): boolean {
+  if (!provided) return false;
+  if (cfg?.secret && provided === cfg.secret) return true;
+  if (cfg?.previousSecret && cfg?.previousSecretExpiresAt && provided === cfg.previousSecret) {
+    return new Date(cfg.previousSecretExpiresAt).getTime() > Date.now();
+  }
+  return false;
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -34,9 +51,9 @@ Deno.serve(async (req) => {
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
 
     const { data: agentRow } = await adminClient.from('app_settings').select('value').eq('key', 'workspaceDirectoryAgent').single();
-    const expectedSecret = agentRow?.value?.secret;
+    const agentCfg = agentRow?.value || {};
     const providedSecret = req.headers.get('x-agent-secret');
-    if (!expectedSecret || !providedSecret || providedSecret !== expectedSecret) {
+    if (!agentCfg.secret || !secretIsValid(agentCfg, providedSecret)) {
       throw new Error('Not authenticated - missing or incorrect x-agent-secret header.');
     }
 

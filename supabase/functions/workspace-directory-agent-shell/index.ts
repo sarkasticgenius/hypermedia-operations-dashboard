@@ -18,6 +18,13 @@
 // poll purely to discover nothing had changed - roughly 211MB per device per month, on the very
 // data plan this whole feature exists to measure and conserve.
 //
+// GRACE-PERIOD SECRET ROTATION: workspaceDirectoryAgent.value also carries an optional
+// previousSecret/previousSecretExpiresAt pair, written by Settings whenever the secret actually
+// changes. This endpoint in particular is THE self-update path - an agent authenticating here with
+// its old hardcoded secret is exactly how it receives the build containing the NEW secret. Refusing
+// the old value immediately (rather than for a grace window) would permanently strand every already-
+// installed PC: the one request that could deliver the fix is the one being rejected.
+//
 // Same shared-secret auth as workspace-directory-checkin (x-agent-secret), not a user session.
 // GET only, no request body.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
@@ -26,6 +33,17 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-agent-secret',
 };
+
+// True if `provided` matches either the current secret, or a not-yet-expired previous one (see the
+// grace-period comment above). Centralized so every caller applies the exact same rule.
+function secretIsValid(cfg: any, provided: string | null): boolean {
+  if (!provided) return false;
+  if (cfg?.secret && provided === cfg.secret) return true;
+  if (cfg?.previousSecret && cfg?.previousSecretExpiresAt && provided === cfg.previousSecret) {
+    return new Date(cfg.previousSecretExpiresAt).getTime() > Date.now();
+  }
+  return false;
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -36,9 +54,9 @@ Deno.serve(async (req) => {
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
 
     const { data: agentRow } = await adminClient.from('app_settings').select('value').eq('key', 'workspaceDirectoryAgent').single();
-    const expectedSecret = agentRow?.value?.secret;
+    const agentCfg = agentRow?.value || {};
     const providedSecret = req.headers.get('x-agent-secret');
-    if (!expectedSecret || !providedSecret || providedSecret !== expectedSecret) {
+    if (!agentCfg.secret || !secretIsValid(agentCfg, providedSecret)) {
       throw new Error('Not authenticated - missing or incorrect x-agent-secret header.');
     }
 
@@ -96,7 +114,7 @@ Deno.serve(async (req) => {
     // than only by disabling the button, so the hold cannot be undone by someone publishing again
     // later - the fleet keeps being told the version it is already running, so every agent's own
     // version check matches, and it never downloads a script at all. Zero bytes on a metered SIM,
-    // and no code change reaches a signage PC nobody can walk up to.
+    // and no code change reaching a signage PC nobody can walk up to.
     //
     // Test PCs are deliberately exempt: freezing exists so work can continue on them while the
     // rest of the fleet holds still. An agent that sends no hostname is treated as fleet, the same

@@ -5,6 +5,14 @@
 // no user to sign in as. This is the same shape as broadsign-sync/grassfish-sync/iot-sync, just
 // inverted: those pull from a vendor API on our schedule, this accepts a push on the agent's.
 //
+// GRACE-PERIOD SECRET ROTATION: workspaceDirectoryAgent.value also carries an optional
+// previousSecret/previousSecretExpiresAt pair, written by Settings' saveWorkspaceDirectoryAgentForm
+// whenever the secret actually changes. Every already-installed agent is still running with the OLD
+// secret hardcoded into its script text - it needs to authenticate at least once more (its next
+// self-update poll) to receive a build with the NEW secret baked in. Without accepting the old value
+// here too (until it expires), rotating would lock every PC out of self-update simultaneously: the
+// very request that would deliver the new secret is itself rejected for using the old one.
+//
 // Upserts by hostname (unique) - only touches the telemetry columns (ip_address, anydesk_id,
 // teamviewer_id, other_remote_ids, os_name, os_version, logged_in_user, software, volumes,
 // components, antivirus, problems, agent_version, last_seen). `location` and `notes` are
@@ -60,6 +68,17 @@ const USAGE_INTERVAL_MS = 20 * 60 * 60 * 1000;
 // plan size.
 const LOW_LEFT_GB_FLOOR = 0.3;
 
+// True if `provided` matches either the current secret, or a not-yet-expired previous one (see the
+// grace-period comment above). Centralized so every caller applies the exact same rule.
+function secretIsValid(cfg: any, provided: string | null): boolean {
+  if (!provided) return false;
+  if (cfg?.secret && provided === cfg.secret) return true;
+  if (cfg?.previousSecret && cfg?.previousSecretExpiresAt && provided === cfg.previousSecret) {
+    return new Date(cfg.previousSecretExpiresAt).getTime() > Date.now();
+  }
+  return false;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -71,9 +90,9 @@ Deno.serve(async (req) => {
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
 
     const { data: settingsRow } = await adminClient.from('app_settings').select('value').eq('key', 'workspaceDirectoryAgent').single();
-    const expectedSecret = settingsRow?.value?.secret;
+    const agentCfg = settingsRow?.value || {};
     const providedSecret = req.headers.get('x-agent-secret');
-    if (!expectedSecret || !providedSecret || providedSecret !== expectedSecret) {
+    if (!agentCfg.secret || !secretIsValid(agentCfg, providedSecret)) {
       throw new Error('Not authenticated - missing or incorrect x-agent-secret header.');
     }
 

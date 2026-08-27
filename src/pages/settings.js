@@ -557,14 +557,14 @@ function renderWorkspaceDirectoryAgentCard(settings) {
   const canary = settings.workspaceDirectoryAgentShellCanary || {};
   return `
     <div class="card">
-      <div class="card-head"><h3>Jstar Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, installed software, detected problems). The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Fully headless by design - no tray icon, window, or notification ever appears, since these PCs drive signage screens. Generate a secret, save, then run the .bat as Administrator on each PC once (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files). After that one install, every agent self-updates from Published Agent Version below - PCs in remote locations never need a physical reinstall again for anything except a secret rotation.</div></div>
+      <div class="card-head"><h3>Jstar Agent</h3><div class="desc">Our own lightweight PC inventory agent (hostname, IP, AnyDesk/TeamViewer ID, Broadsign Player ID/Grassfish Box ID, OS, logged-in user, disk volumes, hardware, antivirus status, installed software, detected problems). The Broadsign/Grassfish ID matches this PC to the same screen in those Consoles (by Player Box ID, same as those syncs already use), so each side can link to the other's AnyDesk/TeamViewer or screen info. Fully headless by design - no tray icon, window, or notification ever appears, since these PCs drive signage screens. Generate a secret, save, then run the .bat as Administrator on each PC once (double-clicking the .ps1 directly just opens it in Notepad - Windows' default for script files). After that one install, every agent self-updates from Published Agent Version below - PCs in remote locations never need a physical reinstall again, including for a secret rotation (the old secret stays valid for 72 hours after rotating so already-installed PCs have a window to self-update onto the new one).</div></div>
       <form onsubmit="App.saveWorkspaceDirectoryAgentForm(event)">
         <div class="field"><label>Shared Agent Secret</label>
           <div style="display:flex;gap:8px;">
             <input id="int-wda-secret" type="password" autocomplete="off" value="${esc(cfg.secret || '')}" style="flex:1;">
             <button type="button" class="btn-outline btn-sm" onclick="App.generateWorkspaceDirectorySecret()">Generate</button>
           </div>
-          <div class="small muted" style="margin-top:4px;">Every agent sends this in an x-agent-secret header instead of signing in as a user. Rotating it means re-downloading and re-installing on every PC.</div>
+          <div class="small muted" style="margin-top:4px;">Every agent sends this in an x-agent-secret header instead of signing in as a user. Rotating it keeps the OLD value working for 72 hours, so every already-installed PC has time to self-update onto the new one on its own - no reinstall needed.${cfg.previousSecretExpiresAt && new Date(cfg.previousSecretExpiresAt) > new Date() ? ` <b>Old secret still accepted until ${new Date(cfg.previousSecretExpiresAt).toLocaleString()}.</b>` : ''}</div>
         </div>
         <div class="field"><label>Client Uninstall Password</label>
           <input id="int-wda-uninstall-password" type="password" autocomplete="new-password" placeholder="${cfg.uninstallPasswordHash ? 'Set - leave blank to keep it' : 'Not set yet - required before a PC can be uninstalled'}">
@@ -619,20 +619,42 @@ async function sha256Hex(text) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// How long a rotated-out secret keeps authenticating after a rotation. Every already-installed
+// agent is still running with the OLD secret hardcoded into its script text - it needs to
+// authenticate at least once more (its very next self-update poll) to receive a build with the
+// NEW secret baked in. Without a grace window, rotating locks every PC out of self-update
+// simultaneously: the very request that would deliver the new secret is itself rejected because
+// the old one it's sending no longer validates. See the matching check in every edge function that
+// reads x-agent-secret (workspace-directory-checkin/-agent-shell/-collector/-force-status).
+const AGENT_SECRET_GRACE_HOURS = 72;
+
 export async function saveWorkspaceDirectoryAgentForm(event) {
   event.preventDefault();
   const secret = document.getElementById('int-wda-secret').value.trim();
   if (!secret) { toast('Generate or enter a secret first', 'error'); return; }
   const uninstallPasswordInput = document.getElementById('int-wda-uninstall-password').value.trim();
   const settings = STATE.pageData.settings?.data || {};
+  const existing = settings.workspaceDirectoryAgent || {};
   const uninstallPasswordHash = uninstallPasswordInput
     ? await sha256Hex(uninstallPasswordInput)
-    : (settings.workspaceDirectoryAgent?.uninstallPasswordHash || null);
+    : (existing.uninstallPasswordHash || null);
+  // Only stash a NEW previous-secret window when the value actually changed - saving the form
+  // unchanged (e.g. just to update the uninstall password) must not keep resetting an already-
+  // running grace window back to a fresh 72 hours every time.
+  const rotated = !!existing.secret && existing.secret !== secret;
+  const payload = {
+    secret,
+    uninstallPasswordHash,
+    previousSecret: rotated ? existing.secret : (existing.previousSecret || null),
+    previousSecretExpiresAt: rotated
+      ? new Date(Date.now() + AGENT_SECRET_GRACE_HOURS * 60 * 60 * 1000).toISOString()
+      : (existing.previousSecretExpiresAt || null),
+  };
   try {
-    await saveSetting('workspaceDirectoryAgent', { secret, uninstallPasswordHash });
-    await logAudit('Save integration settings', 'workspaceDirectoryAgent');
+    await saveSetting('workspaceDirectoryAgent', payload);
+    await logAudit('Save integration settings', rotated ? 'workspaceDirectoryAgent (secret rotated - old value stays valid 72h)' : 'workspaceDirectoryAgent');
     invalidate('settings');
-    toast('Settings saved');
+    toast(rotated ? `Secret rotated. The old value still works until ${new Date(payload.previousSecretExpiresAt).toLocaleString()} so already-installed PCs can self-update onto the new one.` : 'Settings saved');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }
