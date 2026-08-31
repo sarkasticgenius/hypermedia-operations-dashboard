@@ -1386,8 +1386,25 @@ if ($Tray) {
         }
     }
 
+    # Custom "J" tray icon (the same brand orange as the dashboard's own HM logo, white glyph) in
+    # place of the generic default Windows application icon - embedded as base64 so the agent stays
+    # a single file with no separate .ico to ship or lose track of. Falls back to the plain default
+    # icon if the embedded bytes ever fail to decode for any reason, so a cosmetic detail can never
+    # be the thing that breaks the tray icon outright.
+    $JstarTrayIconBase64 = "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"
     $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
-    $notifyIcon.Icon = [System.Drawing.SystemIcons]::Application
+    try {
+        $iconBytes = [Convert]::FromBase64String($JstarTrayIconBase64)
+        # The unary comma is load-bearing: New-Object spreads an array argument's ELEMENTS as
+        # separate positional constructor arguments unless told otherwise, so without it this fails
+        # every time with "Cannot find an overload... argument count: 1861" (one per byte) - caught
+        # below and silently falling back to the default icon, so the fix would have looked like it
+        # shipped while quietly never actually working. Confirmed live before shipping.
+        $iconStream = New-Object System.IO.MemoryStream(,$iconBytes)
+        $notifyIcon.Icon = New-Object System.Drawing.Icon($iconStream)
+    } catch {
+        $notifyIcon.Icon = [System.Drawing.SystemIcons]::Application
+    }
     $notifyIcon.Text = "Jstar Agent"
     $notifyIcon.Visible = -not (Test-SignagePlayerRunning)
 
