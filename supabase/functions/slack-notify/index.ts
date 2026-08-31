@@ -57,7 +57,10 @@ Deno.serve(async (req) => {
     const res = await fetch(cfg.webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      // Slack's Incoming Webhook API still honors a per-message username override even though the
+      // webhook itself has its own configured default name/icon - this just wins over that default
+      // rather than needing it changed at the Slack App level (api.slack.com/apps) instead.
+      body: JSON.stringify({ text, username: 'HM Ops Alert' }),
     });
     if (!res.ok) {
       const message = `Slack webhook returned HTTP ${res.status}`;
