@@ -1,16 +1,16 @@
-// Live proxy for the AdLive Center Traffic Sheet API (GET /api/traffic-sheet), authenticated with
-// a static X-API-KEY header. Unlike broadsign-sync/grassfish-sync/iot-sync this does NOT persist
-// campaign data into a table - the Traffic Sheet page is a live report scoped to whatever
-// startMonth/endMonth/network the user has picked, so each request is proxied straight through
-// and the response is handed back to the browser as-is (with the campaign count folded in). The
-// API key still never reaches the browser: it's read server-side from app_settings.trafficSheetApi
-// (service role) and attached here, same "config lives in app_settings, secret never leaves the
-// edge function" shape as every other integration in this codebase.
+// Live proxy for two AdLive Center endpoints, both authenticated with the same static X-API-KEY
+// (same account, same key - confirmed live against the creatives endpoint with the existing
+// trafficSheetApi.apiKey before adding this, nothing new to configure). Neither persists data into
+// a table - both are live reports scoped to whatever the caller asked for, proxied straight through
+// and handed back to the browser as-is. The API key never reaches the browser either way: read
+// server-side from app_settings.trafficSheetApi (service role) and attached here, same "config
+// lives in app_settings, secret never leaves the edge function" shape as every other integration.
 //
 // Runs two ways, same pattern as brandfetch-lookup/iot-sync:
-//   1. Traffic Sheet page - authenticated user JWT, browser supplies startMonth/endMonth/network.
+//   1. Traffic Sheet page - authenticated user JWT, browser supplies startMonth/endMonth/network
+//      (campaign list) or contract (creatives for one campaign - see CREATIVES_ENDPOINT below).
 //   2. Settings > Integrations > "Test" button - authenticated admin JWT, no body (defaults to
-//      the API's own current-month default).
+//      the campaign list API's own current-month default). Never exercises the creatives path.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const corsHeaders = {
@@ -19,6 +19,12 @@ const corsHeaders = {
 };
 
 const TRAFFIC_SHEET_ENDPOINT = 'https://adlivecenter.adlive.io/api/traffic-sheet';
+// GET /api/campaigns/{contract}/creatives - one campaign's creative assets (approval status, date
+// range, matched venues, and the actual file list with dimensions/duration/CDN url per file).
+// {contract} is the exact same vendor contract ID already used throughout this page (campaign.contract
+// - see toggleFocMarketingOverride and friends), just against a different AdLive endpoint than the
+// bulk campaign list.
+const CREATIVES_ENDPOINT = 'https://adlivecenter.adlive.io/api/campaigns';
 
 async function isAuthorized(req: Request, adminClient: any, supabaseUrl: string, anonKey: string): Promise<boolean> {
   const cronSecret = req.headers.get('x-cron-secret');
@@ -52,6 +58,27 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json().catch(() => ({}));
+
+    // Creatives mode - a completely separate endpoint/shape, so kept as its own branch rather than
+    // threaded through the campaign-list querystring building below. Deliberately does NOT touch
+    // trafficSheetApi.lastSync/lastSyncSummary/lastError: those reflect the OVERALL integration's
+    // health for the Settings card and the "Test" button, and a per-campaign creatives lookup
+    // failing (a typo'd contract, one campaign with nothing uploaded yet) is not that - it would
+    // stomp a perfectly good "Fetched N campaigns..." summary with an unrelated one-off result, or
+    // flag the whole integration as broken over a single bad contract ID.
+    if (body.contract) {
+      const url = `${CREATIVES_ENDPOINT}/${encodeURIComponent(String(body.contract))}/creatives`;
+      const res = await fetch(url, { headers: { 'X-API-KEY': cfg.apiKey, Accept: 'application/json' } });
+      if (!res.ok) {
+        const bodyText = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}${bodyText ? `: ${bodyText.slice(0, 200)}` : ''}`);
+      }
+      const data = await res.json();
+      return new Response(JSON.stringify(data), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,
+      });
+    }
+
     const params = new URLSearchParams();
     if (body.startMonth) params.set('startMonth', String(body.startMonth));
     if (body.endMonth) params.set('endMonth', String(body.endMonth));

@@ -45,8 +45,8 @@
 //     under the merged name afterward.
 //   - Stores (labeled "In-Stores") is LULU/Union Coop/ADCOOP/Carrefour only - ENOC deliberately
 //     has its own tab, not part of In-Stores.
-import { STATE, setState, loadData, invalidate, toast } from '../state.js';
-import { loadingCard } from '../modals.js';
+import { STATE, setState, loadData, invalidate, toast, openModal, closeModal } from '../state.js';
+import { loadingCard, registerModal } from '../modals.js';
 import { getAllSettings, getSetting, saveSetting } from '../data/settings.js';
 import { MAF_MALL_VENUE_KEYWORDS, normalizeVenueText, canonicalChainBrandName } from '../data/locationStats.js';
 import { supabase } from '../supabaseClient.js';
@@ -788,7 +788,7 @@ export function renderDayGrid(campaigns, startDate, endDate) {
     const dayMap = {};
     (c.days || []).forEach((d) => { dayMap[d.date] = d.spots; });
     return `<tr>
-      <td class="tleft">${esc(c.campaignName || '')}</td>
+      <td class="tleft">${esc(c.campaignName || '')}${c.contract ? ` <button class="btn-sm" style="padding:1px 6px;font-size:11px;" title="View this campaign's creative assets (approval status, matched venues, actual files) from AdLive" onclick="App.openCampaignCreativesModal('${jsAttr(c.contract)}', '${jsAttr(c.campaignName || '')}')">Creatives</button>` : ''}</td>
       <td>${esc(c.startDate || '')}</td>
       <td>${esc(c.endDate || '')}</td>
       <td class="tcenter">${c.campaignDays ?? ''}</td>
@@ -1005,6 +1005,75 @@ export async function fetchTrafficSheetCampaigns(startMonth, endMonth) {
   if (data?.error) throw new Error(data.error);
   return normalizeBridgeVenueTypes(data);
 }
+
+// GET /api/campaigns/{contract}/creatives, proxied through the same edge function as the campaign
+// list (see supabase/functions/traffic-sheet-proxy - branches on body.contract vs
+// startMonth/endMonth/network, same API key either way). One campaign's actual creative assets:
+// approval status, its own date range (can differ from the campaign's booked dates), which venues
+// it's matched to, and the underlying files with dimensions/duration/CDN url - none of which the
+// bulk campaign list response carries at all.
+async function fetchCampaignCreatives(contract) {
+  const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { contract } });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+// Opens immediately in a loading state rather than waiting on the fetch first - a creatives lookup
+// is a live per-campaign API call (not pre-loaded like the campaign list), so there is no data to
+// show until it returns; STATE.trafficSheetCreatives carries {contract, loading, data, error} and
+// the registerModal('campaignCreatives') renderer below just reads whatever's currently in it,
+// same pattern as testing_${key} elsewhere in this codebase for an in-flight action.
+export async function openCampaignCreativesModal(contract, campaignName) {
+  openModal('campaignCreatives', { contract, campaignName });
+  setState({ trafficSheetCreatives: { contract, loading: true, data: null, error: null } });
+  try {
+    const data = await fetchCampaignCreatives(contract);
+    setState({ trafficSheetCreatives: { contract, loading: false, data, error: null } });
+  } catch (e) {
+    setState({ trafficSheetCreatives: { contract, loading: false, data: null, error: e.message || 'Failed to load creatives' } });
+  }
+}
+
+function creativeFileSizeLabel(f) {
+  const dims = f.width && f.height ? `${f.width}×${f.height}` : '';
+  const dur = f.durationSeconds ? `${f.durationSeconds}s` : '';
+  return [dims, dur].filter(Boolean).join(', ');
+}
+
+registerModal('campaignCreatives', (modalData) => {
+  const state = STATE.trafficSheetCreatives;
+  const title = esc(modalData.campaignName || 'Campaign');
+  if (!state || state.contract !== modalData.contract) {
+    return `<h3>${title} - Creatives</h3><div class="empty">Loading...</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
+  }
+  if (state.loading) {
+    return `<h3>${title} - Creatives</h3><div class="empty">Loading creatives...</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
+  }
+  if (state.error) {
+    return `<h3>${title} - Creatives</h3><div class="login-error">${esc(state.error)}</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
+  }
+  const d = state.data || {};
+  const creatives = d.creatives || [];
+  if (!creatives.length) {
+    return `<h3>${title} - Creatives</h3><div class="empty">No creatives found for this campaign yet.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
+  }
+  const body = creatives.map((cr) => `
+    <div class="card" style="margin-bottom:10px;">
+      <div class="card-head"><h3 style="font-size:14px;">${esc(cr.creativeName || cr.creativeId || 'Creative')}</h3>${statusBadge(cr.status)}</div>
+      <div class="small muted">${esc(cr.startDate || '')} - ${esc(cr.endDate || '')}${cr.venues?.length ? ` · ${esc(cr.venues.join(', '))}` : ''}</div>
+      <table style="margin-top:8px;"><thead><tr><th class="tleft">File</th><th class="tleft">Type</th><th class="tleft">Size/Duration</th></tr></thead><tbody>
+        ${(cr.files || []).map((f) => `<tr><td class="tleft"><a href="${esc(f.url || '#')}" target="_blank" rel="noopener">${esc(f.fileName || f.fileId || 'file')}</a></td><td class="tleft">${esc(f.type || '')}</td><td class="tleft">${esc(creativeFileSizeLabel(f))}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+  `).join('');
+  return `
+    <h3>${title} - Creatives</h3>
+    <div class="small muted" style="margin-bottom:8px;">${esc(String(d.creativeCount ?? creatives.length))} creative(s), as of ${esc(d.generatedAt || '')}</div>
+    ${body}
+    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
+  `;
+});
 
 async function runTrafficSheetFetch(startDate, endDate) {
   const startMonth = startDate.slice(0, 7);
