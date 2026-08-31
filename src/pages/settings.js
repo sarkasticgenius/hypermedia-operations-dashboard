@@ -579,6 +579,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
           <button type="button" class="btn-outline btn-sm" onclick="App.downloadWorkspaceDirectoryAgentBatch()">Download Launcher (.bat)</button>
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentUninstallBatch()">Download Uninstall Launcher (.bat)</button>
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? 'title="Copies a single PowerShell line to your clipboard - paste it into a PowerShell window on the target PC (e.g. over AnyDesk), or feed it to another tool that runs PowerShell commands remotely. Always fetches whatever\'s currently published, live. The install itself runs hidden and the shell running this line always closes itself afterward - nothing to close or type exit on."' : 'disabled title="Save a secret first"'} onclick="App.copyWorkspaceDirectoryInstallCommand()">Copy One-Line Install Command</button>
+          <button type="button" class="btn-outline btn-sm" ${cfg.secret ? 'title="Same install, base64-encoded (-EncodedCommand) so the secret/URL/agent name are not readable at a glance - useful when the command is visible on screen or held by another tool. Not hidden from Task Manager, EDR, or PowerShell logging - only from someone eyeballing the raw text."' : 'disabled title="Save a secret first"'} onclick="App.copyWorkspaceDirectoryEncodedInstallCommand()">Copy Short/Encoded Install Command</button>
         </div>
       </form>
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
@@ -3829,6 +3830,55 @@ export function copyWorkspaceDirectoryInstallCommand() {
   if (!secret) { toast('Save a secret first', 'error'); return; }
   navigator.clipboard?.writeText(buildWorkspaceDirectoryOneLinerInstallCommand(secret))
     .then(() => toast('Install command copied - paste into PowerShell on the target PC'))
+    .catch(() => toast('Could not copy to clipboard', 'error'));
+}
+
+// PowerShell's own -EncodedCommand switch expects UTF-16LE bytes, base64'd - not UTF-8. JS strings
+// are already UTF-16 internally, so charCodeAt(i) already gives the right 16-bit code unit; this
+// just splits each one into its two little-endian bytes rather than re-encoding through UTF-8 (the
+// wrong encoding entirely - powershell.exe would reject it as malformed rather than silently
+// misreading it, since it checks for the UTF-16 byte-order pattern before decoding).
+function toPowerShellEncodedCommand(text) {
+  const bytes = new Uint8Array(text.length * 2);
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    bytes[i * 2] = code & 0xff;
+    bytes[i * 2 + 1] = (code >> 8) & 0xff;
+  }
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+// Same install, opaque instead of readable - a bystander glancing at the screen (or at whatever
+// tool is holding this string to run it remotely) sees base64 noise, not a URL/secret/"Jstar
+// Agent" they could recognize or copy. NOT security through obscurity against anything that
+// matters: the decoded command is still exactly what Task Manager's command-line column, Sysmon,
+// PowerShell Script Block Logging, or anyone who pastes the base64 into
+// [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($s)) already sees - this hides
+// nothing from the OS, from EDR, or from an admin who wants to look. It only removes what a person
+// eyeballing the raw text on screen would otherwise read at a glance.
+//
+// -WindowStyle Hidden here (not just inside the downloaded script) means THIS process never shows
+// a window from the moment it's created, not merely from whenever the hidden re-launch inside the
+// script gets around to it - meaningful specifically for the "another tool runs this as a fresh
+// process" case (see buildWorkspaceDirectoryOneLinerInstallCommand's own comment on why a bare
+// invocation without it opens a visible console). -EncodedCommand is itself non-interactive and
+// exits on its own once the command finishes, so the try/finally { exit } from the readable version
+// is kept only as a belt-and-braces guarantee, not because anything here is expected to need it.
+function buildWorkspaceDirectoryOneLinerEncodedInstallCommand(secret) {
+  const agentShellUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-agent-shell`;
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const plain = `try { $r = Invoke-RestMethod -Uri "${agentShellUrl}?hostname=$env:COMPUTERNAME" -Headers @{ 'x-agent-secret' = '${secret}'; 'apikey' = '${anonKey}' }; $f = Join-Path $env:TEMP 'Install-JstarAgent.ps1'; Set-Content -Path $f -Value $r.script -Encoding utf8 -NoNewline; & $f } finally { exit }`;
+  return `powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand ${toPowerShellEncodedCommand(plain)}`;
+}
+
+export function copyWorkspaceDirectoryEncodedInstallCommand() {
+  const settings = STATE.pageData.settings?.data || {};
+  const secret = settings.workspaceDirectoryAgent?.secret;
+  if (!secret) { toast('Save a secret first', 'error'); return; }
+  navigator.clipboard?.writeText(buildWorkspaceDirectoryOneLinerEncodedInstallCommand(secret))
+    .then(() => toast('Encoded install command copied - opaque to read, identical install underneath.'))
     .catch(() => toast('Could not copy to clipboard', 'error'));
 }
 
