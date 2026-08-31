@@ -287,8 +287,24 @@ Deno.serve(async (req) => {
     const recoveredScreenIds = recoveredScreens.map((r) => r.id);
 
     if (newlyOfflineScreens.length) {
-      await adminClient.from('workspace_offline_screens')
-        .upsert(newlyOfflineScreens.map((s) => ({ source: s.source, location_id: s.location_id, screen_key: s.name })), { onConflict: 'source,location_id,screen_key' });
+      // Deduped by the exact (source, location_id, screen_key) triple the UNIQUE constraint is on
+      // - a location where several distinct physical screens share one generic Broadsign/Grassfish
+      // name (confirmed live: YAS Mall has 8 separate totems all literally named "DIGITAL TOTEM",
+      // not something this app controls) previously sent the SAME key more than once in a single
+      // upsert batch, which Postgres's ON CONFLICT DO UPDATE refuses outright ("cannot affect row
+      // a second time"). The result was never checked here, so that failure was completely silent
+      // - the row was never actually saved, so every 20-minute scan re-detected the exact same
+      // screens as "newly offline" forever, instead of alerting once and going quiet until a real
+      // recovery. The tracking row is inherently one-per-key regardless (that's what the unique
+      // constraint already means - a repeat name can't be told apart from itself), so deduping
+      // here doesn't change what gets reported, only makes the upsert that was supposed to prevent
+      // re-alerting actually succeed instead of silently no-op-ing every time.
+      const dedupedOfflineRows = [...new Map(
+        newlyOfflineScreens.map((s) => [`${s.source}|${s.location_id}|${s.name}`, { source: s.source, location_id: s.location_id, screen_key: s.name }]),
+      ).values()];
+      const { error: offlineUpsertErr } = await adminClient.from('workspace_offline_screens')
+        .upsert(dedupedOfflineRows, { onConflict: 'source,location_id,screen_key' });
+      if (offlineUpsertErr) console.error('workspace_offline_screens upsert failed', offlineUpsertErr.message);
     }
     if (recoveredScreenIds.length) {
       await adminClient.from('workspace_offline_screens').delete().in('id', recoveredScreenIds);
