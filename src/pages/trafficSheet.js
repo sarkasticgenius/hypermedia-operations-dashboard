@@ -478,6 +478,19 @@ function isActiveInMonth(campaign, monthStr) {
   return (campaign.days || []).some((d) => d.date >= start && d.date <= end);
 }
 
+// Same "live" test statusBadge already uses for its green badge - a campaign's booked startDate/
+// endDate is not reliable evidence it is STILL running. Confirmed live at Abu Dhabi Mall: Campaigns/
+// Cap read 13/15 with only 5 rows showing as Live in the table right below it - the other 8 were
+// AdLive's own status text already saying "Complete" (pulled early, cancelled, whatever the real
+// reason) while their stored end date hadn't caught up and still fell inside the Capacity Month.
+// isActiveInMonth only ever answers "does this booking's date range touch this month" - status is
+// the only place AdLive actually says whether the slot is still occupied, so capacitySummary needs
+// this as an additional filter, not a replacement for the date check.
+function isLiveStatus(status) {
+  const s = (status || '').toLowerCase();
+  return s.includes('live') || s.includes('running');
+}
+
 function yesterdayISO() {
   const d = new Date();
   d.setDate(d.getDate() - 1);
@@ -593,10 +606,11 @@ function renderQuickStatTiles(todayActive, todayExpiring, yesterdayActive, yeste
 // how many screens the venue has - Capacity Status is that per-screen headroom (cap - count), the
 // same units as the Campaigns/Cap column right next to it, not multiplied by screens.
 // capacitySummary is a SEPARATE locationSummary() scoped to exactly one calendar month (see
-// isActiveInMonth) - Screens/Network/Venue Type still come from the main summary (whatever the
-// wider Start/End Date range currently shows), but the Campaigns/Cap/Capacity Status columns
-// always come from capacitySummary, keyed by venue, so a wide date range never inflates the count
-// the 15/6 cap is compared against.
+// isActiveInMonth) AND to Live campaigns only (see isLiveStatus) - Screens/Network/Venue Type still
+// come from the main summary (whatever the wider Start/End Date range currently shows), but the
+// Campaigns/Cap/Capacity Status columns always come from capacitySummary, keyed by venue, so a wide
+// date range never inflates the count the 15/6 cap is compared against, and a Complete/expired
+// booking whose stored end date just hasn't caught up never holds a slot it isn't actually using.
 function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, capacityMonth) {
   const capacityByVenue = new Map(capacitySummary.map((s) => [s.venue, s]));
   const monthLabel = formatMonthLabel(capacityMonth);
@@ -639,7 +653,7 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head">
         <h3>Summary</h3>
-        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Campaigns/Cap and Capacity Status are for ${esc(monthLabel)} only (15 campaigns/screen/month, 6 for Royals, 20 for MAF Malls indoor / 10 outdoor, no cap for Carrefour) - change the Capacity Month above to check a different month.</div>
+        <div class="desc">${campaigns.length} campaign(s), ${totalScreens} screen(s) across ${summary.length} location(s) for the selected range. Click a location to filter. Campaigns/Cap and Capacity Status are for ${esc(monthLabel)} only, counting Live campaigns only (Complete/expired bookings don't hold a slot even if their stored end date still falls in this month) - 15 campaigns/screen/month, 6 for Royals, 20 for MAF Malls indoor / 10 outdoor, no cap for Carrefour. Change the Capacity Month above to check a different month.</div>
       </div>
       <table><thead><tr><th>Location</th><th>Venue Type</th><th>Network</th><th class="tright">Screens</th><th class="tright">Campaigns / Cap (${esc(monthLabel)})</th><th class="tcenter">Capacity Status</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6"><div class="empty">No data.</div></td></tr>'}</tbody></table>
@@ -877,7 +891,7 @@ export function renderTrafficSheet() {
   // isActiveInMonth so a multi-month Start/End Date range can never inflate the count.
   const capacityMonthLoaded = capacityMonth >= startDate.slice(0, 7) && capacityMonth <= endDate.slice(0, 7);
   const capacitySummary = capacityMonthLoaded
-    ? locationSummary(campaigns.filter((c) => isActiveInMonth(c, capacityMonth)))
+    ? locationSummary(campaigns.filter((c) => isActiveInMonth(c, capacityMonth) && isLiveStatus(c.status)))
     : [];
   const today = todayISO();
   const yesterday = yesterdayISO();
