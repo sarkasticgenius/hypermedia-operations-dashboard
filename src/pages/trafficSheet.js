@@ -714,7 +714,7 @@ function todayListTable(campaigns, emptyText, rosterByNetwork, isFocSection) {
     }
     return `
     <tr>
-      <td class="tleft">${esc(c.campaignName || '')}</td>
+      <td class="tleft">${esc(c.campaignName || '')}${c.contract ? ` <button class="btn-sm" style="padding:1px 6px;font-size:11px;" title="View this campaign's creative assets (approval status, matched venues, actual files) from AdLive" onclick="App.openCampaignCreativesModal('${jsAttr(c.contract)}', '${jsAttr(c.campaignName || '')}')">Creatives</button>` : ''}</td>
       <!-- Same Royals/Gems fallback as the venue table above - brandNameForVenue's null there is a
            deliberate "never search for this" signal, not a "never display anything" one. -->
       <td class="tleft">${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]) || (c.__matchedVenues || [])[0].venue, 18, brandFallbackForVenue((c.__matchedVenues || [])[0])) : ''} ${esc(describeMatchedVenues(c, rosterByNetwork))}</td>
