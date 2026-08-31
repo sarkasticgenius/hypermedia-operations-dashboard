@@ -13,6 +13,7 @@ import { listBrandLogos, lookupBrandLogos } from '../data/brandLogos.js';
 import { brandNameForLocation } from '../data/locationStats.js';
 import { brandNameForVenue, brandFallbackForVenue, isBrandedMetroStation } from './trafficSheet.js';
 import { supabase } from '../supabaseClient.js';
+import { notifySlack } from '../data/slack.js';
 import { logAudit } from '../lib/audit.js';
 import { esc } from '../lib/format.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
@@ -4240,6 +4241,74 @@ export async function runBrandfetchFetchMissing() {
   }
 }
 
+// Mirrors STALE_AFTER_MINUTES in workspaceDirectory.js / workspace-directory-alert-scan exactly -
+// duplicated rather than imported/shared, same call the edge function itself already made (see its
+// own matching comment), since a small local constant costs nothing and this only needs the
+// number, not any of the rest of that module's device-page state.
+const STATUS_SUMMARY_STALE_MINUTES = 30;
+
+// Builds a snapshot of CURRENT status (not a diff against last time, unlike the automatic alerts -
+// see workspace-directory-alert-scan) for the "Send Status Summary Now" button. Queried directly
+// here rather than through locationStats.js's chain/member-aware helpers (effectiveLocations etc.)
+// - those exist to fold a chain's member locations into one card on the Locations page, which is
+// more machinery than a flat fleet-wide count needs; this instead mirrors the alert-scan edge
+// function's own simpler direct-query approach, since the two are doing the same kind of tally.
+async function buildStatusSummaryText() {
+  const [{ data: devices, error: devicesErr }, { data: offlineScreens, error: screensErr }, { data: openReports, error: reportsErr }] = await Promise.all([
+    supabase.from('workspace_devices').select('last_seen, problems').is('removed_at', null),
+    supabase.from('location_sub_assets').select('source, location_id').eq('status', 'Offline').in('source', ['broadsign', 'grassfish']).not('location_id', 'is', null),
+    supabase.from('screen_reports').select('id').eq('status', 'New'),
+  ]);
+  if (devicesErr) throw devicesErr;
+  if (screensErr) throw screensErr;
+  if (reportsErr) throw reportsErr;
+
+  const staleMs = STATUS_SUMMARY_STALE_MINUTES * 60 * 1000;
+  const now = Date.now();
+  let onlineCount = 0;
+  let offlineCount = 0;
+  let problemCount = 0;
+  for (const d of devices || []) {
+    const isOffline = !d.last_seen || (now - new Date(d.last_seen).getTime()) > staleMs;
+    if (isOffline) offlineCount++; else onlineCount++;
+    if (Array.isArray(d.problems) && d.problems.length) problemCount++;
+  }
+
+  const locIds = [...new Set((offlineScreens || []).map((s) => s.location_id))];
+  let locNames = [];
+  if (locIds.length) {
+    const { data: locRows } = await supabase.from('locations').select('id, name').in('id', locIds);
+    locNames = [...new Set((locRows || []).map((l) => l.name))].sort();
+  }
+  const MAX_NAMES = 10;
+  const shownNames = locNames.slice(0, MAX_NAMES).join(', ');
+  const moreNames = locNames.length > MAX_NAMES ? ` +${locNames.length - MAX_NAMES} more` : '';
+
+  const lines = [
+    `:bar_chart: *Status Summary* (on-demand, ${new Date().toLocaleString()})`,
+    `• Digital Directory: ${onlineCount} online, ${offlineCount} offline${problemCount ? `, ${problemCount} with an open issue` : ''}`,
+    (offlineScreens || []).length
+      ? `• Broadsign/Grassfish screens offline: ${offlineScreens.length} across ${locNames.length} location(s): ${shownNames}${moreNames}`
+      : `• Broadsign/Grassfish screens offline: 0`,
+    `• Open Screen Reports: ${(openReports || []).length}`,
+  ];
+  return lines.join('\n');
+}
+
+export async function sendWorkspaceStatusSummaryToSlack() {
+  setState({ sendingStatusSummary: true });
+  try {
+    const text = await buildStatusSummaryText();
+    await notifySlack(text);
+    await logAudit('Send Slack status summary', text.replace(/\n/g, ' | '));
+    toast('Status summary sent to Slack.');
+  } catch (e) {
+    toast(e.message || 'Failed to send status summary', 'error');
+  } finally {
+    setState({ sendingStatusSummary: false });
+  }
+}
+
 export async function testIntegration(functionName, settingKey) {
   setState({ [`testing_${settingKey}`]: true });
   try {
@@ -4284,6 +4353,11 @@ function renderIntegrationsTab() {
       { name: 'webhookUrl', label: 'Incoming Webhook URL', type: 'password' },
       { name: 'enabled', label: 'Enabled', type: 'checkbox' },
     ], 'slack-notify')}
+    ${settings.slackNotify?.enabled && settings.slackNotify?.webhookUrl ? `
+    <div class="card">
+      <div class="card-head"><h3>Slack Status Summary</h3><div class="desc">The automatic alerts above only fire on a CHANGE (something going offline, a new issue) - this instead posts a one-off snapshot of current status, whenever you click it. Good for a shift handover or just checking in on the channel without opening the dashboard.</div></div>
+      <button type="button" class="btn btn-orange btn-sm" ${STATE.sendingStatusSummary ? 'disabled' : ''} onclick="App.sendWorkspaceStatusSummaryToSlack()">${STATE.sendingStatusSummary ? 'Sending...' : 'Send Status Summary Now'}</button>
+    </div>` : ''}
     ${integrationField(settings, 'sendgridEmail', 'SendGrid Email', [
       { name: 'apiKey', label: 'API Key', type: 'password' },
       { name: 'fromEmail', label: 'From Email (must be a Verified Sender in SendGrid)', type: 'email' },
