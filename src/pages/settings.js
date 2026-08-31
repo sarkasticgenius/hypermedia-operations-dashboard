@@ -1350,6 +1350,38 @@ function Get-UnexpectedWindows {
     return $found
 }
 
+# Every automated spawn point in this script (scheduled tasks, self-elevation, the tray's "Force
+# Inventory Pull") already launches powershell.exe with -WindowStyle Hidden - none of them should
+# ever show a real window. This is the backstop for when one does anyway: a leftover process still
+# running an OLDER copy of this script from before a window-hiding fix was published (old instances
+# don't get killed off by a new version landing - they just run to completion on their own old
+# code), a future spawn point that forgets -WindowStyle Hidden, or -WindowStyle Hidden itself being
+# ignored on some Windows build/launch combination. Matches on the command line actually containing
+# THIS script's own installed path, not just any powershell/cmd window - a staff member's own
+# terminal session on an office PC (this agent runs on more than just locked-down totems) is
+# deliberately left alone, same as Get-UnexpectedWindows above never flags it either.
+function Close-StrayAgentWindows {
+    Add-Type -ErrorAction SilentlyContinue -Namespace WorkspaceDirectoryAgent -Name Win32 -MemberDefinition @'
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+'@
+    try {
+        $ownProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Filter (
+            "Name='powershell.exe' or Name='powershell_ise.exe' or Name='pwsh.exe' or Name='cmd.exe'"
+        ) | Where-Object {
+            $_.CommandLine -and $_.CommandLine -like "*$InstalledScriptPath*" -and $_.ProcessId -ne $PID
+        }
+        foreach ($op in $ownProcs) {
+            $proc = Get-Process -Id $op.ProcessId -ErrorAction SilentlyContinue
+            if (-not $proc -or $proc.MainWindowHandle -eq [IntPtr]::Zero) { continue }
+            if (-not [WorkspaceDirectoryAgent.Win32]::IsWindowVisible($proc.MainWindowHandle)) { continue }
+            if ([WorkspaceDirectoryAgent.Win32]::IsIconic($proc.MainWindowHandle)) { continue }
+            Write-AgentLog "Closing a stray visible PowerShell window from the agent's own script (PID $($op.ProcessId), title '$($proc.MainWindowTitle)') - every automated launch of this script sets -WindowStyle Hidden, so a visible one here should never happen."
+            Stop-Process -Id $op.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+
 # The Jstar Agent taskbar icon: a status window on double-click (last check-in
 # time/result), "Force Inventory Pull" and "View Agent Logs" on the context menu. Runs as the
 # logged-in user (see the AtLogOn task registered below, and -Tray excluded from self-elevation
@@ -1456,6 +1488,7 @@ if ($Tray) {
     $visibilityTimer.Interval = 30000
     $visibilityTimer.add_Tick({
         $notifyIcon.Visible = -not (Test-SignagePlayerRunning)
+        Close-StrayAgentWindows
         try {
             $unexpected = @(Get-UnexpectedWindows)
             New-Item -ItemType Directory -Path $DuHandoffDir -Force -ErrorAction SilentlyContinue | Out-Null
