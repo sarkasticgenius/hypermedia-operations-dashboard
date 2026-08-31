@@ -553,6 +553,8 @@ function renderWorkspaceDirectoryAgentCard(settings) {
   const cfg = settings.workspaceDirectoryAgent || {};
   const collector = settings.workspaceDirectoryCollector || {};
   const collectorScript = collector.script || defaultCollectorScript();
+  const optimizer = settings.workspaceDirectoryOptimizerScript || {};
+  const optimizerScript = optimizer.script || defaultOptimizerScript();
   const shell = settings.workspaceDirectoryAgentShell || {};
   const canary = settings.workspaceDirectoryAgentShellCanary || {};
   return `
@@ -601,6 +603,15 @@ function renderWorkspaceDirectoryAgentCard(settings) {
         </div>
         <button class="btn btn-orange" type="submit">Save Collector Script</button>
         <button type="button" class="btn-outline btn-sm" onclick="App.resetWorkspaceDirectoryCollector()">Reset to Default</button>
+      </form>
+      <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
+      <form onsubmit="App.saveWorkspaceDirectoryOptimizerScriptForm(event)">
+        <div class="field"><label>Signage PC Optimizer Script (PowerShell)</label>
+          <textarea id="int-wda-optimizer" rows="14" style="min-height:280px;font-family:monospace;font-size:12px;">${esc(optimizerScript)}</textarea>
+          <div class="small muted" style="margin-top:4px;">Queued on demand from the "Optimize" action on a device, not run automatically like the collector above - it runs once, whenever someone clicks it, as SYSTEM (same as any Run Command; no elevation prompt to worry about even though the script says "Run as Administrator"). Edit and Save here any time you want to add another step - every future click of Optimize picks up whatever is currently saved, no reinstall needed.${optimizer.version ? ` Current version: ${optimizer.version}.` : ''}</div>
+        </div>
+        <button class="btn btn-orange" type="submit">Save Optimizer Script</button>
+        <button type="button" class="btn-outline btn-sm" onclick="App.resetWorkspaceDirectoryOptimizerScript()">Reset to Default</button>
       </form>
     </div>
   `;
@@ -676,6 +687,25 @@ export async function saveWorkspaceDirectoryCollectorForm(event) {
 export function resetWorkspaceDirectoryCollector() {
   const el = document.getElementById('int-wda-collector');
   if (el) el.value = defaultCollectorScript();
+}
+
+export async function saveWorkspaceDirectoryOptimizerScriptForm(event) {
+  event.preventDefault();
+  const script = document.getElementById('int-wda-optimizer').value;
+  const settings = STATE.pageData.settings?.data || {};
+  const version = (settings.workspaceDirectoryOptimizerScript?.version || 0) + 1;
+  try {
+    await saveSetting('workspaceDirectoryOptimizerScript', { script, version });
+    await logAudit('Save Digital Directory optimizer script', `v${version}`);
+    invalidate('settings');
+    toast(`Optimizer script saved (v${version}) - the Optimize action on any device now queues this version.`);
+    setState({});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+export function resetWorkspaceDirectoryOptimizerScript() {
+  const el = document.getElementById('int-wda-optimizer');
+  if (el) el.value = defaultOptimizerScript();
 }
 
 // Publishes the CURRENTLY-DEPLOYED outer shell (this build's buildWorkspaceDirectoryAgentScript
@@ -1092,6 +1122,135 @@ $__os = Get-CimInstance Win32_OperatingSystem
     networkBytesTotal = Get-NetworkBytesTotal
     agentVersion      = "3.2"
 }`;
+}
+
+// The pre-filled/reset value for the Signage PC Optimizer Script box below - originally authored
+// as a standalone Optimize-SignagePC.ps1 meant to be run manually (hence its own "Run as
+// Administrator" comment), adopted here verbatim except for admin rights: queued through the
+// Optimize button, it's dispatched as a Run Command, which already always executes as SYSTEM (see
+// Invoke-PendingCommand) - no elevation prompt to worry about, unlike a manual double-click.
+//
+// EVERY BACKSLASH IN THIS STRING IS DOUBLED. This lives inside a JS template literal, which
+// consumes backslash escapes before PowerShell ever sees the text - a single "C:\Windows\Temp"
+// here would silently become "C:WindowsTemp" (JS's escape table drops an unrecognised "\W", "\T"
+// etc. rather than erroring) - not a parse failure CI would catch, just a script that quietly
+// cleans the wrong folder. See the near-identical warning on buildWorkspaceDirectoryAgentScript's
+// own backslash-heavy content below, and scripts/generate-agent-script.mjs's header comment for
+// the exact incident (agent v48, 25 Aug 2026) that made this something to warn about at all.
+export function defaultOptimizerScript() {
+  return `# ============================================================
+# Digital Signage PC - Windows / Defender Optimization
+# Runs as SYSTEM automatically when queued via the dashboard's Optimize button.
+# ============================================================
+
+Write-Host "Starting Digital Signage PC optimization..." -ForegroundColor Cyan
+
+# ------------------------------------------------------------
+# 1. Limit Microsoft Defender scan CPU usage
+# ------------------------------------------------------------
+Write-Host "Setting Microsoft Defender scan CPU limit..."
+
+Set-MpPreference -ScanAvgCPULoadFactor 20
+
+
+# ------------------------------------------------------------
+# 2. Disable Defender scanning of files while they are being
+#    scanned by another trusted process where applicable
+# ------------------------------------------------------------
+Set-MpPreference -DisableArchiveScanning $false
+Set-MpPreference -DisableEmailScanning $false
+Set-MpPreference -DisableRemovableDriveScanning $false
+
+
+# ------------------------------------------------------------
+# 3. Optional exclusions for DIGITAL SIGNAGE CACHE folders
+#
+# IMPORTANT:
+# Change these paths to the actual folders used by your
+# signage software before enabling them.
+# ------------------------------------------------------------
+
+$SignageFolders = @(
+    # "C:\\Signage\\Cache",
+    # "C:\\Signage\\Content",
+    # "C:\\ProgramData\\YourCMS\\Cache"
+)
+
+foreach ($Folder in $SignageFolders) {
+
+    if (Test-Path $Folder) {
+
+        Write-Host "Adding Defender exclusion: $Folder"
+
+        Add-MpPreference -ExclusionPath $Folder
+
+    }
+}
+
+
+# ------------------------------------------------------------
+# 4. Clean Windows temporary files
+# ------------------------------------------------------------
+
+Write-Host "Cleaning temporary files..."
+
+$TempFolders = @(
+    $env:TEMP,
+    "C:\\Windows\\Temp"
+)
+
+foreach ($Folder in $TempFolders) {
+
+    if (Test-Path $Folder) {
+
+        Get-ChildItem $Folder -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+
+# ------------------------------------------------------------
+# 5. Clear Windows Update download cache
+#    ONLY removes temporary downloaded update files.
+# ------------------------------------------------------------
+
+Write-Host "Cleaning Windows Update temporary cache..."
+
+Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
+
+if (Test-Path "C:\\Windows\\SoftwareDistribution\\Download") {
+
+    Get-ChildItem "C:\\Windows\\SoftwareDistribution\\Download" -Force |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Start-Service wuauserv -ErrorAction SilentlyContinue
+
+
+# ------------------------------------------------------------
+# 6. Run Defender quick scan
+# ------------------------------------------------------------
+
+Write-Host "Starting Microsoft Defender quick scan..."
+
+Start-MpScan -ScanType QuickScan
+
+
+# ------------------------------------------------------------
+# 7. Display current Defender configuration
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Current Defender CPU limit:" -ForegroundColor Yellow
+
+Get-MpPreference |
+    Select-Object ScanAvgCPULoadFactor
+
+
+Write-Host ""
+Write-Host "Optimization completed." -ForegroundColor Green
+Write-Host "A restart is recommended."
+`;
 }
 
 // The fixed outer shell: self-elevate, self-update (see Invoke-SelfUpdate below), register the
@@ -3180,7 +3339,16 @@ if ($RunCommandFile) {
             $output = & cmd.exe /c "\`"$PendingBatchFile\`"" 2>&1 | Out-String
             Remove-Item -Path $PendingBatchFile -Force -ErrorAction SilentlyContinue
         } else {
-            $output = Invoke-Expression $command 2>&1 | Out-String
+            # *>&1, not just 2>&1: Write-Host writes to the Information stream (6), a SEPARATE
+            # stream from both Success (1) and Error (2) since PowerShell 5 - "2>&1" only merges
+            # Error into Success, so a multi-step queued command that narrates its own progress via
+            # Write-Host (exactly what a hand-authored optimization/maintenance script tends to do)
+            # would report back almost nothing: only whatever a bare, uncaptured expression happened
+            # to emit on the Success stream, with every Write-Host line silently dropped - not an
+            # error, just gone, because there is no interactive host here to write to. "*>&1" merges
+            # every stream (Warning, Verbose, Debug too) into Success so Out-String actually captures
+            # what the command told the console it was doing.
+            $output = Invoke-Expression $command *>&1 | Out-String
         }
     } catch {
         $output = "ERROR: $($_.Exception.Message)"

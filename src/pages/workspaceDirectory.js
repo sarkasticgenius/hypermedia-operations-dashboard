@@ -4,7 +4,7 @@ import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice, lis
 import { listSimCards } from '../data/simCards.js';
 import { listAssetInventory } from '../data/assetsInventory.js';
 import { canEdit, canDelete } from '../auth.js';
-import { AGENT_CANARY_HOSTNAMES } from './settings.js';
+import { AGENT_CANARY_HOSTNAMES, defaultOptimizerScript } from './settings.js';
 import { remoteAccessUrl } from '../lib/remoteAccess.js';
 import { esc, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
@@ -885,6 +885,7 @@ const ROW_ACTION_ICONS = {
   rename: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>',
   force: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
   restart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
+  optimize: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
   delete: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
   kebab: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>',
 };
@@ -906,6 +907,7 @@ function rowActionsCellHtml(d, editOk, deleteOk) {
     editOk && `<button title="Rename the Windows computer name on this PC - it applies the change and restarts itself" onclick="App.openWorkspaceRenameModal('${d.id}')">${ROW_ACTION_ICONS.rename}Rename</button>`,
     editOk && `<button title="${d.force_checkin_requested ? 'Already requested and still pending - click to re-request' : (d.pending_command ? 'Push the queued Run Command to this PC now' : 'Pull fresh inventory from this PC now')} - within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.forceWorkspaceInventoryPull('${d.id}')">${ROW_ACTION_ICONS.force}Force${d.force_checkin_requested ? ' Again' : ''}</button>`,
     editOk && `<button title="Restart this PC now - no one needs to be there, it comes back on its own within a minute or two" onclick="App.restartWorkspaceDevice('${d.id}')">${ROW_ACTION_ICONS.restart}Restart</button>`,
+    editOk && `<button title="Run the Signage PC Optimizer Script on this PC now (Defender CPU limit, temp/Windows Update cache cleanup, quick scan) - runs as SYSTEM, no elevation prompt. Edit the script itself from Settings." onclick="App.optimizeWorkspaceDevice('${d.id}')">${ROW_ACTION_ICONS.optimize}Optimize</button>`,
   ].filter(Boolean);
   return `
     <button class="icon-btn" title="More actions" onclick="App.toggleWorkspaceRowMenu(event, '${d.id}')">${ROW_ACTION_ICONS.kebab}</button>
@@ -1158,6 +1160,32 @@ export async function restartWorkspaceDevice(deviceId) {
     toast('Restart queued - this PC picks it up within ~20 minutes.');
     setState({});
   } catch (e) { toast(e.message || 'Failed to queue restart', 'error'); }
+}
+
+// Same "plain queued Run Command" shape as restartWorkspaceDevice above, just with the Signage PC
+// Optimizer Script (see Settings -> Jstar Agent) as the body instead of a single Restart-Computer
+// line - editing and saving that script is how this button picks up a new/changed optimization
+// step, no code change or reinstall needed. Runs as SYSTEM like any Run Command (see
+// Invoke-PendingCommand in the agent shell), so the script's own "Run as Administrator" comment is
+// already satisfied automatically.
+export async function optimizeWorkspaceDevice(deviceId) {
+  try {
+    const devices = STATE.pageData.workspaceDevices?.data || [];
+    const device = devices.find((x) => x.id === deviceId);
+    const settings = STATE.pageData.settings?.data || {};
+    const script = settings.workspaceDirectoryOptimizerScript?.script || defaultOptimizerScript();
+    if (!confirm(`Run the Signage PC Optimizer Script on ${device?.hostname || 'this PC'} now?\n\nSets the Defender scan CPU limit, cleans temp/Windows Update cache, and runs a Defender quick scan.`)) return;
+    const queued = device?.pending_command;
+    if (queued) {
+      toast('This PC already has a different command queued - clear it first, then optimize.', 'error');
+      return;
+    }
+    await updateWorkspaceDevice(deviceId, { pending_command: script, force_checkin_requested: true });
+    await logAudit('Optimize Digital Directory device', device?.hostname || deviceId);
+    invalidate('workspaceDevices');
+    toast('Optimizer script queued - this PC picks it up within ~20 minutes.');
+    setState({});
+  } catch (e) { toast(e.message || 'Failed to queue optimizer script', 'error'); }
 }
 
 // One button, two effects depending on what's already true of the device - not really "pull" as a
