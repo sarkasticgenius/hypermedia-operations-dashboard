@@ -578,7 +578,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentScript()">Download Install Script (.ps1)</button>
           <button type="button" class="btn-outline btn-sm" onclick="App.downloadWorkspaceDirectoryAgentBatch()">Download Launcher (.bat)</button>
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentUninstallBatch()">Download Uninstall Launcher (.bat)</button>
-          <button type="button" class="btn-outline btn-sm" ${cfg.secret ? 'title="Copies a single PowerShell line to your clipboard - paste it into a PowerShell window on the target PC (e.g. over AnyDesk) instead of transferring both files. Always fetches whatever\'s currently published, live."' : 'disabled title="Save a secret first"'} onclick="App.copyWorkspaceDirectoryInstallCommand()">Copy One-Line Install Command</button>
+          <button type="button" class="btn-outline btn-sm" ${cfg.secret ? 'title="Copies a single PowerShell line to your clipboard - paste it into a PowerShell window on the target PC (e.g. over AnyDesk), or feed it to another tool that runs PowerShell commands remotely. Always fetches whatever\'s currently published, live. The install itself runs hidden and the shell running this line always closes itself afterward - nothing to close or type exit on."' : 'disabled title="Save a secret first"'} onclick="App.copyWorkspaceDirectoryInstallCommand()">Copy One-Line Install Command</button>
         </div>
       </form>
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
@@ -3801,10 +3801,26 @@ export function downloadWorkspaceDirectoryAgentScript() {
 // No explicit elevation here: the script re-launches itself with -Verb RunAs when it isn't already
 // Administrator (see the self-elevation block near the top of buildWorkspaceDirectoryAgentScript),
 // so requesting it a second time here would just mean two UAC prompts instead of one.
+//
+// Two things this line owns that the downloaded script itself can't: the SHELL RUNNING THIS LINE
+// closing itself, and the child that actually runs the install never showing a window.
+//   - Started life as a plain "powershell.exe -File $f" - a bare exe invocation like that always
+//     allocates its OWN new console window (unlike Start-Process, it isn't told not to), so pasting
+//     this into an interactive session showed a second, unwanted window. Start-Process ... -WindowStyle
+//     Hidden fixes that the same way every automated spawn point in the installed agent itself already
+//     does (see buildWorkspaceDirectoryAgentScript's own self-elevation block).
+//   - The line finishing was never the same as the SHELL exiting - pasted into an interactive
+//     PowerShell window, or run non-interactively from another tool that starts its own PowerShell
+//     process to execute this line, the session it ran in stayed open at its prompt afterward
+//     regardless, needing "exit" typed by hand. try/finally around the whole thing means that
+//     "exit" now always runs - even if the fetch or the temp-file write fails - so a tool driving
+//     this unattended (no one there to read an error or type exit) never gets left with a hung
+//     process. A failed install is still fully explained - see JstarAgent-install-error.log - just
+//     not by anything left on screen for nobody to read.
 function buildWorkspaceDirectoryOneLinerInstallCommand(secret) {
   const agentShellUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-agent-shell`;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  return `$r = Invoke-RestMethod -Uri "${agentShellUrl}?hostname=$env:COMPUTERNAME" -Headers @{ 'x-agent-secret' = '${secret}'; 'apikey' = '${anonKey}' }; $f = Join-Path $env:TEMP 'Install-JstarAgent.ps1'; Set-Content -Path $f -Value $r.script -Encoding utf8 -NoNewline; powershell.exe -NoProfile -ExecutionPolicy Bypass -File $f`;
+  return `try { $r = Invoke-RestMethod -Uri "${agentShellUrl}?hostname=$env:COMPUTERNAME" -Headers @{ 'x-agent-secret' = '${secret}'; 'apikey' = '${anonKey}' }; $f = Join-Path $env:TEMP 'Install-JstarAgent.ps1'; Set-Content -Path $f -Value $r.script -Encoding utf8 -NoNewline; Start-Process powershell.exe -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \`"$f\`"" -WindowStyle Hidden } finally { exit }`;
 }
 
 export function copyWorkspaceDirectoryInstallCommand() {
