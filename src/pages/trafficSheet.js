@@ -1055,6 +1055,35 @@ function creativeFileSizeLabel(f) {
   return [dims, dur].filter(Boolean).join(', ');
 }
 
+// The API has no separate poster/thumbnail image - the file's own url IS the actual video/image.
+// For video, setting .currentTime once metadata loads is the reliable cross-browser way to force a
+// real decoded frame to paint without autoplaying or showing a play button (a bare <video preload=
+// "metadata"> alone renders a black box in most browsers until something scrubs it) - no controls
+// attribute and pointer-events:none so a click anywhere on the tile always falls through to the
+// wrapping <a>'s href (open the real file) rather than the video element trying to handle it.
+function creativeFileThumbnailHtml(f) {
+  const isImage = f.type === 'image' || /^image\//.test(f.mimeType || '');
+  const isVideo = f.type === 'video' || /^video\//.test(f.mimeType || '');
+  const boxStyle = 'width:100%;height:100%;object-fit:cover;display:block;';
+  if (isImage) {
+    return `<img src="${esc(f.url || '')}" alt="${esc(f.fileName || '')}" loading="lazy" style="${boxStyle}">`;
+  }
+  if (isVideo) {
+    return `<video src="${esc(f.url || '')}" preload="metadata" muted playsinline style="${boxStyle}pointer-events:none;" onloadedmetadata="this.currentTime=Math.min(0.5, this.duration||0.5)"></video>`;
+  }
+  return `<div style="${boxStyle}display:flex;align-items:center;justify-content:center;background:var(--row-alt);" class="small muted">${esc(f.type || 'file')}</div>`;
+}
+
+function creativeFileTileHtml(f) {
+  return `
+    <a href="${esc(f.url || '#')}" target="_blank" rel="noopener" title="${esc(f.fileName || f.fileId || 'file')}" style="display:block;text-decoration:none;color:inherit;border:1px solid var(--border);border-radius:6px;overflow:hidden;">
+      <div style="width:100%;aspect-ratio:16/9;background:#000;overflow:hidden;">${creativeFileThumbnailHtml(f)}</div>
+      <div class="small" style="padding:4px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(f.fileName || f.fileId || 'file')}</div>
+      <div class="small muted" style="padding:0 6px 4px;">${esc(creativeFileSizeLabel(f))}</div>
+    </a>
+  `;
+}
+
 registerModal('campaignCreatives', (modalData) => {
   const state = STATE.trafficSheetCreatives;
   const title = esc(modalData.campaignName || 'Campaign');
@@ -1076,9 +1105,9 @@ registerModal('campaignCreatives', (modalData) => {
     <div class="card" style="margin-bottom:10px;">
       <div class="card-head"><h3 style="font-size:14px;">${esc(cr.creativeName || cr.creativeId || 'Creative')}</h3>${statusBadge(cr.status)}</div>
       <div class="small muted">${esc(cr.startDate || '')} - ${esc(cr.endDate || '')}${cr.venues?.length ? ` · ${esc(cr.venues.join(', '))}` : ''}</div>
-      <table style="margin-top:8px;"><thead><tr><th class="tleft">File</th><th class="tleft">Type</th><th class="tleft">Size/Duration</th></tr></thead><tbody>
-        ${(cr.files || []).map((f) => `<tr><td class="tleft"><a href="${esc(f.url || '#')}" target="_blank" rel="noopener">${esc(f.fileName || f.fileId || 'file')}</a></td><td class="tleft">${esc(f.type || '')}</td><td class="tleft">${esc(creativeFileSizeLabel(f))}</td></tr>`).join('')}
-      </tbody></table>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:8px;">
+        ${(cr.files || []).map(creativeFileTileHtml).join('')}
+      </div>
     </div>
   `).join('');
   return `
