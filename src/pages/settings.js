@@ -579,7 +579,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
           <button type="button" class="btn-outline btn-sm" onclick="App.downloadWorkspaceDirectoryAgentBatch()">Download Launcher (.bat)</button>
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.downloadWorkspaceDirectoryAgentUninstallBatch()">Download Uninstall Launcher (.bat)</button>
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? 'title="Copies a single PowerShell line to your clipboard - paste it into a PowerShell window on the target PC (e.g. over AnyDesk), or feed it to another tool that runs PowerShell commands remotely. Always fetches whatever\'s currently published, live. The install itself runs hidden and the shell running this line always closes itself afterward - nothing to close or type exit on."' : 'disabled title="Save a secret first"'} onclick="App.copyWorkspaceDirectoryInstallCommand()">Copy One-Line Install Command</button>
-          <button type="button" class="btn-outline btn-sm" ${cfg.secret ? 'title="Same install, base64-encoded (-EncodedCommand) so the secret/URL/agent name are not readable at a glance - useful when the command is visible on screen or held by another tool. Not hidden from Task Manager, EDR, or PowerShell logging - only from someone eyeballing the raw text."' : 'disabled title="Save a secret first"'} onclick="App.copyWorkspaceDirectoryEncodedInstallCommand()">Copy Short/Encoded Install Command</button>
+          <button type="button" class="btn-outline btn-sm" ${cfg.secret ? 'title="Same install as the line above, base64-encoded so the secret/URL/agent name are not readable at a glance - useful when the command is visible on screen or held by another tool. Runs in whatever shell it is pasted/typed into (same as the plain line, just opaque), so it self-closes there too. Not hidden from Task Manager, EDR, or PowerShell logging - only from someone eyeballing the raw text."' : 'disabled title="Save a secret first"'} onclick="App.copyWorkspaceDirectoryEncodedInstallCommand()">Copy Short/Encoded Install Command</button>
         </div>
       </form>
       <hr style="margin:16px 0;border:none;border-top:1px solid var(--border);">
@@ -3859,18 +3859,29 @@ function toPowerShellEncodedCommand(text) {
 // nothing from the OS, from EDR, or from an admin who wants to look. It only removes what a person
 // eyeballing the raw text on screen would otherwise read at a glance.
 //
-// -WindowStyle Hidden here (not just inside the downloaded script) means THIS process never shows
-// a window from the moment it's created, not merely from whenever the hidden re-launch inside the
-// script gets around to it - meaningful specifically for the "another tool runs this as a fresh
-// process" case (see buildWorkspaceDirectoryOneLinerInstallCommand's own comment on why a bare
-// invocation without it opens a visible console). -EncodedCommand is itself non-interactive and
-// exits on its own once the command finishes, so the try/finally { exit } from the readable version
-// is kept only as a belt-and-braces guarantee, not because anything here is expected to need it.
+// First version of this wrapped the whole thing as a fresh "powershell -WindowStyle Hidden
+// -EncodedCommand ..." invocation - correct ONLY if whatever runs this text spawns a brand new
+// process with it as that process's own command line. Confirmed live on DESKTOP-8792C9C that isn't
+// what actually happens: this is pasted/typed into an ALREADY-OPEN, already-visible PowerShell
+// window, the same way the readable command always was. In that shape, "powershell ... -EncodedCommand"
+// just spawns a SECOND, hidden CHILD process to do the work - the -WindowStyle Hidden and the
+// try/finally { exit } inside it only ever applied to that invisible child. The window actually
+// on screen is the PARENT that ran this line, which nothing inside a child it spawned can hide or
+// close after the fact - same root cause as the very first "need to type exit" report, just
+// reintroduced by wrapping in a second process instead of running in place.
+//
+// iex (Invoke-Expression) fixes that by never spawning anything for the wrapper itself - it decodes
+// and runs the exact same plaintext buildWorkspaceDirectoryOneLinerInstallCommand produces (reused
+// verbatim, not a second copy of this logic to keep in sync) IN WHATEVER SHELL THIS TEXT IS ACTUALLY
+// EXECUTED IN, so that shell's own "exit" - already proven to work for the readable command - closes
+// the real, visible window this time instead of a hidden child's window nobody could see anyway.
+// Safe to iex here specifically because the decoded text is this small wrapper, not the multi-
+// thousand-line AGENT SCRIPT ITSELF - that one still has to run via "& $f" against a real file (see
+// buildWorkspaceDirectoryOneLinerInstallCommand's own comment on why: $PSCommandPath, needed for the
+// agent's self-relocation step, is only ever populated when PowerShell executes an actual FILE).
 function buildWorkspaceDirectoryOneLinerEncodedInstallCommand(secret) {
-  const agentShellUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workspace-directory-agent-shell`;
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  const plain = `try { $r = Invoke-RestMethod -Uri "${agentShellUrl}?hostname=$env:COMPUTERNAME" -Headers @{ 'x-agent-secret' = '${secret}'; 'apikey' = '${anonKey}' }; $f = Join-Path $env:TEMP 'Install-JstarAgent.ps1'; Set-Content -Path $f -Value $r.script -Encoding utf8 -NoNewline; & $f } finally { exit }`;
-  return `powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand ${toPowerShellEncodedCommand(plain)}`;
+  const plain = buildWorkspaceDirectoryOneLinerInstallCommand(secret);
+  return `iex ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${toPowerShellEncodedCommand(plain)}')))`;
 }
 
 export function copyWorkspaceDirectoryEncodedInstallCommand() {
