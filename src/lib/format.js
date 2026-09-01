@@ -7,10 +7,50 @@ export function fmtMoney(n) {
   return 'AED ' + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
+// A plain calendar date ("2026-09-01" out of a date column) is not a moment - it means that day,
+// everywhere. Parsed and rendered as UTC so it always prints the day it says: as local midnight it
+// was one Date object whose rendered day depended on the reader, and a browser east of Dubai
+// printed the DAY BEFORE the one stored.
 export function fmtDate(d) {
   if (!d) return '-';
-  const dt = new Date(d + 'T00:00:00');
-  return dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const dt = new Date(d + 'T00:00:00Z');
+  if (Number.isNaN(dt.getTime())) return '-';
+  return dt.toLocaleDateString('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// Every stored timestamp in this app is an instant in UTC, and everything it describes lives in
+// one place: the PCs, the screens, the sites, and the people reading this are all in Dubai. Left to
+// the browser's own zone, the dashboard told different viewers different things - the same
+// check-in reading 21:03 on a laptop in Dubai and 17:03 on one set to UTC, with nothing on screen
+// to say which you were looking at. On a page whose whole job is "when did this last happen", that
+// ambiguity is the bug. Pinned here so there is exactly one answer, deliberately neither the
+// viewer's zone nor UTC.
+//
+// Only ever applied to a real INSTANT (a stored timestamptz). Dates assembled from calendar parts -
+// the month headers built as new Date(y, m - 1, 1) in tickets/trafficSheet - are labels, not
+// moments, and pinning those would shift the month itself for a viewer east of Dubai.
+export const OPS_TIME_ZONE = 'Asia/Dubai';
+
+// "01 Sep 2026, 21:03" - the everyday stamp for a moment something happened.
+export function fmtDateTime(value) {
+  if (!value) return '-';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '-';
+  return dt.toLocaleString('en-GB', {
+    timeZone: OPS_TIME_ZONE,
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+// "21:03:49" - clock time alone, for a live "updated at" line where the date is already obvious.
+export function fmtTime(value) {
+  if (!value) return '-';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '-';
+  return dt.toLocaleTimeString('en-GB', {
+    timeZone: OPS_TIME_ZONE, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
 }
 
 export function esc(s) {

@@ -10,7 +10,7 @@ import { listSyncLogs } from '../data/syncLogs.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
-import { esc, fmtRelativeTime } from '../lib/format.js';
+import { esc, fmtRelativeTime, fmtDateTime } from '../lib/format.js';
 import { remoteAccessUrl } from '../lib/remoteAccess.js';
 import { aiooSiteCategory, aiooSiteDisplayName, SITE_CATEGORIES } from '../lib/aiooSiteCategory.js';
 import { sortTh, applySort, colWidthCh, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
@@ -21,7 +21,7 @@ import { sortTh, applySort, colWidthCh, FIXED_TABLE_STYLE } from '../lib/sortabl
 // Admin-only - "pulled from inventory / matched" is integration-internal detail, not something a
 // team member needs (or should be able to use to infer inventory/API configuration details).
 function syncStatBar(c, settingKey, integration) {
-  const lastSync = c.lastSync ? new Date(c.lastSync).toLocaleString() : 'Never';
+  const lastSync = c.lastSync ? fmtDateTime(c.lastSync) : 'Never';
   return `
     <div class="kpi-row" style="margin-bottom:12px;">
       <div class="kpi"><div class="label">Last Synced</div><div class="value" style="font-size:15px;">${esc(lastSync)}</div></div>
@@ -76,7 +76,7 @@ registerModal('syncLog', (data) => {
     const missing = l.missing_ids || [];
     return `
       <tr>
-        <td class="small">${esc(new Date(l.synced_at).toLocaleString())}</td>
+        <td class="small">${esc(fmtDateTime(l.synced_at))}</td>
         <td class="tright">${l.pulled_count ?? '-'}</td>
         <td class="tright">${l.matched_count ?? '-'}</td>
         <td class="tright">${l.failed_count ?? '-'}</td>
@@ -600,7 +600,7 @@ export function renderIotPanel() {
   const b = c.deviceBreakdown;
 
   const statusBar = admin ? `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last synced ${esc(new Date(c.lastSync).toLocaleString())}` : ', not tested yet'}.` : 'No live API configured yet.'}${c.lastError ? ` <span style="color:#c0392b;">${esc(c.lastError)}</span>` : ''}</span>
+    <span>${c.baseUrl ? `API configured (${esc(c.baseUrl)})${c.lastSync ? `, last synced ${esc(fmtDateTime(c.lastSync))}` : ', not tested yet'}.` : 'No live API configured yet.'}${c.lastError ? ` <span style="color:#c0392b;">${esc(c.lastError)}</span>` : ''}</span>
     <span style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn-sm" onclick="App.runNetworkSync('iotApi','iot-sync')" ${STATE.syncing === 'iotApi' ? 'disabled' : ''}>${STATE.syncing === 'iotApi' ? 'Syncing...' : 'Sync Now'}</button>
       <button class="btn-sm" onclick="App.setPage('settings')">Configure API</button>
@@ -619,7 +619,7 @@ export function renderIotPanel() {
 
   return `${statusBar}
   ${siteHeatmap}
-  <div class="small muted" style="margin:10px 0 8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${c.lastSync ? new Date(c.lastSync).toLocaleString() : 'last sync'}.</div>
+  <div class="small muted" style="margin:10px 0 8px;">${b.totalDevices} device${b.totalDevices === 1 ? '' : 's'} in the fleet as of ${c.lastSync ? fmtDateTime(c.lastSync) : 'last sync'}.</div>
   <div class="bento-grid">
     ${renderIotChartCard('Devices by Connectivity', donutItems(b.byConnectivity), 5, connectivityColor)}
     ${renderIotChartCard('Devices by Platform', donutItems(b.byPlatform), 0)}

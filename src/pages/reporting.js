@@ -27,7 +27,7 @@ import { loadingCard } from '../modals.js';
 import { supabase } from '../supabaseClient.js';
 import { getSetting } from '../data/settings.js';
 import { renderTabs } from '../lib/tabs.js';
-import { esc } from '../lib/format.js';
+import { esc, fmtDateTime } from '../lib/format.js';
 import { exportReportingCampaignExcel, exportToExcel } from '../lib/excelExport.js';
 import { exportCampaignPptxReport } from '../lib/pptxReport.js';
 import { isFocMarketingCampaign, statusBadge, groupDatesByMonth, formatMonthLabel } from './trafficSheet.js';
@@ -1446,7 +1446,7 @@ function renderLastPlayouts(data) {
   const columns = ['placement_id', 'campaign', 'playout_date', 'ad_id', 'creative_id', 'advertiser_id', 'impressions', 'impressions_ontarget', 'call_id', 'ip'];
   const tableRows = rows.slice(0, 200).map((r) => `<tr>${columns.map((c) => {
     const v = c === 'campaign' ? (campaignByAd.get(String(r.ad_id)) || '')
-      : (c === 'playout_date' && r[c]) ? new Date(r[c] * 1000).toLocaleString() : (r[c] ?? '');
+      : (c === 'playout_date' && r[c]) ? fmtDateTime(r[c] * 1000) : (r[c] ?? '');
     return `<td>${esc(String(v))}</td>`;
   }).join('')}</tr>`).join('');
   return `

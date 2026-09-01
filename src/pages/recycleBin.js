@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, toast, setState } from '../state.js';
 import { loadingCard } from '../modals.js';
-import { esc } from '../lib/format.js';
+import { esc, fmtDateTime } from '../lib/format.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
 import { listUsers } from '../data/users.js';
@@ -176,7 +176,7 @@ export function renderRecycleBin() {
         <td style="width:28px;"><input type="checkbox" ${selectedIds.has(rowKey(r.type, r.id)) ? 'checked' : ''} onchange="App.toggleRecycleBinSelection('${r.type}','${r.id}', this.checked)"></td>
         <td>${esc(r.display)}</td>
         <td>${esc(r.label)}</td>
-        <td>${r.deleted_at ? new Date(r.deleted_at).toLocaleString() : '-'}</td>
+        <td>${r.deleted_at ? fmtDateTime(r.deleted_at) : '-'}</td>
         <td>${esc(deletedBy?.name || deletedBy?.username || 'Unknown')}</td>
         <td>
           <button class="btn-sm" onclick="App.restoreRecycleBinRow('${r.type}','${r.id}')">Restore</button>

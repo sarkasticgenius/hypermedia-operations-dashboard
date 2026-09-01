@@ -15,7 +15,7 @@ import { VENUE_CATEGORY_KEYS, TAB_DEFS as TS_TAB_DEFS, venueMatchesTab, isFocMar
 import { supabase } from '../supabaseClient.js';
 import { svgGroupedBarChart, svgDonutChart } from '../lib/charts.js';
 import { renderTabs } from '../lib/tabs.js';
-import { esc } from '../lib/format.js';
+import { esc, fmtTime } from '../lib/format.js';
 import { isAdmin } from '../auth.js';
 import { hasSeenTip } from '../lib/onboarding.js';
 
@@ -351,7 +351,7 @@ export function renderOpsOverview() {
     ? ` For a broader daily snapshot across every workspace, see <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('dashboard')">Home</a>.${!isAdmin() ? ` <button class="btn-sm" onclick="App.dismissOnboardingTip('opsOverviewHomeLink')">Got it</button>` : ''}`
     : '';
   return `
-    <div class="banner"><span class="live-pulse-dot"></span>Live — updated ${new Date().toLocaleTimeString()}. This page auto-refreshes and only surfaces what needs attention right now.${homeLink}</div>
+    <div class="banner"><span class="live-pulse-dot"></span>Live — updated ${fmtTime()}. This page auto-refreshes and only surfaces what needs attention right now.${homeLink}</div>
 
     <div class="bento-stats">
       ${kpis.map((k) => `
@@ -388,7 +388,7 @@ export function renderOpsOverview() {
       </div>
 
       ${iotB && iotB.totalDevices ? `<div class="bento-tile bento-span-2">
-        <div class="card-head"><h3>IoT Devices</h3><div class="desc">${iotB.totalDevices} device(s) via the aioo IoT Admin Console${iotApi.lastSync ? `, last synced ${new Date(iotApi.lastSync).toLocaleTimeString()}` : ''}. See <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('iotPanel')">IoT Panel</a> for the full breakdown.</div></div>
+        <div class="card-head"><h3>IoT Devices</h3><div class="desc">${iotB.totalDevices} device(s) via the aioo IoT Admin Console${iotApi.lastSync ? `, last synced ${fmtTime(iotApi.lastSync)}` : ''}. See <a href="#" style="color:var(--brand-orange-dark);font-weight:700;" onclick="event.preventDefault();App.setPage('iotPanel')">IoT Panel</a> for the full breakdown.</div></div>
         <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
           ${svgDonutChart(iotTrackingPct, donutColor(iotB.totalDevices - iotTracking, iotB.totalDevices), 130, iotTrackingPct + '%', 'Tracking')}
           <div style="flex:1;min-width:220px;">

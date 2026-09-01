@@ -5,7 +5,7 @@ import { listUsers, createUser, updateUserProfile, updateUserPermissions, setUse
 import { listClients } from '../data/clients.js';
 import { listAuditLog } from '../data/auditLog.js';
 import { logAudit } from '../lib/audit.js';
-import { esc } from '../lib/format.js';
+import { esc, fmtDateTime } from '../lib/format.js';
 import { startImpersonation } from '../impersonate.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
@@ -83,7 +83,7 @@ function renderAuditTab() {
   });
   const rows = sorted.map((l) => `
     <tr>
-      <td>${new Date(l.ts).toLocaleString()}</td>
+      <td>${fmtDateTime(l.ts)}</td>
       <td>${esc(l.username || '-')}</td>
       <td>${esc(l.action)}</td>
       <td>${esc(l.detail || '-')}</td>

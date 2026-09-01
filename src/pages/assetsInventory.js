@@ -11,7 +11,7 @@ import { isMafRow } from '../data/locationStats.js';
 import { renderInfoBanner } from '../lib/onboarding.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { logAudit } from '../lib/audit.js';
-import { esc, fmtDate } from '../lib/format.js';
+import { esc, fmtDate, fmtDateTime } from '../lib/format.js';
 import { exportToExcel } from '../lib/excelExport.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 import QRCode from 'qrcode';
@@ -146,7 +146,7 @@ export function renderAssetsInventory() {
       <td class="tleft">${r.venue ? `${brandLogoTag(r.venue, 18)} ` : ''}${esc(r.venue || '-')}<div class="small muted">${esc(r.location || '')}</div></td>
       <td>${esc(r.category || '-')}</td>
       <td>${esc(r.format || '-')}${r.width && r.height ? `<div class="small muted">${r.width}x${r.height}</div>` : ''}</td>
-      <td class="tleft">${esc(r.player_type || '-')}${r.player_box_id ? `<div class="small muted">${esc(r.player_box_id)}</div>` : ''}${r.last_poll_utc ? `<div class="small muted">Last poll: ${esc(new Date(r.last_poll_utc).toLocaleString())}</div>` : ''}</td>
+      <td class="tleft">${esc(r.player_type || '-')}${r.player_box_id ? `<div class="small muted">${esc(r.player_box_id)}</div>` : ''}${r.last_poll_utc ? `<div class="small muted">Last poll: ${esc(fmtDateTime(r.last_poll_utc))}</div>` : ''}</td>
       <td class="tcenter">${r.pdooh_ready ? '<span class="badge b-green">Yes</span>' : '<span class="muted small">No</span>'}</td>
       <td>${r.contractor_id ? esc(contractorLabel(contractors, r.contractor_id)) : '<span class="muted small">-</span>'}</td>
       <td>${ticketCountByAsset[r.id] ? `<button class="link-btn" onclick="App.openAssetTicketHistory('${r.id}')">${ticketCountByAsset[r.id]}</button>` : '<span class="muted small">0</span>'}</td>

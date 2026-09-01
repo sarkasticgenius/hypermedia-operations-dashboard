@@ -15,7 +15,7 @@ import { brandNameForVenue, brandFallbackForVenue, isBrandedMetroStation } from 
 import { supabase } from '../supabaseClient.js';
 import { notifySlack } from '../data/slack.js';
 import { logAudit } from '../lib/audit.js';
-import { esc } from '../lib/format.js';
+import { esc, fmtDateTime } from '../lib/format.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
@@ -567,7 +567,7 @@ function renderWorkspaceDirectoryAgentCard(settings) {
             <input id="int-wda-secret" type="password" autocomplete="off" value="${esc(cfg.secret || '')}" style="flex:1;">
             <button type="button" class="btn-outline btn-sm" onclick="App.generateWorkspaceDirectorySecret()">Generate</button>
           </div>
-          <div class="small muted" style="margin-top:4px;">Every agent sends this in an x-agent-secret header instead of signing in as a user. Rotating it keeps the OLD value working for 72 hours, so every already-installed PC has time to self-update onto the new one on its own - no reinstall needed.${cfg.previousSecretExpiresAt && new Date(cfg.previousSecretExpiresAt) > new Date() ? ` <b>Old secret still accepted until ${new Date(cfg.previousSecretExpiresAt).toLocaleString()}.</b>` : ''}</div>
+          <div class="small muted" style="margin-top:4px;">Every agent sends this in an x-agent-secret header instead of signing in as a user. Rotating it keeps the OLD value working for 72 hours, so every already-installed PC has time to self-update onto the new one on its own - no reinstall needed.${cfg.previousSecretExpiresAt && new Date(cfg.previousSecretExpiresAt) > new Date() ? ` <b>Old secret still accepted until ${fmtDateTime(cfg.previousSecretExpiresAt)}.</b>` : ''}</div>
         </div>
         <div class="field"><label>Client Uninstall Password</label>
           <input id="int-wda-uninstall-password" type="password" autocomplete="new-password" placeholder="${cfg.uninstallPasswordHash ? 'Set - leave blank to keep it' : 'Not set yet - required before a PC can be uninstalled'}">
@@ -587,10 +587,10 @@ function renderWorkspaceDirectoryAgentCard(settings) {
         <label>Published Agent Version</label>
         <div class="small muted" style="margin-bottom:6px;">The install script (scheduled task setup, remote-command runner, self-update logic itself) - unlike the Data Collector Script below, this normally requires re-running the installer to change. Publishing pushes the CURRENT version of that logic here; an already-installed agent compares itself against it on each check-in and silently updates itself if different, no physical reinstall needed.<br><br><b>Publishing is a two-step rollout.</b> The first button reaches ONLY the test PCs (${AGENT_CANARY_HOSTNAMES.join(', ')}) - every other machine keeps running the fleet version, untouched. Once you have confirmed the new build behaves on those, the second button rolls that exact same script out to everything else. This exists because most of the fleet drives signage screens in malls that nobody can walk up to and fix.</div>
         <div class="small" style="margin-bottom:8px;display:flex;flex-direction:column;gap:2px;">
-          <span><b>Fleet (all PCs):</b> ${shell.version ? `v${shell.version}${shell.publishedAt ? ` - ${new Date(shell.publishedAt).toLocaleString()}` : ''}` : '<span class="muted">nothing published yet</span>'}</span>
-          <span><b>Test PCs:</b> ${canary.version ? `v${canary.version}${canary.publishedAt ? ` - ${new Date(canary.publishedAt).toLocaleString()}` : ''}${canary.version > (shell.version || 0) ? ' <span class="badge b-amber">awaiting promotion</span>' : ' <span class="muted">(same as fleet)</span>'}` : '<span class="muted">nothing published yet</span>'}</span>
+          <span><b>Fleet (all PCs):</b> ${shell.version ? `v${shell.version}${shell.publishedAt ? ` - ${fmtDateTime(shell.publishedAt)}` : ''}` : '<span class="muted">nothing published yet</span>'}</span>
+          <span><b>Test PCs:</b> ${canary.version ? `v${canary.version}${canary.publishedAt ? ` - ${fmtDateTime(canary.publishedAt)}` : ''}${canary.version > (shell.version || 0) ? ' <span class="badge b-amber">awaiting promotion</span>' : ' <span class="muted">(same as fleet)</span>'}` : '<span class="muted">nothing published yet</span>'}</span>
         </div>
-        ${shell.frozen ? `<div class="small" style="margin-bottom:8px;padding:8px 10px;border-radius:6px;background:var(--row-alt);border-left:3px solid #c0392b;"><b>Fleet updates are frozen.</b> Every PC except the test machines (${AGENT_CANARY_HOSTNAMES.join(', ')}) is pinned to v${shell.frozenAtVersion ?? shell.version ?? 0} and will not self-update, even if a newer version is published. The test PCs are unaffected.${shell.frozenAt ? ` Frozen ${new Date(shell.frozenAt).toLocaleString()}.` : ''}</div>` : ''}
+        ${shell.frozen ? `<div class="small" style="margin-bottom:8px;padding:8px 10px;border-radius:6px;background:var(--row-alt);border-left:3px solid #c0392b;"><b>Fleet updates are frozen.</b> Every PC except the test machines (${AGENT_CANARY_HOSTNAMES.join(', ')}) is pinned to v${shell.frozenAtVersion ?? shell.version ?? 0} and will not self-update, even if a newer version is published. The test PCs are unaffected.${shell.frozenAt ? ` Frozen ${fmtDateTime(shell.frozenAt)}.` : ''}</div>` : ''}
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.publishWorkspaceDirectoryAgentShell()">Publish to Test PCs</button>
           <button type="button" class="btn-outline btn-sm" ${shell.frozen ? 'disabled title="Fleet updates are frozen - unfreeze first"' : (canary.version && canary.version > (shell.version || 0) ? '' : 'disabled title="Publish to the test PCs first, and confirm it works there"')} onclick="App.promoteWorkspaceDirectoryAgentShell()">Roll Out to All PCs${canary.version && canary.version > (shell.version || 0) ? ` (v${canary.version})` : ''}</button>
@@ -667,7 +667,7 @@ export async function saveWorkspaceDirectoryAgentForm(event) {
     await saveSetting('workspaceDirectoryAgent', payload);
     await logAudit('Save integration settings', rotated ? 'workspaceDirectoryAgent (secret rotated - old value stays valid 72h)' : 'workspaceDirectoryAgent');
     invalidate('settings');
-    toast(rotated ? `Secret rotated. The old value still works until ${new Date(payload.previousSecretExpiresAt).toLocaleString()} so already-installed PCs can self-update onto the new one.` : 'Settings saved');
+    toast(rotated ? `Secret rotated. The old value still works until ${fmtDateTime(payload.previousSecretExpiresAt)} so already-installed PCs can self-update onto the new one.` : 'Settings saved');
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -4438,7 +4438,7 @@ async function buildStatusSummaryText() {
   const moreNames = locNames.length > MAX_NAMES ? ` +${locNames.length - MAX_NAMES} more` : '';
 
   const lines = [
-    `:bar_chart: *Status Summary* (on-demand, ${new Date().toLocaleString()})`,
+    `:bar_chart: *Status Summary* (on-demand, ${fmtDateTime()})`,
     `• Digital Directory: ${onlineCount} online, ${offlineCount} offline${problemCount ? `, ${problemCount} with an open issue` : ''}`,
     (offlineScreens || []).length
       ? `• Broadsign/Grassfish screens offline: ${offlineScreens.length} across ${locNames.length} location(s): ${shownNames}${moreNames}`
