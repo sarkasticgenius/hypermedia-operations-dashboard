@@ -8,9 +8,11 @@ import { AGENT_CANARY_HOSTNAMES, defaultOptimizerScript } from './settings.js';
 import { remoteAccessUrl } from '../lib/remoteAccess.js';
 import { esc, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
+import { renderTabs } from '../lib/tabs.js';
 import { logAudit } from '../lib/audit.js';
 import { supabase } from '../supabaseClient.js';
 import { problemType, problemTypeLabel, visibleProblems } from '../lib/workspaceProblems.js';
+import { isMafRow, normalizeVenueText, assetInventoryForLocation } from '../data/locationStats.js';
 
 // The agent's light heartbeat runs every 20 minutes (see Invoke-Checkin's -Light handling in the
 // agent script) specifically so Online/Offline can be this responsive - the separate full 6-hourly
@@ -32,22 +34,6 @@ function isOnline(d) {
 // otherwise break out (same helper as networkPanels.js's jsonAttr).
 function jsonAttr(value) {
   return JSON.stringify(value).replace(/'/g, '&#39;');
-}
-
-function locationTile(loc, list) {
-  const online = list.filter(isOnline).length;
-  const offline = list.length - online;
-  const onlinePct = list.length ? (online / list.length) * 100 : 0;
-  return `<div style="background:#2a3441;border-radius:10px;padding:12px;color:#fff;min-height:96px;display:flex;flex-direction:column;justify-content:space-between;gap:9px;cursor:pointer;" onclick='App.openWorkspaceLocationModal(${jsonAttr(loc)})' title="Click to see devices">
-    <div>
-      <div style="font-size:13px;font-weight:700;line-height:1.3;">${esc(loc)} <span style="font-weight:400;opacity:.8;">(${list.length})</span></div>
-      <div style="font-size:11px;opacity:.85;margin-top:2px;"><span style="color:#5fd88f;">${online} online</span>, <span style="color:#f2857a;">${offline} offline</span></div>
-    </div>
-    <div style="height:8px;border-radius:4px;overflow:hidden;display:flex;background:rgba(255,255,255,.12);">
-      ${online ? `<div style="width:${onlinePct.toFixed(1)}%;background:#1f9d55;"></div>` : ''}
-      ${offline ? `<div style="width:${(100 - onlinePct).toFixed(1)}%;background:#c0392b;"></div>` : ''}
-    </div>
-  </div>`;
 }
 
 // AnyDesk/TeamViewer IDs are directly actionable, not just displayed - a Connect link (the
@@ -284,6 +270,175 @@ function matchedScreensFor(d, assetInventory) {
     if (rows.length) matches.push({ source: 'Grassfish', rows });
   }
   return matches;
+}
+
+// Same 9 venue categories Traffic Sheet groups campaigns into (see TAB_DEFS in trafficSheet.js),
+// plus "Unassigned" for a PC with no resolvable venue at all, and two cross-cutting views
+// ("With Issues", "Data Check Failed") that aren't venue categories - they filter the whole fleet
+// by device health instead. 'all' first so the default view is unfiltered.
+export const WD_TAB_DEFS = [
+  { key: 'all', label: 'All' },
+  { key: 'shzBridges', label: 'SHZ Bridges' },
+  { key: 'metro', label: 'Dubai Metro' },
+  { key: 'malls', label: 'Malls' },
+  { key: 'mafMalls', label: 'MAF Malls' },
+  { key: 'stores', label: 'In-Stores' },
+  { key: 'royals', label: 'Royals' },
+  { key: 'gems', label: 'Gems' },
+  { key: 'hologram', label: 'Hologram' },
+  { key: 'enoc', label: 'ENOC' },
+  { key: 'outdoor', label: 'Outdoor' },
+  { key: 'unassigned', label: 'Unassigned' },
+  { key: 'withIssues', label: 'With Issues' },
+  { key: 'dataCheckFailed', label: 'Data Check Failed' },
+];
+
+// Exact venue names of the physical Metro pedestrian-bridge screens - started from a real Traffic
+// Sheet "Venue Type = Metro Outdoor" pull (confirmed live, 17 rows), then corrected against actual
+// Digital Directory PCs: "Discovery Garden(s) Outdoor" carries that Metro Outdoor venueType in the
+// Traffic Sheet feed (an AD-SALES category) but is confirmed to be Metro for PC/IT-monitoring
+// purposes here - real example R71-LINKBRIDGE- (screen "R71-LBO-L-LBO2", a pedestrian link bridge
+// that's operationally part of the station, not an SHZ outdoor-bridge placement) - so it's
+// deliberately excluded from this list even though the Traffic Sheet feed tags it Metro Outdoor.
+// A handful of the remaining exact base names (Business Bay, Financial Centre, World Trade Centre,
+// Al Khail, Jebel/Jabel Ali, Mall of (the) Emirates, Dubai Internet City, Danube, Energy, Equiti/
+// Equity, Emirates Towers) are ALSO used by a real in-station Metro screen with the SAME base name
+// and no distinguishing suffix - confirmed against Asset Inventory, which carries both a plain
+// "Business Bay"/"Al Khail (AL FARDAN)"/"Jebel Ali" (the in-station screen) and a separately
+// suffixed "BUSINESS BAY AUH"/"ALKHAIL (AL FARDAN) AUH"/"JABEL ALI DXB" row (the bridge) for the
+// same physical area. So this MUST be an exact match on the full suffixed name, never a substring/
+// prefix check - a substring match on "AL KHAIL" or "BUSINESS BAY" alone previously mis-tagged
+// real in-station PCs (e.g. hostname ALKHAIL-CONCOUR, matched to the plain unsuffixed "Al Khail
+// (AL FARDAN)" venue) as SHZ Bridges. Emirates Towers and Financial Centre are the two confirmed
+// exceptions with no AUH/DXB suffix at all in the real Metro Outdoor pull, so they're listed bare.
+// Both "Jabel"/"Jebel" and "Equity"/"Equiti" spellings are listed since Asset Inventory's own
+// suffixed bridge rows and the vendor feed don't always agree on which spelling to use.
+const SHZ_BRIDGE_VENUE_NAMES = [
+  'Al Khail (Al Fardan) AUH', 'Alkhail (Al Fardan) AUH',
+  'Burj Khalifa-Dubai Mall DXB',
+  'Business Bay AUH', 'Business Bay DXB',
+  'Danube DXB',
+  'Dubai Internet City AUH', 'Dubai Internet City DXB',
+  'Emirates Towers',
+  'Energy DXB',
+  'Equity AUH', 'Equiti AUH',
+  'Financial Centre',
+  'Jabel Ali AUH', 'Jabel Ali DXB', 'Jebel Ali AUH', 'Jebel Ali DXB',
+  'Mall of Emirates AUH', 'Mall of Emirates DXB', 'Mall of the Emirates AUH', 'Mall of the Emirates DXB',
+  'World Trade Centre AUH',
+];
+const SHZ_BRIDGE_VENUE_SET = new Set(SHZ_BRIDGE_VENUE_NAMES.map(normalizeVenueText));
+
+// A handful of Asset Inventory rows have a blank/null category (a data-entry gap, not a real
+// "uncategorized" venue) - confirmed live: YAS-LED-05's venue is "YAS Mall" same as its other 31
+// screens, every one of which IS tagged Malls, but this one row's own category was never filled
+// in, which otherwise sent its PC straight to Unassigned. Backfills a blank category from whatever
+// category that same venue name most commonly carries on its OTHER rows, so a single missing field
+// doesn't hide a device whose venue is perfectly categorized everywhere else it appears.
+function venueCategoryFallback(assetInventory) {
+  const counts = new Map();
+  for (const r of assetInventory) {
+    const venue = (r.venue || '').trim().toLowerCase();
+    const category = (r.category || '').trim();
+    if (!venue || !category) continue;
+    if (!counts.has(venue)) counts.set(venue, new Map());
+    const byCategory = counts.get(venue);
+    byCategory.set(category, (byCategory.get(category) || 0) + 1);
+  }
+  const map = new Map();
+  counts.forEach((byCategory, venue) => {
+    let best = null; let bestCount = 0;
+    byCategory.forEach((count, category) => { if (count > bestCount) { best = category; bestCount = count; } });
+    if (best) map.set(venue, best);
+  });
+  return map;
+}
+
+// Which WD_TAB_DEFS venue-category key a single Asset Inventory row belongs to, or null if it
+// doesn't match any of them (e.g. a blank/unrecognized category) - mirrors venueMatchesTab in
+// trafficSheet.js, but keyed off Asset Inventory's own `category`/`networkNames`/`venue` fields
+// (this app's own data) rather than the Traffic Sheet vendor feed's venueType/network, which
+// Digital Directory's PCs have no access to. Royals/Gems/Hologram are checked first since Asset
+// Inventory files all three under category "Malls"/"Outdoor" alongside ordinary screens - it's the
+// network, not the category, that actually marks them out as their own thing.
+function assetCategoryTab(r, venueCategoryFallbackMap) {
+  const networks = (r.networkNames || []).map((n) => n.toUpperCase());
+  if (networks.some((n) => n.includes('ROYALS'))) return 'royals';
+  if (networks.some((n) => n.includes('GEMS'))) return 'gems';
+  if (networks.some((n) => n.includes('HOLOGRAM'))) return 'hologram';
+  const category = (r.category || '').trim() || venueCategoryFallbackMap.get((r.venue || '').trim().toLowerCase()) || '';
+  if (category === 'Petrol Stations') return 'enoc';
+  if (category === 'Malls') return isMafRow({ ...r, category }) ? 'mafMalls' : 'malls';
+  if (category === 'Metro') {
+    return SHZ_BRIDGE_VENUE_SET.has(normalizeVenueText(r.venue)) ? 'shzBridges' : 'metro';
+  }
+  if (/^in-?store$/i.test(category)) return 'stores';
+  if (category === 'Outdoor') return 'outdoor';
+  return null;
+}
+
+// Hostnames confirmed by ops to have NO matching Asset Inventory row at all (a mismatched/missing
+// Broadsign Player ID, or the screen was never entered into Asset Inventory) - Digital Directory
+// has nothing in its own data to derive a category from for these, so they're recorded here from
+// direct confirmation rather than guessed from the hostname text (e.g. "MALL" or "TOTEM" appearing
+// in a name isn't a reliable enough signal on its own to generalize into a keyword rule). A device
+// that later gets a real Player ID match isn't affected - this is only consulted as a last resort.
+const HOSTNAME_CATEGORY_OVERRIDES = {
+  'DALMA-MALL-AUH-': 'malls',
+  'DALMA-MALL-TWO-': 'malls',
+  'ALWSL-TOTEM2B-E': 'outdoor',
+  'DCCHLGPC01': 'hologram',
+  'MOEHLGPC02': 'hologram',
+};
+
+// A device's venue category, resolved the same way its Location cell is (see locationCellHtml):
+// prefer the venue of the screen it actually drives (matched by Broadsign/Grassfish Player Box ID)
+// since that's set on almost every device, falling back to a venue match on the rarely-populated
+// manual Location field. 'unassigned' when neither resolves to a category.
+function deviceCategoryTab(d, assetInventory, venueCategoryFallbackMap) {
+  for (const { rows } of matchedScreensFor(d, assetInventory)) {
+    for (const r of rows) {
+      const tab = assetCategoryTab(r, venueCategoryFallbackMap);
+      if (tab) return tab;
+    }
+  }
+  if (d.location) {
+    for (const r of assetInventoryForLocation(d.location, assetInventory)) {
+      const tab = assetCategoryTab(r, venueCategoryFallbackMap);
+      if (tab) return tab;
+    }
+  }
+  if (HOSTNAME_CATEGORY_OVERRIDES[d.hostname]) return HOSTNAME_CATEGORY_OVERRIDES[d.hostname];
+  // Last resort for a device with no matched screen AND no manual Location at all (nothing in
+  // Asset Inventory to check a category against) - Hologram PCs are specialized display hardware
+  // that isn't always wired into Broadsign/Grassfish, so the hostname is the only signal left.
+  // Confirmed real example: BURJUMAN-HOLOGR (Windows' 15-character NetBIOS limit truncates
+  // "-HOLOGRAM" to "-HOLOGR"), which has neither a player id nor a Location set.
+  if (/HOLOGR/i.test(d.hostname || '')) return 'hologram';
+  return 'unassigned';
+}
+
+// "Failed on that day" only counts a device that's known to actually have a SIM behind it (a
+// stored du phone number, or a past successful scrape) - a Wi-Fi/LAN device with no SIM at all
+// legitimately has nothing to report every single day, and that is not a failure (see the
+// 'nodata'-with-no-knownSim branch of dataUsageCellHtml/duScrapeStatusHtml, which this mirrors).
+function dataCheckFailedToday(d) {
+  const attemptedAt = d.du_scrape_attempted_at;
+  if (!attemptedAt) return false;
+  const attempted = new Date(attemptedAt);
+  const now = new Date();
+  const isToday = attempted.getFullYear() === now.getFullYear() && attempted.getMonth() === now.getMonth() && attempted.getDate() === now.getDate();
+  if (!isToday) return false;
+  if (d.du_scrape_outcome === 'nobrowser' || d.du_scrape_outcome === 'error') return true;
+  const knownSim = !!(d.du_phone_number || d.du_scraped_at);
+  return d.du_scrape_outcome === 'nodata' && knownSim;
+}
+
+function deviceMatchesTab(d, tabKey, categoryByDeviceId) {
+  if (tabKey === 'all') return true;
+  if (tabKey === 'withIssues') return visibleProblems(d).length > 0;
+  if (tabKey === 'dataCheckFailed') return dataCheckFailedToday(d);
+  return categoryByDeviceId.get(d.id) === tabKey;
 }
 
 // One console's worth of matches as text: the screen name when a player drives exactly one, or a
@@ -629,14 +784,13 @@ export function renderWorkspaceDirectory() {
   const offline = devices.length - online;
   const withProblems = devices.filter((d) => visibleProblems(d).length).length;
 
-  const byLocation = new Map();
-  devices.forEach((d) => {
-    const loc = (d.location || '').trim() || 'Unassigned';
-    if (!byLocation.has(loc)) byLocation.set(loc, []);
-    byLocation.get(loc).push(d);
-  });
-  const locations = [...byLocation.keys()].sort((a, b) => (a === 'Unassigned' ? 1 : b === 'Unassigned' ? -1 : a.localeCompare(b)));
-  const tiles = locations.map((loc) => locationTile(loc, byLocation.get(loc))).join('');
+  // Resolved once per device up front (each call walks that device's matched screens) and reused
+  // for every tab's count plus the active filter below, rather than recomputing per tab.
+  const venueCategoryFallbackMap = venueCategoryFallback(assetInventory);
+  const categoryByDeviceId = new Map(devices.map((d) => [d.id, deviceCategoryTab(d, assetInventory, venueCategoryFallbackMap)]));
+  const activeTab = WD_TAB_DEFS.some((t) => t.key === STATE.workspaceDirectoryTab) ? STATE.workspaceDirectoryTab : 'all';
+  const tabsWithCounts = WD_TAB_DEFS.map((t) => ({ ...t, count: devices.filter((d) => deviceMatchesTab(d, t.key, categoryByDeviceId)).length }));
+  const tabsHtml = renderTabs(tabsWithCounts, activeTab, 'App.setWorkspaceDirectoryTab');
 
   const dataDevices = devices.filter((d) => d.sim_card_id || d.du_scraped_at);
 
@@ -661,10 +815,11 @@ export function renderWorkspaceDirectory() {
       </div>`
     : '';
 
+  const tabFiltered = devices.filter((d) => deviceMatchesTab(d, activeTab, categoryByDeviceId));
   const search = (STATE.workspaceDirectorySearch || '').trim().toLowerCase();
   const filtered = search
-    ? devices.filter((d) => `${d.hostname} ${d.location || ''} ${d.ip_address || ''} ${d.anydesk_id || ''} ${d.teamviewer_id || ''} ${d.logged_in_user || ''} ${d.os_name || ''}`.toLowerCase().includes(search))
-    : devices;
+    ? tabFiltered.filter((d) => `${d.hostname} ${d.location || ''} ${d.ip_address || ''} ${d.anydesk_id || ''} ${d.teamviewer_id || ''} ${d.logged_in_user || ''} ${d.os_name || ''}`.toLowerCase().includes(search))
+    : tabFiltered;
   const sorted = applySort(filtered, 'workspaceDevices', {
     hostname: (d) => d.hostname || '',
     location: (d) => d.location || '',
@@ -720,12 +875,8 @@ export function renderWorkspaceDirectory() {
       <div class="kpi"><div class="label">Online</div><div class="value" style="color:#1f9d55;">${online}</div></div>
       <div class="kpi"><div class="label">Offline</div><div class="value" style="color:#c0392b;">${offline}</div></div>
       <div class="kpi"><div class="label">With Issues</div><div class="value" style="color:${withProblems ? '#c0392b' : 'inherit'};">${withProblems}</div></div>
-      <div class="kpi"><div class="label">Locations</div><div class="value">${locations.length}</div></div>
     </div>
-    <div class="card">
-      <div class="card-head"><h3>By Location</h3><div class="desc">Click a location to see its devices. Set a device's Location from the Edit button in the table below.</div></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>
-    </div>
+    ${tabsHtml}
     ${editOk && selectedIds.size > 0 ? `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
       <span><b>${selectedIds.size}</b> device${selectedIds.size === 1 ? '' : 's'} selected</span>
       <div style="display:flex;gap:8px;">
@@ -797,6 +948,9 @@ export function refreshWorkspaceDirectory() {
 // unrelated slice of a result set the user has just changed underneath themselves.
 export function setWorkspaceDirectorySearch(value) { setState({ workspaceDirectorySearch: value, wdPage: 1 }); }
 
+// Same page-1 reset as a new search - switching category also changes which rows are in play.
+export function setWorkspaceDirectoryTab(key) { setState({ workspaceDirectoryTab: key, wdPage: 1 }); }
+
 export function setWorkspaceDirectoryPage(page) { setState({ wdPage: Math.max(1, Number(page) || 1) }); }
 export function setWorkspaceDirectoryPageSize(size) { setState({ wdPageSize: Number(size), wdPage: 1 }); }
 
@@ -835,10 +989,6 @@ export async function saveWorkspaceBulkDeploy(event) {
     setState({ workspaceDirectorySelectedIds: [] });
     toast(`Queued on ${ids.length} device(s) - each runs it on its own next check-in.`);
   } catch (e) { toast(e.message || 'Failed to queue command', 'error'); }
-}
-
-export function openWorkspaceLocationModal(location) {
-  openModal('workspaceLocation', { location });
 }
 
 export function openWorkspaceDetailsModal(deviceId) {
@@ -1347,28 +1497,6 @@ export async function permanentlyDeleteGhostWorkspaceDevice(id) {
     setState({});
   } catch (e) { toast(e.message || 'Failed to delete device', 'error'); }
 }
-
-registerModal('workspaceLocation', (data) => {
-  const devices = STATE.pageData.workspaceDevices?.data || [];
-  const assetInventory = STATE.pageData.assetInventory?.data || [];
-  const simCards = STATE.pageData.simCardsForDirectory?.data || [];
-  const simById = new Map(simCards.map((s) => [s.id, s]));
-  const list = devices.filter((d) => ((d.location || '').trim() || 'Unassigned') === data.location);
-  const editOk = canEdit('workspaceDirectory');
-  const deleteOk = canDelete('workspaceDirectory');
-  const selectedIds = new Set(STATE.workspaceDirectorySelectedIds || []);
-  const rows = list.map((d) => deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, simById.get(d.sim_card_id))).join('') || `<tr><td colspan="${editOk ? 14 : 13}"><div class="empty">No devices.</div></td></tr>`;
-  return `
-    <h3>${esc(data.location)} - ${list.length} device(s)</h3>
-    <div style="max-height:60vh;overflow-y:auto;overflow-x:auto;">
-      <table style="${FIXED_TABLE_STYLE}">
-        <thead><tr>${editOk ? '<th style="width:24px;"></th>' : ''}<th style="width:14ch;">Hostname</th><th style="width:14ch;">Volume</th><th style="width:12ch;">Location</th><th style="width:15ch;">IP</th><th style="width:15ch;">Remote Access</th><th style="width:14ch;">Data Usage</th><th style="width:13ch;">Status</th><th style="width:20ch;">Matched Screen</th><th style="width:16ch;">OS</th><th style="width:19ch;">Logged-in User</th><th style="width:10ch;">Issues</th><th style="width:27ch;">Last Seen</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-    <div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>
-  `;
-});
 
 registerModal('workspaceDetails', (data) => {
   const devices = STATE.pageData.workspaceDevices?.data || [];
