@@ -600,7 +600,25 @@ function volumeCellHtml(d) {
     return aPct - bPct;
   });
   const rows = sorted.map((v) => {
-    const freePct = v.sizeGb > 0 ? (v.freeGb / v.sizeGb) * 100 : 0;
+    // A drive reporting size 0 is one the agent could not MEASURE, not one that is full. WMI hands
+    // back Win32_LogicalDisk's static properties (DeviceID, VolumeName) even when a provider failure
+    // leaves the dynamic Size/FreeSpace null, and `$null / 1GB` rounds to 0 in PowerShell - so a
+    // failed read arrives here looking exactly like a real zero. Running it through the maths below
+    // turned "unknown" into 0% free, which coloured red and filled the bar to 100 - 0 = 100%: a
+    // confident "disk full" for a drive nobody actually managed to look at.
+    //
+    // Confirmed live on DESKTOP-OMM99EM, 1 Sep 2026: both C: and D: drew solid red 100% bars while
+    // the PC itself had 381 of 411 GB and 519 of 520 GB free, and its stored volumes carried the
+    // real drive letters and labels ("Windows11", "New Volume") alongside sizeGb/freeGb of 0. The
+    // Volume sort key and the agent's own low-disk-space check both already guard `sizeGb > 0`,
+    // which is why that same device sorted to the very TOP of an ascending Volume sort (scored 0%
+    // used) while the cell beside it drew a full bar. This was the one place that didn't guard.
+    if (!(v.sizeGb > 0)) {
+      return `<div style="display:flex;align-items:center;gap:6px;" title="${esc(v.drive)}${v.label ? ` (${esc(v.label)})` : ''} - the last check-in didn't report a size for this drive, so how full it is isn't known. It is not necessarily full.">
+        <span class="small muted" style="flex:none;">${esc(v.drive)}</span><span class="small muted">&mdash;</span>
+      </div>`;
+    }
+    const freePct = (v.freeGb / v.sizeGb) * 100;
     const color = freePct <= 10 ? '#c0392b' : freePct <= 25 ? '#e07a2c' : '#1f9d55';
     // Bar fills to the CONSUMED percentage (same convention as the Data Usage bar) - filling it to
     // the free percentage instead reads backwards, since a mostly-full green bar looked like
@@ -893,10 +911,15 @@ export function renderWorkspaceDirectory() {
       return allocGb ? (usedGb / allocGb) * 100 : -1;
     },
     // Same idea for disks: the fullest drive on each PC drives its sort position.
+    // Unmeasured drives (size 0 - see volumeCellHtml) are filtered out rather than scored 0%, so a
+    // device whose drives ALL failed to report falls back to the same -1 "nothing is known" sentinel
+    // as a device carrying no volume data at all, instead of being ranked among genuinely near-empty
+    // disks. Same convention as the dataUsage key below: unknown groups with unknown, which parks it
+    // at the bottom of the descending (fullest-first) sort rather than pretending to be 0% used.
     volume: (d) => {
-      const vols = d.volumes || [];
+      const vols = (d.volumes || []).filter((v) => v.sizeGb > 0);
       if (!vols.length) return -1;
-      return Math.max(...vols.map((v) => (v.sizeGb > 0 ? ((v.sizeGb - v.freeGb) / v.sizeGb) * 100 : 0)));
+      return Math.max(...vols.map((v) => ((v.sizeGb - v.freeGb) / v.sizeGb) * 100));
     },
     screen: (d) => matchedScreensFor(d, assetInventory).map(matchedScreenLabel).join(' '),
   });
