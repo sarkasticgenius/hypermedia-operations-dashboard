@@ -3160,6 +3160,29 @@ function Invoke-Checkin([switch]$Light) {
     if (-not $data) { $data = Invoke-DefaultCollector }
     if ($Light) { $data.light = $true }
 
+    # Which published build this PC is ACTUALLY running, as opposed to which one the dashboard last
+    # published - two different questions, and nothing reported the first one. The collector's own
+    # agentVersion ("3.2") is the script's hand-maintained internal constant and stayed identical
+    # across v64 -> v71, so it could never answer "has this PC taken the fix yet?".
+    #
+    # Read HERE, in the shell, rather than in the collector: $ShellVersionFile is a shell variable,
+    # and the collector is a separately-fetched document where it does not exist - reading it there
+    # would be the same cross-document mistake that left Get-AnyDeskInstalls undefined for months.
+    #
+    # Sent on every cycle rather than gated into the moderate tier: it is a two-or-three character
+    # string, and it is precisely the field you want current when a rollout is in flight - gating it
+    # behind a 6-hourly "only if changed" check would mean the dashboard learns a PC took the new
+    # build up to six hours after it did, which is most of the value gone.
+    #
+    # NULL/absent on a PC that has never self-updated, which is honest: it is running whatever
+    # shipped in its installer and there is no published version to name.
+    try {
+        if (Test-Path $ShellVersionFile) {
+            $__shellVer = (Get-Content -Path $ShellVersionFile -Raw -ErrorAction SilentlyContinue)
+            if ($__shellVer) { $data.shellVersion = $__shellVer.Trim() }
+        }
+    } catch {}
+
     # First check-in after a dashboard-triggered rename (see the ::RENAME handler): tells the server
     # what this PC used to be called, so it renames the existing row rather than inserting a new one
     # under the new hostname and orphaning all the admin-curated fields attached to the old one.

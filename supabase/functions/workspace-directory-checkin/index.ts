@@ -187,6 +187,15 @@ Deno.serve(async (req) => {
     if (body.agentVersion !== undefined) {
       row.agent_version = body.agentVersion ? String(body.agentVersion).slice(0, 50) : null;
     }
+    // Which PUBLISHED build the PC is actually running (agent v71+), read from its own
+    // installed-shell-version.txt. Distinct from agent_version above, which is the script's
+    // hand-maintained internal constant and was identical across v64 -> v71 - so until this field
+    // existed, "has this PC taken the new build?" could only be answered by queueing a Run Command
+    // against it. Conditional like everything else here: an agent below v71 does not send it, and
+    // must not have the column blanked for staying quiet.
+    if (body.shellVersion !== undefined) {
+      row.agent_shell_version = body.shellVersion ? String(body.shellVersion).slice(0, 20) : null;
+    }
     // Whatever asked for this check-in to happen right now (a "Force Inventory Pull" click picked
     // up by Jstar's polling, or just its normal schedule) is satisfied by the fact a real check-in
     // is happening - cleared regardless of whether it was set, since a stray still-true flag would

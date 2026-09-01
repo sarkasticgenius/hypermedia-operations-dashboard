@@ -1291,6 +1291,33 @@ export async function clearWorkspacePendingCommand(deviceId) {
   } catch (e) { toast(e.message || 'Failed to clear command', 'error'); }
 }
 
+// Which PUBLISHED build this PC is actually running, and whether that matches what its own channel
+// currently serves. Distinct from `Agent v3.2` beside it: that is the script's hand-maintained
+// internal constant, identical across every build from v64 to v71, so it could never answer "has
+// this PC taken the fix yet?" - which is why checking a rollout used to mean queueing a Run Command
+// against a test PC to read installed-shell-version.txt off the box.
+//
+// A test PC is compared against the CANARY slot and everything else against the stable one, the
+// same split workspace-directory-agent-shell itself serves them by - otherwise every test PC would
+// read as permanently "behind" during a canary round, which is exactly when it is meant to be ahead.
+// Silent on an agent below v71, which does not report the field at all: absence there means "not
+// reporting yet", not "out of date", and colouring it would be a claim we cannot support.
+function agentShellVersionHtml(d) {
+  const running = d.agent_shell_version;
+  if (!running) return '';
+  const settings = STATE.pageData.settings?.data || {};
+  const isTestPc = AGENT_CANARY_HOSTNAMES.some((h) => h.toUpperCase() === String(d.hostname || '').toUpperCase());
+  const expected = isTestPc
+    ? (settings.workspaceDirectoryAgentShellCanary?.version ?? settings.workspaceDirectoryAgentShell?.version)
+    : settings.workspaceDirectoryAgentShell?.version;
+  if (expected == null) return ` &middot; Build v${esc(running)}`;
+  const current = String(running) === String(expected);
+  const label = isTestPc ? 'test-PC build' : 'fleet build';
+  return current
+    ? ` &middot; <span title="Running the current ${label} (v${esc(String(expected))})">Build v${esc(running)}</span>`
+    : ` &middot; <span style="color:#e07a2c;" title="This PC is on v${esc(running)} but the current ${label} is v${esc(String(expected))} - it self-updates on its next check-in.">Build v${esc(running)} &rarr; v${esc(String(expected))}</span>`;
+}
+
 // Holds one PC at the agent version it is running, or lets it move again. Aimed per-device rather
 // than fleet-wide because most of these machines drive signage in malls nobody can walk up to, so
 // "which PCs are allowed to move" is a different question from "which build is published" - the
@@ -1680,7 +1707,7 @@ registerModal('workspaceDetails', (data) => {
 
   return `
     <h3>${esc(d.hostname)}</h3>
-    <div class="small muted" style="margin-bottom:10px;">${d.last_seen ? `Last check-in ${esc(fmtRelativeTime(d.last_seen))}` : 'Never checked in'} &middot; Agent v${esc(d.agent_version || '-')}</div>
+    <div class="small muted" style="margin-bottom:10px;">${d.last_seen ? `Last check-in ${esc(fmtRelativeTime(d.last_seen))}` : 'Never checked in'} &middot; Agent v${esc(d.agent_version || '-')}${agentShellVersionHtml(d)}</div>
     ${editOk ? `<div class="small" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span>${anyDeskInstallsFor(d).length
         ? anyDeskInstallsFor(d).map((a) => `AnyDesk <b>${esc(a.id)}</b> - ${esc(anyDeskInstallLabel(a).split(' - ')[1])}`).join('<br>')
