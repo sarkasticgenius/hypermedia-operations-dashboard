@@ -2391,7 +2391,14 @@ function Test-DuScrapeDue($state) {
     $lastAttempt = if ($state -and $state.at) { try { [datetime]$state.at } catch { $null } } else { $null }
     $todayAnchor = (Get-Date -Hour 3 -Minute 0 -Second 0 -Millisecond 0).AddMinutes((Get-DuJitterMinutes))
     $boundary = if ((Get-Date) -lt $todayAnchor) { $todayAnchor.AddDays(-1) } else { $todayAnchor }
-    $faulted = @('nobrowser', 'error', 'pending') -contains $state.outcome
+    # 'partial' joins the retry set: it means du answered with this SIM's number but no usage
+    # figures, which is usually the page's async data not having rendered in time - worth one more
+    # go within the hour. It is deliberately a ONE-shot retry, enforced by Invoke-DuScrape recording
+    # 'nofigures' on the second consecutive phone-only result rather than 'partial' again, so the
+    # outcome itself carries the strike count and there is no counter to persist or reset. Like
+    # 'nodata', 'nofigures' is never retried - see the phone-only branch in Invoke-DuScrape for why
+    # an unbounded hourly retry is the wrong answer on a permanently phone-only account.
+    $faulted = @('nobrowser', 'error', 'pending', 'partial') -contains $state.outcome
     $retryDue = $faulted -and $lastAttempt -and (((Get-Date) - $lastAttempt).TotalMinutes -ge 60)
     return (-not $lastAttempt) -or ($lastAttempt -lt $boundary) -or $retryDue
 }
@@ -2431,7 +2438,7 @@ function Start-DuScrapeInUserSession {
 # Invoke-Checkin and by the dashboard's on-demand "Check Data Usage" button (::DUCHECK below), so
 # the two cannot drift - an on-demand check that recorded a different shape of answer than the
 # scheduled one would be worse than having no button at all.
-function Invoke-DuScrape {
+function Invoke-DuScrape($PriorOutcome) {
     $at = (Get-Date).ToUniversalTime().ToString("o")
     # Written BEFORE the scrape, same as this gate always was, so the once-a-day boundary advances
     # even if what follows never returns - "pending" is what's left behind in that case, and it
@@ -2455,9 +2462,42 @@ function Invoke-DuScrape {
             # A result object with every field empty counts as nothing found, not as success -
             # otherwise it would stamp du_scraped_at server-side and have the dashboard claim the
             # connection was checked and answered when it answered nothing.
-            if ($du -and ($du.phoneNumber -or $null -ne $du.dataUsedGb -or $null -ne $du.dataLeftGb -or $null -ne $du.dataTotalGb)) {
+            if ($du -and ($null -ne $du.dataUsedGb -or $null -ne $du.dataLeftGb -or $null -ne $du.dataTotalGb)) {
                 $outcome = "ok"
                 Write-AgentLog "DU data-usage scrape: phone=$($du.phoneNumber) used=$($du.dataUsedGb) left=$($du.dataLeftGb) total=$($du.dataTotalGb)"
+            } elseif ($du -and $du.phoneNumber) {
+                # A phone number and NO usage figures at all. This used to count as "ok", which was
+                # wrong twice over: the server stamped du_scraped_at from it (so yesterday's figures
+                # wore today's timestamp - fixed separately in workspace-directory-checkin), and
+                # because "ok" is not a fault it earned no retry, so the PC sat until tomorrow's
+                # window having learned nothing.
+                #
+                # Confirmed live on ADCOOP-MINA-AR, 1 Sep 2026: scraped "ok" at 07:59 Dubai and
+                # again at 17:04, both phone-number-only, while the figures on display had last
+                # actually been read at 18:30 the previous day. 51 devices were in that state at
+                # once, every one holding figures byte-identical to its last history row.
+                #
+                # Two strikes, not an hourly retry forever. The obvious fix - call it a fault so the
+                # existing 60-minute retry picks it up - would relaunch a headless browser every
+                # hour indefinitely on the 23 devices that have NEVER produced a GB figure (the
+                # shared-SIM clusters: +971552724831 across 7 ALFURJAN hosts, +971552724195 across
+                # DISCOVERY, and two more), on metered SIMs, to re-learn the same nothing. That is
+                # precisely the churn the nodata branch below exists to avoid.
+                #
+                # So the outcome itself carries the strike count, with no counter to persist or
+                # reset: "partial" is retried once an hour later, and if that retry is ALSO
+                # phone-only it records "nofigures", which is terminal for the day exactly like
+                # nodata. A transient render failure recovers within the hour; a permanently
+                # phone-only account costs two attempts a day instead of twenty-four.
+                if ($PriorOutcome -eq 'partial') {
+                    $outcome = "nofigures"
+                    $note = "du returned this SIM's number but no usage figures on two consecutive attempts - treating it as having none to give until tomorrow's scrape."
+                    Write-AgentLog "DU scrape phone-only again after a retry - recording 'nofigures' and waiting for tomorrow."
+                } else {
+                    $outcome = "partial"
+                    $note = "du returned this SIM's number but no usage figures - retrying in an hour."
+                    Write-AgentLog "DU scrape returned a phone number but no usage figures - will retry in an hour."
+                }
             } elseif ($Script:DuIsUserSession) {
                 # The browser ran IN A REAL DESKTOP SESSION and the page still gave nothing back.
                 # Only then is "nothing" an actual answer: du identifies the subscriber from the
@@ -3250,7 +3290,9 @@ function Invoke-Checkin([switch]$Light) {
         $duDelegated = Start-DuScrapeInUserSession
     }
     if ($duDue -and -not $duDelegated) {
-        $duResult = Invoke-DuScrape
+        # Prior outcome decides whether a phone-number-only result is the first strike ('partial',
+        # retried in an hour) or the second ('nofigures', done for the day) - see Invoke-DuScrape.
+        $duResult = Invoke-DuScrape $duState.outcome
         Add-DuFiguresToPayload $data $duResult
         # Feeds the attempt record straight into the reporting block below rather than
         # setting those fields here, so a scrape that just ran and one that ran days ago
@@ -3392,7 +3434,9 @@ if ($DuScrapeOnce) {
         $duState = Get-DuScrapeState
         if (Test-DuScrapeDue $duState) {
             Write-AgentLog "User-session DU scrape starting (tray-triggered)."
-            $r = Invoke-DuScrape
+            # Same strike-count hand-off as the SYSTEM path: 'partial' last time means this run is
+            # the retry, and a second phone-only result records 'nofigures' instead of looping.
+            $r = Invoke-DuScrape $duState.outcome
             Write-AgentLog "User-session DU scrape finished: $($r.outcome)"
             # Reports its own result immediately rather than waiting for SYSTEM's next check-in to
             # notice the handoff - the figures reach the dashboard the moment they are scraped

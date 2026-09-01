@@ -430,6 +430,10 @@ function dataCheckFailedToday(d) {
   const isToday = attempted.getFullYear() === now.getFullYear() && attempted.getMonth() === now.getMonth() && attempted.getDate() === now.getDate();
   if (!isToday) return false;
   if (d.du_scrape_outcome === 'nobrowser' || d.du_scrape_outcome === 'error') return true;
+  // 'partial'/'nofigures' (agent v70+) mean du answered with the SIM's number and no usage at all.
+  // That IS a failed data check by definition - the figures on display are older than the attempt -
+  // and it is exactly the state that used to hide here as a bogus 'ok'.
+  if (d.du_scrape_outcome === 'partial' || d.du_scrape_outcome === 'nofigures') return true;
   const knownSim = !!(d.du_phone_number || d.du_scraped_at);
   return d.du_scrape_outcome === 'nodata' && knownSim;
 }
@@ -708,6 +712,18 @@ function duScrapeStatusHtml(d) {
         return `<div class="small" style="margin-top:6px;color:#c0392b;">SIM check ran${when} but du returned nothing, even though this PC has a known du SIM - so the check itself is failing, not the connection.${esc(lastGood)}</div>`;
       }
       return `<div class="small muted" style="margin-top:6px;">SIM check ran${when} and du reported nothing for this connection - no du SIM behind this PC, so it reaches the internet over Wi-Fi/LAN.</div>`;
+    }
+    case 'partial':
+    case 'nofigures': {
+      // Deliberately distinct from both 'ok' and a fault: du DID answer, and told us this SIM's
+      // number, but gave no usage at all - so the figures above (if any) are older than this
+      // attempt. Says which of the two strikes it is, because "retrying within the hour" and
+      // "given up until tomorrow" call for different reactions from whoever is reading.
+      const lastGood = d.du_scraped_at ? ` The figures above were last actually read ${fmtRelativeTime(d.du_scraped_at)}.` : '';
+      const next = d.du_scrape_outcome === 'partial'
+        ? 'Retrying within the hour.'
+        : 'Two attempts in a row came back the same way, so it will wait for tomorrow rather than relaunching a browser hourly.';
+      return `<div class="small" style="margin-top:6px;color:#e07a2c;">SIM check ran${when} and du returned this PC's number but no usage figures. ${esc(next)}${esc(lastGood)}</div>`;
     }
     case 'nobrowser':
     case 'error':

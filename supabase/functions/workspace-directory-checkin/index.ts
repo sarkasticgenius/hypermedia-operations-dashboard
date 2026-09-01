@@ -288,8 +288,15 @@ Deno.serve(async (req) => {
         row.du_scrape_attempted_at = attemptedAt.toISOString();
         // Constrained to the known set rather than stored as-sent, so the dashboard can branch on
         // it safely and a mangled/rogue payload can't invent a state the UI has no branch for.
+        // 'partial'   - du answered with the SIM's phone number but no usage figures. Retried once,
+        //               an hour later, by the agent (see Test-DuScrapeDue).
+        // 'nofigures' - phone-only twice running, so the agent stops for the day rather than
+        //               relaunching a browser hourly on an account that never reports usage.
+        // Both must be listed here: an outcome missing from this set is stored as NULL, which the
+        // dashboard reads as "never reported a scrape" - the agent would be telling the truth and
+        // the server would be throwing it away.
         const outcome = String(body.duScrapeOutcome || '').toLowerCase();
-        row.du_scrape_outcome = ['ok', 'nodata', 'nobrowser', 'error', 'pending'].includes(outcome) ? outcome : null;
+        row.du_scrape_outcome = ['ok', 'nodata', 'nobrowser', 'error', 'pending', 'partial', 'nofigures'].includes(outcome) ? outcome : null;
         // Cleared when the attempt carries no note, so a fault reason doesn't outlive the fault.
         row.du_scrape_note = typeof body.duScrapeNote === 'string' && body.duScrapeNote.length
           ? body.duScrapeNote.slice(0, 500)
