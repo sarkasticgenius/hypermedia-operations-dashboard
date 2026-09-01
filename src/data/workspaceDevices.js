@@ -30,6 +30,24 @@ const LIST_COLUMNS = [
   'anydesk_installs', 'du_stale_alerted_at', 'problems_last_alerted',
 ].join(', ');
 
+// One row per Dubai calendar day of this device's du readings, newest last. Each row holds that
+// day's CYCLE-TO-DATE figure, not that day's consumption - du reports usage since the billing cycle
+// started, so a single day's usage is the difference between consecutive rows (see duDailySeries in
+// workspaceDirectory.js, which also handles the two ways that subtraction lies: missing days, and a
+// cycle rollover where today's reading is lower than yesterday's).
+//
+// 14 days rather than 7: the panel draws a 7-day sparkline, and computing 7 DELTAS needs 8 readings,
+// with headroom for the missing days that gaps in a PC's scrape history routinely leave.
+export async function getWorkspaceDeviceDailyUsage(deviceId) {
+  const { data, error } = await supabase.from('workspace_device_du_usage_daily')
+    .select('usage_date, used_gb, total_gb, left_gb, scraped_at')
+    .eq('device_id', deviceId)
+    .order('usage_date', { ascending: false })
+    .limit(14);
+  if (error) throw error;
+  return (data || []).slice().reverse();
+}
+
 // The two heavy columns the list deliberately skips, for one device. Keyed per device by the caller
 // so opening one Details modal never re-fetches another's.
 export async function getWorkspaceDeviceSoftware(id) {

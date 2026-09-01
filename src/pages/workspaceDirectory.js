@@ -1,6 +1,6 @@
 import { STATE, loadData, invalidate, toast, setState, openModal, closeModal } from '../state.js';
 import { registerModal, loadingCard } from '../modals.js';
-import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice, listGhostWorkspaceDevices, restoreWorkspaceDevice, permanentlyDeleteWorkspaceDevice, getWorkspaceDeviceSoftware } from '../data/workspaceDevices.js';
+import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice, listGhostWorkspaceDevices, restoreWorkspaceDevice, permanentlyDeleteWorkspaceDevice, getWorkspaceDeviceSoftware, getWorkspaceDeviceDailyUsage } from '../data/workspaceDevices.js';
 import { listSimCards } from '../data/simCards.js';
 import { listAssetInventory, resetAssetInventoryCache } from '../data/assetsInventory.js';
 import { canEdit, canDelete } from '../auth.js';
@@ -636,6 +636,65 @@ function volumeCellHtml(d) {
     </div>`;
   }).join('');
   return `<div style="display:flex;flex-direction:column;gap:4px;">${rows}</div>`;
+}
+
+// Turns the stored cycle-to-date readings into PER-DAY consumption. Each daily row holds usage since
+// the billing cycle began, so a day's usage is the difference between consecutive rows - and that
+// subtraction lies in two specific ways this has to handle, or the figures are quietly wrong:
+//
+//   - MISSING DAYS. A PC that fails or skips its scrape leaves a gap, and the next reading then
+//     covers everything since the last one. Real example, DR2-FOODCOURT: no row for 28 Aug, so the
+//     29th's raw delta of 0.45 GB is two days' usage, not one. Divided by the actual day gap so it
+//     reads as a daily rate rather than a spike that never happened.
+//   - CYCLE ROLLOVER. When du resets the cycle, today's reading is LOWER than yesterday's and the
+//     raw delta goes negative. That is not negative usage, it is a new cycle - the same reasoning
+//     the network-counter code already applies to a rebooted PC. Treated as the start of a fresh
+//     cycle and skipped rather than rendered as a minus figure or clamped to a misleading zero.
+//
+// Days that were interpolated across a gap are marked so the UI can say so instead of presenting a
+// derived average as a measured fact.
+function duDailySeries(rows) {
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1];
+    const cur = rows[i];
+    const prevUsed = Number(prev.used_gb);
+    const curUsed = Number(cur.used_gb);
+    if (!Number.isFinite(prevUsed) || !Number.isFinite(curUsed)) continue;
+    const gapDays = Math.max(1, Math.round(
+      (new Date(`${cur.usage_date}T00:00:00Z`) - new Date(`${prev.usage_date}T00:00:00Z`)) / 86400000,
+    ));
+    if (curUsed < prevUsed) {
+      // Cycle reset between these two readings - the day's true usage is unknowable from a
+      // cycle-to-date pair that straddles it, so it is recorded as a rollover rather than guessed.
+      out.push({ date: cur.usage_date, gb: null, rollover: true, gapDays });
+      continue;
+    }
+    out.push({ date: cur.usage_date, gb: (curUsed - prevUsed) / gapDays, rollover: false, gapDays });
+  }
+  return out;
+}
+
+// A bare inline sparkline - no axes, no library. Bars rather than a line because the series is at
+// most seven points with gaps in it, where a line would imply continuity between days that may not
+// be adjacent. A rollover day draws as a hollow marker: something happened, but its size is not a
+// number we have. Sized in ch/px to sit inside the existing Data Usage grid without disturbing it.
+function duSparklineHtml(series) {
+  if (!series.length) return '';
+  const real = series.filter((s) => s.gb != null);
+  const max = real.length ? Math.max(...real.map((s) => s.gb)) : 0;
+  const W = 132; const H = 26; const n = series.length;
+  const slot = W / n; const barW = Math.max(3, slot - 3);
+  const bars = series.map((s, i) => {
+    const x = (i * slot).toFixed(1);
+    if (s.gb == null) {
+      return `<rect x="${x}" y="${H - 5}" width="${barW.toFixed(1)}" height="4" fill="none" stroke="#8a939b" stroke-width="1"><title>${esc(s.date)}: new billing cycle started - that day's usage can't be derived</title></rect>`;
+    }
+    const h = max > 0 ? Math.max(1, (s.gb / max) * (H - 4)) : 1;
+    const label = `${esc(s.date)}: ${fmtGb(s.gb)}${s.gapDays > 1 ? ` (averaged over ${s.gapDays} days - ${s.gapDays - 1} missing reading${s.gapDays > 2 ? 's' : ''})` : ''}`;
+    return `<rect x="${x}" y="${(H - h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${s.gapDays > 1 ? '#a8b0b7' : '#1f9d55'}" rx="1"><title>${label}</title></rect>`;
+  }).join('');
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily SIM data usage, last ${n} day(s)">${bars}</svg>`;
 }
 
 // Same used/total percentage math as the SIM Data Usage tile above, collapsed to a single striped
@@ -1635,6 +1694,36 @@ registerModal('workspaceDetails', (data) => {
   // reported its attempts, and it was the wrong one for every device that had been trying and
   // getting nowhere. Says which of the four states this device is actually in instead.
   const duStatusHtml = duScrapeStatusHtml(d);
+
+  // Per-day usage, derived from this device's stored cycle-to-date history. Fetched only when the
+  // modal is open and cached per device, the same way software/components are - it is a second query
+  // and no use to the list. Skipped entirely for a device with no du figures at all: there is no
+  // history to draw, and an empty sparkline would imply "used nothing" rather than "never measured".
+  const dailyRows = haveDu ? loadData(`workspaceDeviceDaily:${d.id}`, () => getWorkspaceDeviceDailyUsage(d.id)) : [];
+  const dailyLoading = dailyRows === null;
+  const series = Array.isArray(dailyRows) && !dailyRows.__error ? duDailySeries(dailyRows).slice(-7) : [];
+  const today = series.length ? series[series.length - 1] : null;
+  // Only call it "today" when the newest reading really is from today in Dubai - a PC whose last
+  // scrape was days ago would otherwise have an old figure sitting under a label claiming it is
+  // current, which is the same class of lie as the stale du_scraped_at fixed earlier today.
+  const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(new Date());
+  const todayIsCurrent = today && today.date === todayStr;
+  const usedTodayHtml = dailyLoading
+    ? '<span class="muted">Used Today</span><span style="text-align:right;" class="muted">&hellip;</span>'
+    : !today
+      ? '<span class="muted">Used Today</span><span style="text-align:right;" class="muted" title="Needs two daily readings to derive a day\'s usage - this device has only one so far.">not enough history</span>'
+      : today.rollover
+        ? `<span class="muted">Used Today</span><span style="text-align:right;" class="muted" title="A new billing cycle started, so today's usage cannot be derived from a cycle-to-date pair that straddles the reset.">new cycle</span>`
+        : `<span class="muted">Used ${todayIsCurrent ? 'Today' : 'That Day'}</span><span style="text-align:right;"${todayIsCurrent ? '' : ` title="Latest daily reading is from ${esc(today.date)}, not today - this PC has not reported since."`}>${fmtGb(today.gb)}${todayIsCurrent ? '' : ' <span class="muted">(' + esc(today.date) + ')</span>'}</span>`;
+  // The cycle-to-date figure IS the month-to-date total, since du resets it each billing cycle -
+  // so it is labelled rather than recomputed, and only when there is a real plan figure behind it.
+  const monthHtml = allocGb
+    ? `<span class="muted">This Cycle</span><span style="text-align:right;">${fmtGb(usedGb)} <span class="muted">of ${fmtGb(allocGb)}</span></span>`
+    : '';
+  const sparkHtml = series.length > 1
+    ? `<span class="muted" style="align-self:center;">Last ${series.length} days</span><span style="text-align:right;">${duSparklineHtml(series)}</span>`
+    : '';
+  const dailyUsageRowsHtml = `${usedTodayHtml}${monthHtml}${sparkHtml}`;
   const dataUsageHtml = !phone && !allocGb
     ? `<div class="empty">No data usage reported yet.</div>${duStatusHtml}`
     : `<div class="small" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;">
@@ -1643,6 +1732,7 @@ registerModal('workspaceDetails', (data) => {
         <span class="muted">Data Used</span><span style="text-align:right;">${allocGb ? fmtGb(usedGb) : '&mdash;'}</span>
         <span class="muted">Data Left</span><span style="text-align:right;">${allocGb ? fmtGb(leftGb) : '&mdash;'}</span>
         <span class="muted">${haveDu ? 'DU Last Update' : 'Last Update'}</span><span style="text-align:right;">${haveDu ? esc(fmtRelativeTime(d.du_scraped_at)) : (d.last_seen ? esc(fmtRelativeTime(d.last_seen)) : '&mdash;')}</span>
+        ${dailyUsageRowsHtml}
       </div>
       ${allocGb ? `<div style="margin-top:8px;">${stripedBarHtml(usagePct, usageColor)}</div>` : '<div class="small muted" style="margin-top:6px;">No plan size set yet - link a SIM Card, or wait for the usage figure to finish scraping.</div>'}
       ${duStatusHtml}`;
