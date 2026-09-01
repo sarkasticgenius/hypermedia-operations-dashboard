@@ -264,9 +264,28 @@ Deno.serve(async (req) => {
     // The agent's own once-a-day (locally gated) scrape of mydata.du.ae - only present on days it
     // actually ran, so these are only written when sent rather than nulled out on every check-in.
     if (body.duPhoneNumber) row.du_phone_number = String(body.duPhoneNumber).slice(0, 30);
-    if (Number.isFinite(Number(body.duDataUsedGb))) row.du_data_used_gb = Number(body.duDataUsedGb);
-    if (Number.isFinite(Number(body.duDataLeftGb))) row.du_data_left_gb = Number(body.duDataLeftGb);
-    if (Number.isFinite(Number(body.duDataTotalGb))) row.du_data_total_gb = Number(body.duDataTotalGb);
+    // Number(null), Number('') and Number(false) are ALL 0, and 0 is finite - so a bare
+    // Number.isFinite(Number(x)) check let an explicit null, an empty string from a half-parsed
+    // scrape, or a stray boolean through as a genuine reading of 0 GB used. That is not a harmless
+    // rounding: it stamps du_scraped_at, writes a daily-history row, and draws an empty usage bar
+    // as though du had reported zero consumption. Only undefined and unparseable text fell out on
+    // their own.
+    //
+    // Same rule as the volume sizes and the phone-only scrape outcome elsewhere in today's fixes:
+    // an unknown must never be rendered as a confident number. Not currently reachable, because
+    // Add-DuFiguresToPayload guards with `$null -ne` before sending - but every partial-payload bug
+    // found today was a caller changing while this end went on trusting it.
+    const duFigure = (v: unknown): number | undefined => {
+      if (v === null || v === undefined || v === '' || typeof v === 'boolean') return undefined;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const duUsedGb = duFigure(body.duDataUsedGb);
+    const duLeftGb = duFigure(body.duDataLeftGb);
+    const duTotalGb = duFigure(body.duDataTotalGb);
+    if (duUsedGb !== undefined) row.du_data_used_gb = duUsedGb;
+    if (duLeftGb !== undefined) row.du_data_left_gb = duLeftGb;
+    if (duTotalGb !== undefined) row.du_data_total_gb = duTotalGb;
     // Stamped on a FIGURE, never on the phone number alone. A scrape that recovers the number but
     // no usage at all still reports outcome 'ok' (the agent counts a phone number as a successful
     // parse - see Invoke-DuScrape), and the GB columns are deliberately left untouched when their
