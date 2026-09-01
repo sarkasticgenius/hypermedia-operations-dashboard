@@ -1010,14 +1010,62 @@ function Get-PrimaryIPv4 {
 }
 
 function Get-Volumes {
-    Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue | ForEach-Object {
-        [ordered]@{
-            drive  = $_.DeviceID
-            label  = $_.VolumeName
-            sizeGb = [math]::Round(($_.Size / 1GB), 1)
-            freeGb = [math]::Round(($_.FreeSpace / 1GB), 1)
+    # Win32_LogicalDisk can hand back a drive with DeviceID and VolumeName populated but Size and
+    # FreeSpace NULL - the static properties answer from cache while the dynamic ones fail - and
+    # since $null / 1GB rounds to 0 in PowerShell, a drive nobody could measure arrives looking
+    # exactly like a genuinely empty one. [System.IO.DriveInfo] calls the Win32 API directly and
+    # touches no WMI at all, so it still answers on a PC whose WMI stack is degraded.
+    #
+    # Confirmed live on DESKTOP-OMM99EM, 1 Sep 2026: Win32_LogicalDisk returned C: and D: with Size
+    # and FreeSpace null AND Get-Volume returned nothing whatsoever, while DriveInfo read both
+    # correctly - 411.3 GB with 381.7 free and 520.1 GB with 519.1 free, matching what the machine
+    # itself showed in Explorer. Get-Volume was the obvious fallback and would have fixed nothing;
+    # this one was picked because it was tested on the actual broken PC first.
+    #
+    # WMI deliberately stays PRIMARY: every PC it already works on keeps sending byte-identical
+    # data, and DriveInfo only fills in a drive WMI could not size, or one it never reported at all.
+    $byDrive = [ordered]@{}
+    foreach ($d in @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue)) {
+        $id = [string]$d.DeviceID
+        if (-not $id) { continue }
+        $byDrive[$id] = [ordered]@{
+            drive  = $id
+            label  = $d.VolumeName
+            sizeGb = [math]::Round(($d.Size / 1GB), 1)
+            freeGb = [math]::Round(($d.FreeSpace / 1GB), 1)
         }
     }
+    try {
+        foreach ($di in @([System.IO.DriveInfo]::GetDrives())) {
+            if ($di.DriveType -ne [System.IO.DriveType]::Fixed) { continue }
+            if (-not $di.IsReady) { continue }
+            # "C:" - Substring rather than trimming a path separator, which would need a backslash
+            # escape inside the JS template literal this script is authored in.
+            $id = $di.Name.Substring(0, 2)
+            $sizeGb = [math]::Round(($di.TotalSize / 1GB), 1)
+            $freeGb = [math]::Round(($di.AvailableFreeSpace / 1GB), 1)
+            if ($sizeGb -le 0) { continue }
+            if ($byDrive.Contains($id)) {
+                # Only rescues a drive WMI failed to size. A drive WMI measured is left exactly as
+                # WMI reported it, so this can never quietly change a figure that already worked.
+                if ([double]$byDrive[$id].sizeGb -le 0) {
+                    $byDrive[$id].sizeGb = $sizeGb
+                    $byDrive[$id].freeGb = $freeGb
+                    if (-not $byDrive[$id].label) { $byDrive[$id].label = $di.VolumeLabel }
+                }
+            } else {
+                $byDrive[$id] = [ordered]@{ drive = $id; label = $di.VolumeLabel; sizeGb = $sizeGb; freeGb = $freeGb }
+            }
+        }
+    } catch {
+        # Swallowed silently, and deliberately NOT logged with Write-AgentLog: that function is
+        # defined in the agent shell, and this collector is also fetched and run as its own
+        # standalone document (workspace-directory-collector) where it does not exist at all -
+        # calling it there would throw "The term is not recognized" and take the whole of
+        # Get-Volumes down with it. Exactly the trap Get-AnyDeskInstalls fell into.
+        # A PC where even DriveInfo throws is simply no worse off than before this fallback existed.
+    }
+    return @($byDrive.Values)
 }
 
 function Get-Components {
