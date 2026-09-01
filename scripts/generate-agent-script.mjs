@@ -90,10 +90,20 @@ function renderTemplate(templateBody, bindings) {
 
 const source = fs.readFileSync(SETTINGS, 'utf8');
 
+// anyDeskInstallsScript is rendered first because BOTH the collector and the agent shell embed it
+// (as a `${anyDeskInstallsScript()}` call in their own template) - it's Get-AnyDeskInstalls'
+// PowerShell text, kept as one JS source of truth since the collector and the agent shell are two
+// independently-fetched PowerShell documents at runtime that can't share a function definition any
+// other way. Passed to renderTemplate as a zero-arg function binding (matching how the template
+// calls it), not a plain string, so `${anyDeskInstallsScript()}` resolves the same way it does in
+// the real build.
+const anyDeskInstalls = renderTemplate(extractTemplate(source, 'anyDeskInstallsScript'), {});
+const anyDeskInstallsScript = () => anyDeskInstalls;
+
 // The collector is rendered first because the agent shell embeds it (as $indented) to use as its
 // built-in fallback collector, so a syntax error in the collector is also a syntax error in the
 // agent - checking both separately makes it obvious which one is at fault.
-const collector = renderTemplate(extractTemplate(source, 'defaultCollectorScript'), {});
+const collector = renderTemplate(extractTemplate(source, 'defaultCollectorScript'), { anyDeskInstallsScript });
 const indented = collector.split('\n').map((l) => `    ${l}`).join('\n');
 
 const agent = renderTemplate(extractTemplate(source, 'buildWorkspaceDirectoryAgentScript'), {
@@ -106,6 +116,7 @@ const agent = renderTemplate(extractTemplate(source, 'buildWorkspaceDirectoryAge
   forceStatusUrl: 'https://ci.invalid/functions/v1/workspace-directory-force-status',
   indented,
   AGENT_CANARY_HOSTNAMES: ['CI-TEST-PC-1', 'CI-TEST-PC-2', 'CI-TEST-PC-3'],
+  anyDeskInstallsScript,
 });
 
 const outDir = process.argv[2] || path.join('.ci-out');

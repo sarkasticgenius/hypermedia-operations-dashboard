@@ -798,7 +798,18 @@ export async function promoteWorkspaceDirectoryAgentShell() {
 // value and (b) baked directly into the installed agent as Invoke-DefaultCollector, so day-one
 // installs (and any run where fetching the remote version fails) still work. Ends with a single
 // hashtable literal - its shape is exactly the workspace-directory-checkin request body.
-function defaultCollectorScript() {
+// Shared between the Data Collector Script (whose "anydeskInstalls" field the dashboard's Set
+// AnyDesk Password modal reads to offer a target) and the outer agent shell's own
+// Set-AnyDeskPassword (which needs the exact same list to find which install a given id belongs
+// to). These are two INDEPENDENTLY fetched PowerShell documents at runtime - the collector via
+// workspace-directory-collector, the shell via workspace-directory-agent-shell - so a function
+// defined inside one's text was NOT visible to the other. Confirmed live: Set-AnyDeskPassword
+// calling Get-AnyDeskInstalls (previously only defined here, inside the collector script's own
+// text) threw "The term 'Get-AnyDeskInstalls' is not recognized" on every single attempt, silently
+// swallowed by Invoke-PollCycle's own empty catch block - meaning no AnyDesk password change sent
+// from the dashboard had EVER actually applied, on any device, since the feature was added. One JS
+// source of truth, embedded into both scripts, instead of two copies that could drift apart.
+function anyDeskInstallsScript() {
   return `# Some PCs end up with AnyDesk installed twice under different profiles - a standard install
 # AND a separately-branded custom MSI build in its own "ad_*_msi" subfolder (each gets its own
 # service/system.conf and its own distinct ID) - so this scans every known conf path instead of
@@ -847,7 +858,11 @@ function Get-AnyDeskInstalls {
         $installs += @{ id = $id; exe = $exe; service = $svc.Name; passwordSet = $pwdSet }
     }
     return $installs
+}`;
 }
+
+function defaultCollectorScript() {
+  return `${anyDeskInstallsScript()}
 
 function Get-AllAnyDeskIds {
     $paths = [System.Collections.Generic.List[string]]::new()
@@ -2239,6 +2254,8 @@ function Get-DuJitterMinutes {
     return [int]($hash % 300)
 }
 
+${anyDeskInstallsScript()}
+
 # Applies a one-shot secret handed down by workspace-directory-force-status. Currently only an
 # AnyDesk password, which AnyDesk reads from STDIN rather than a command-line argument - which
 # is also why it never appears in a process command line, where any local user could read it
@@ -2246,16 +2263,23 @@ function Get-DuJitterMinutes {
 #
 # The value is never logged, never echoed and never written to disk - only whether it worked.
 function Set-AnyDeskPassword($password, $targetId) {
-    # Targets ONE installation. A PC can run a standard AnyDesk and a custom-branded MSI build
-    # side by side, each with its own id, service and exe - so "set the AnyDesk password" is
-    # meaningless without saying which, and the previous version picked whichever exe it found
-    # first, leaving the admin no way to know which id had actually changed.
-    $installs = @(Get-AnyDeskInstalls)
-    if (-not $installs -or $installs.Count -eq 0) { return "AnyDesk is not installed on this PC." }
-    $match = $installs | Where-Object { $_.id -eq $targetId } | Select-Object -First 1
-    if (-not $match) { return "No AnyDesk installation on this PC answers on id $targetId." }
-    if (-not $match.exe -or -not (Test-Path $match.exe)) { return "Found id $targetId but its AnyDesk binary is missing." }
+    # Wraps the WHOLE body, not just the cmd.exe call below - Get-AnyDeskInstalls/Where-Object
+    # threw a terminating "term not recognized" error on every single call for a long time (see
+    # anyDeskInstallsScript's own comment on why), and with no try/catch around it that propagated
+    # straight out of this function to Invoke-PollCycle's own bare catch{}, which swallowed it
+    # completely - not even a failure message ever reached Write-AgentLog. Whatever goes wrong here
+    # now always comes back as a return value the caller can log, instead of an exception nothing
+    # is positioned to catch.
     try {
+        # Targets ONE installation. A PC can run a standard AnyDesk and a custom-branded MSI build
+        # side by side, each with its own id, service and exe - so "set the AnyDesk password" is
+        # meaningless without saying which, and the previous version picked whichever exe it found
+        # first, leaving the admin no way to know which id had actually changed.
+        $installs = @(Get-AnyDeskInstalls)
+        if (-not $installs -or $installs.Count -eq 0) { return "AnyDesk is not installed on this PC." }
+        $match = $installs | Where-Object { $_.id -eq $targetId } | Select-Object -First 1
+        if (-not $match) { return "No AnyDesk installation on this PC answers on id $targetId." }
+        if (-not $match.exe -or -not (Test-Path $match.exe)) { return "Found id $targetId but its AnyDesk binary is missing." }
         # cmd's pipe rather than PowerShell's: PowerShell's pipeline passes .NET objects, and
         # AnyDesk wants raw bytes on stdin. Passing it on stdin rather than as an argument is
         # also what keeps it out of the process command line, where any local user could read it.

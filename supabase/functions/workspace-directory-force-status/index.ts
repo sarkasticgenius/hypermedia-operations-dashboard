@@ -99,7 +99,7 @@ Deno.serve(async (req) => {
     // Oldest first, so a password sent twice applies in the order it was sent rather than leaving
     // the earlier one to be applied last and win.
     const { data: pending } = await adminClient.from('agent_secret_deliveries')
-      .select('id, kind, secret').eq('hostname', hostname)
+      .select('id, kind, secret, target').eq('hostname', hostname)
       .order('created_at', { ascending: true }).limit(1).maybeSingle();
 
     if (pending) {
@@ -109,7 +109,13 @@ Deno.serve(async (req) => {
 
     return new Response(JSON.stringify({
       force: !!deviceRow?.force_checkin_requested,
-      secret: pending ? { id: pending.id, kind: pending.kind, value: pending.secret } : null,
+      // `target` (which AnyDesk installation this password is for) was missing here - the agent
+      // reads $resp.secret.target and passes it straight to Set-AnyDeskPassword, which only ever
+      // matched an install by that id. Omitting it meant every delivery was silently doomed: the
+      // agent always called Set-AnyDeskPassword with a null target, which can never equal a real
+      // install id, so the password was never applied and the delivery just sat there being
+      // reclaimed (and retried, and failing the same way) on every single poll forever.
+      secret: pending ? { id: pending.id, kind: pending.kind, value: pending.secret, target: pending.target } : null,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,
     });
