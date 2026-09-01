@@ -856,8 +856,19 @@ function wireWidget(root) {
     downloadAllBtn.disabled = true;
     downloadAllBtn.textContent = 'Zipping…';
     try {
-      if (!window.JSZip) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
-      const zip = new window.JSZip();
+      // Bundled, not fetched from a CDN. This used to pull JSZip from cdnjs.cloudflare.com at click
+      // time - the only third-party CDN left in the app, and the only thing in it served from
+      // outside our own origin and Supabase. That made "Download All" quietly dependent on a host we
+      // do not control: blocked by a mall network's egress filtering, or cdnjs having a bad day, and
+      // the button fails with nothing on screen to explain why.
+      //
+      // It costs nothing to bundle, because it was ALREADY bundled: pptxgenjs depends on jszip and
+      // imports it statically, so every page load was already shipping this library and then
+      // downloading a second copy of it over the network to use here. Vite reports the dynamic
+      // import as ineffective for exactly that reason - it resolves to the chunk that is already
+      // loaded rather than splitting a new one, which is the right outcome and not a problem.
+      const { default: JSZip } = await import('jszip');
+      const zip = new JSZip();
       const baseName = state.file.name.replace(/\.[^/.]+$/, '') || 'output';
       queue.filter((j) => j.status === 'done').forEach((j) => {
         zip.file(`${baseName}_${j.w}x${j.h}.${j.ext}`, j.resultBlob);
