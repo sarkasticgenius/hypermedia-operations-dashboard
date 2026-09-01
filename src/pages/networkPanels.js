@@ -795,7 +795,7 @@ registerModal('offlineAssetsModal', (data) => {
       <button class="btn-sm" onclick="App.closeModal()">Close</button>
     </div>
   `;
-});
+}, { wide: true });
 
 registerModal('iotCategoryModal', (data) => {
   const category = data.category;
