@@ -1,8 +1,8 @@
 import { STATE, loadData, invalidate, toast, setState, openModal, closeModal } from '../state.js';
 import { registerModal, loadingCard } from '../modals.js';
-import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice, listGhostWorkspaceDevices, restoreWorkspaceDevice, permanentlyDeleteWorkspaceDevice } from '../data/workspaceDevices.js';
+import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice, listGhostWorkspaceDevices, restoreWorkspaceDevice, permanentlyDeleteWorkspaceDevice, getWorkspaceDeviceSoftware } from '../data/workspaceDevices.js';
 import { listSimCards } from '../data/simCards.js';
-import { listAssetInventory } from '../data/assetsInventory.js';
+import { listAssetInventory, resetAssetInventoryCache } from '../data/assetsInventory.js';
 import { canEdit, canDelete } from '../auth.js';
 import { AGENT_CANARY_HOSTNAMES, defaultOptimizerScript } from './settings.js';
 import { remoteAccessUrl } from '../lib/remoteAccess.js';
@@ -1033,6 +1033,7 @@ export function refreshWorkspaceDirectory() {
   invalidate('workspaceDevices');
   invalidate('simCardsForDirectory');
   invalidate('assetInventory');
+  resetAssetInventoryCache();
   setState({});
   toast('Refreshed');
 }
@@ -1657,13 +1658,24 @@ registerModal('workspaceDetails', (data) => {
       }).join('')}</tbody></table>`
     : '<div class="empty">No volume data reported.</div>';
 
-  const c = d.components || {};
+  // software/components are deliberately NOT in the list query - they were two thirds of its
+  // payload and are only read here, for the one device being looked at (see LIST_COLUMNS in
+  // data/workspaceDevices.js). Fetched per device on first open and cached under its own key, so
+  // reopening the same modal is instant and opening another device's never refetches this one's.
+  // Returns null while in flight, which the two sections below render as a brief loading line
+  // rather than as "nothing reported" - the distinction that matters, since an empty software list
+  // and an unloaded one look identical otherwise.
+  const detail = loadData(`workspaceDeviceDetail:${d.id}`, () => getWorkspaceDeviceSoftware(d.id));
+  const detailLoading = detail === null;
+  const c = (detail && detail.components) || {};
   const componentsHtml = `<div class="small">
     ${c.cpu ? `<div><b>CPU:</b> ${esc(c.cpu)}</div>` : ''}
     ${c.ramGb ? `<div><b>RAM:</b> ${esc(String(c.ramGb))} GB</div>` : ''}
     ${c.gpu ? `<div><b>GPU:</b> ${esc(c.gpu)}</div>` : ''}
     ${(c.disks || []).length ? `<div><b>Disks:</b> ${c.disks.map(esc).join(', ')}</div>` : ''}
-    ${!c.cpu && !c.ramGb && !c.gpu && !(c.disks || []).length ? '<div class="empty">No component data reported.</div>' : ''}
+    ${!c.cpu && !c.ramGb && !c.gpu && !(c.disks || []).length
+      ? (detailLoading ? '<div class="small muted">Loading hardware details&hellip;</div>' : '<div class="empty">No component data reported.</div>')
+      : ''}
   </div>`;
 
   const antivirus = d.antivirus || [];
@@ -1696,8 +1708,10 @@ registerModal('workspaceDetails', (data) => {
       </div>`
     : '';
 
-  const software = [...(d.software || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  const softwareHtml = software.length
+  const software = [...((detail && detail.software) || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const softwareHtml = detailLoading
+    ? '<div class="small muted">Loading installed software&hellip;</div>'
+    : software.length
     ? `<details><summary style="cursor:pointer;font-size:12.5px;">${software.length} package(s) - click to expand</summary>
         <div style="max-height:260px;overflow-y:auto;margin-top:6px;">
           <table><thead><tr><th>Name</th><th>Version</th><th>Publisher</th><th></th></tr></thead><tbody>${software.map((s) => `<tr><td class="small">${esc(s.name)}</td><td class="small">${esc(s.version || '-')}</td><td class="small">${esc(s.publisher || '-')}</td><td>${editOk && s.uninstallString ? `<button type="button" class="link-btn" style="padding:0;" onclick='App.openWorkspaceEditModal(${jsonAttr(d.id)}); App.fillWorkspaceCommand(${jsonAttr(s.uninstallString)})'>Uninstall</button>` : ''}</td></tr>`).join('')}</tbody></table>

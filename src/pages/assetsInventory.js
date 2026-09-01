@@ -3,6 +3,7 @@ import { loadingCard, registerModal } from '../modals.js';
 import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import {
   listAssetInventory, saveAssetInventory, deleteAssetInventory, quickAddNetwork, bulkPatchAssetInventory,
+  resetAssetInventoryCache,
 } from '../data/assetsInventory.js';
 import { listContractors } from '../data/contractors.js';
 import { listNetworks } from '../data/networks.js';
@@ -66,8 +67,8 @@ export function invalidateAssetInventoryCaches() {
   invalidate('assetsInventoryPage');
   invalidate('locationsPage');
   invalidate('assets');
-  invalidate('assetInventoryForGrassfishPanel');
   invalidate('assetInventory');
+  resetAssetInventoryCache();
   invalidate('simCardsPage');
   invalidate('ticketsPage');
 }

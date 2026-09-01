@@ -2,7 +2,7 @@ import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } f
 import { loadingCard, registerModal } from '../modals.js';
 import { getSetting, saveSetting } from '../data/settings.js';
 import { listLocations } from '../data/locations.js';
-import { listAssetInventory } from '../data/assetsInventory.js';
+import { listAssetInventory, resetAssetInventoryCache } from '../data/assetsInventory.js';
 import { listWorkspaceDevices } from '../data/workspaceDevices.js';
 import { hiddenMemberIds, resolveMembers, sourceStats, heatmapColor } from '../data/locationStats.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
@@ -201,7 +201,11 @@ export function renderGrassfishPanel() {
   }
 
   const cfg = loadData('grassfishApi', () => getSetting('grassfishApi'));
-  const inventory = loadData('assetInventoryForGrassfishPanel', listAssetInventory);
+  // Shares the 'assetInventory' cache entry with Digital Directory, Gantt, Screen Reports and
+  // Settings rather than keeping its own. loadData caches per KEY, so a private key here meant this
+  // panel re-downloaded all 2,258 asset rows (plus their networks join) even when another page had
+  // just fetched exactly the same query - measured at 2-3 seconds a time.
+  const inventory = loadData('assetInventory', listAssetInventory);
   if (cfg === null || inventory === null) return loadingCard();
   if (cfg?.__error) return loadingCard(cfg.__error);
   if (inventory?.__error) return loadingCard(inventory.__error);
@@ -665,7 +669,8 @@ export async function runNetworkSync(settingKey, functionName) {
     await logAudit(`${functionName} sync`, data?.summary || '');
     invalidate(settingKey);
     invalidate('locationsForNetworkPanel');
-    invalidate('assetInventoryForGrassfishPanel');
+    invalidate('assetInventory');
+    resetAssetInventoryCache();
     toast(data?.summary || 'Sync complete');
   } catch (e) {
     toast(e.message || 'Sync failed', 'error');
@@ -840,7 +845,7 @@ registerModal('iotCategoryModal', (data) => {
 
 registerModal('grassfishVenueModal', (data) => {
   const venue = data.venue || '';
-  const inventory = STATE.pageData.assetInventoryForGrassfishPanel?.data || [];
+  const inventory = STATE.pageData.assetInventory?.data || [];
   const screens = inventory.filter((r) => r.player_type === 'Grassfish' && (r.venue || '') === venue);
   const ticketAddOk = canAdd('tickets');
   const admin = isAdmin();

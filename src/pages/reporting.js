@@ -304,7 +304,7 @@ export async function downloadTabExcel() {
     let dspsRows = dspsRaw ? extractRows(dspsRaw) : [];
     if (!directRows.length && !dspsRows.length) { toast('No traffic data loaded yet', 'error'); return; }
     const categoryFilter = STATE.reportingTrafficCategory || 'all';
-    const assetInventoryForCategory = STATE.pageData.assetInventoryForReportingCategories?.data;
+    const assetInventoryForCategory = STATE.pageData.assetInventory?.data;
     if (categoryFilter !== 'all' && assetInventoryForCategory) {
       const venueCategoryMap = buildVenueCategoryMap(assetInventoryForCategory);
       const directFieldsAll = directRows.length ? detectAllFields(directRows) : {};
@@ -1132,7 +1132,10 @@ function renderAdditionalTrafficSheet(directRowsAll, dspsRowsAll, start, end) {
   // comment for why this is keyed off Asset Inventory's category column rather than a naming
   // convention. Skipped entirely (no tabs, no filtering) while Asset Inventory is still loading, or
   // if the sync has never run - categorization just isn't possible yet either way.
-  const assetInventory = loadData('assetInventoryForReportingCategories', listAssetInventory);
+  // Shares the 'assetInventory' cache entry rather than keeping a private one - same query, same
+  // data, and loadData caches per KEY, so a separate key here re-downloaded all 2,258 asset rows
+  // that another page had usually already fetched.
+  const assetInventory = loadData('assetInventory', listAssetInventory);
   const venueCategoryMap = (assetInventory && !assetInventory.__error) ? buildVenueCategoryMap(assetInventory) : null;
 
   let categoryTabsUi = '';
