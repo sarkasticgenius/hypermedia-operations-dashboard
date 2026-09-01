@@ -237,7 +237,20 @@ Deno.serve(async (req) => {
     if (Number.isFinite(Number(body.duDataUsedGb))) row.du_data_used_gb = Number(body.duDataUsedGb);
     if (Number.isFinite(Number(body.duDataLeftGb))) row.du_data_left_gb = Number(body.duDataLeftGb);
     if (Number.isFinite(Number(body.duDataTotalGb))) row.du_data_total_gb = Number(body.duDataTotalGb);
-    if (row.du_phone_number || row.du_data_used_gb !== undefined || row.du_data_left_gb !== undefined || row.du_data_total_gb !== undefined) {
+    // Stamped on a FIGURE, never on the phone number alone. A scrape that recovers the number but
+    // no usage at all still reports outcome 'ok' (the agent counts a phone number as a successful
+    // parse - see Invoke-DuScrape), and the GB columns are deliberately left untouched when their
+    // fields are absent, so including du_phone_number here re-dated yesterday's stored figures as
+    // if they had just been read. That is the worst of both worlds: the Data Usage bar and "DU Last
+    // Update" both claim a fresh reading, the Details modal says "du reported these figures", and
+    // the Data Check Failed tab stays empty because the outcome really was 'ok'. Confirmed live on
+    // ADCOOP-MINA-AR, 1 Sep 2026: scraped 'ok' at 04:15 UTC showing 4.84 of 15 GB, which was
+    // byte-identical to its 31 Aug reading and its only daily-history row - it had reported no
+    // usage figure in 18 hours. 51 devices were in that state at once, every one of them holding
+    // figures exactly equal to its last history row, so nothing had moved on any of them.
+    // The daily-history upsert below already gates on du_data_used_gb for this same reason; this
+    // brings the timestamp in line with it, so "when were these numbers read" has one answer.
+    if (row.du_data_used_gb !== undefined || row.du_data_left_gb !== undefined || row.du_data_total_gb !== undefined) {
       row.du_scraped_at = new Date().toISOString();
     }
 
