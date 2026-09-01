@@ -434,6 +434,56 @@ function dataCheckFailedToday(d) {
   return d.du_scrape_outcome === 'nodata' && knownSim;
 }
 
+// Asset Inventory indexed by the Player Box ID each console matches on. matchedScreensFor scans
+// the whole ~2,300-row table per call, which is fine for the couple of dozen rows actually being
+// rendered but not for building a search index across the entire fleet on every keystroke - this
+// turns that into one map lookup per device. Broadsign and Grassfish get SEPARATE keyspaces, not
+// one shared map, because they match differently (Broadsign exactly, Grassfish case-insensitively)
+// and sharing would let a Grassfish box id collide with a Broadsign player id that differs only in
+// case.
+function assetRowsByBoxId(assetInventory) {
+  const broadsign = new Map();
+  const grassfish = new Map();
+  for (const r of assetInventory) {
+    const id = String(r.player_box_id || '').trim();
+    if (!id) continue;
+    const [map, key] = r.player_type === 'Broadsign' ? [broadsign, id]
+      : r.player_type === 'Grassfish' ? [grassfish, id.toLowerCase()]
+      : [null, null];
+    if (!map) continue;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(r);
+  }
+  return { broadsign, grassfish };
+}
+
+// Everything the Matched Screen and Location cells can DISPLAY for a device, flattened to text for
+// the search box. Both cells routinely show something that exists nowhere on the device row itself:
+// Matched Screen is resolved entirely from Asset Inventory, and Location falls back to the matched
+// screen's venue on the overwhelming majority of devices, because the manual `location` field is a
+// curated one almost nobody fills in (see locationCellHtml). Searching only the stored columns
+// therefore could not find the text that was plainly on screen - typing a venue you could read in
+// the Location column returned "No devices match".
+//
+// Every matched screen's own name is included rather than matchedScreenLabel's collapsed
+// "17 screens @ venue" summary, so searching an individual panel still finds the PC driving it -
+// which is the whole point on a box like DR2-FOODCOURT's, where 17 names are hidden behind one
+// count. Venues are de-duplicated because those 17 rows nearly always repeat a single venue.
+function matchedScreenSearchText(d, index) {
+  const parts = [];
+  const venues = new Set();
+  const bs = index.broadsign.get(String(d.broadsign_player_id || '').trim());
+  const gf = index.grassfish.get(String(d.grassfish_box_id || '').trim().toLowerCase());
+  for (const rows of [bs, gf]) {
+    if (!rows) continue;
+    for (const r of rows) {
+      if (r.name) parts.push(r.name);
+      if (r.venue) venues.add(r.venue);
+    }
+  }
+  return [...parts, ...venues].join(' ');
+}
+
 function deviceMatchesTab(d, tabKey, categoryByDeviceId) {
   if (tabKey === 'all') return true;
   if (tabKey === 'withIssues') return visibleProblems(d).length > 0;
@@ -471,8 +521,8 @@ function locationCellHtml(d, matches) {
 // HTML rendering of a match, with the screen name (or count) bolded so it's the thing the eye
 // catches first in a scan-heavy column - the source/venue stay plain. Kept separate from
 // matchedScreenLabel rather than embedding markup there, since that plain-text version also feeds
-// the row search index (see the `screen:` hay field below) - esc()'d before display, which would
-// turn real <b> tags into literal "&lt;b&gt;" text instead of rendering them.
+// the Screen column's sort key - esc()'d before display, which would turn real <b> tags into
+// literal "&lt;b&gt;" text instead of rendering them.
 function matchedScreenHtmlLabel({ source, rows }) {
   if (rows.length === 1) {
     const r = rows[0];
@@ -788,6 +838,10 @@ export function renderWorkspaceDirectory() {
   // for every tab's count plus the active filter below, rather than recomputing per tab.
   const venueCategoryFallbackMap = venueCategoryFallback(assetInventory);
   const categoryByDeviceId = new Map(devices.map((d) => [d.id, deviceCategoryTab(d, assetInventory, venueCategoryFallbackMap)]));
+  // Built once per render for the whole fleet, same as the categories above, so the search filter
+  // below stays a string test per device instead of re-resolving matched screens on every keystroke.
+  const assetIndex = assetRowsByBoxId(assetInventory);
+  const screenTextByDeviceId = new Map(devices.map((d) => [d.id, matchedScreenSearchText(d, assetIndex)]));
   const activeTab = WD_TAB_DEFS.some((t) => t.key === STATE.workspaceDirectoryTab) ? STATE.workspaceDirectoryTab : 'all';
   const tabsWithCounts = WD_TAB_DEFS.map((t) => ({ ...t, count: devices.filter((d) => deviceMatchesTab(d, t.key, categoryByDeviceId)).length }));
   const tabsHtml = renderTabs(tabsWithCounts, activeTab, 'App.setWorkspaceDirectoryTab');
@@ -818,7 +872,7 @@ export function renderWorkspaceDirectory() {
   const tabFiltered = devices.filter((d) => deviceMatchesTab(d, activeTab, categoryByDeviceId));
   const search = (STATE.workspaceDirectorySearch || '').trim().toLowerCase();
   const filtered = search
-    ? tabFiltered.filter((d) => `${d.hostname} ${d.location || ''} ${d.ip_address || ''} ${d.anydesk_id || ''} ${d.teamviewer_id || ''} ${d.logged_in_user || ''} ${d.os_name || ''}`.toLowerCase().includes(search))
+    ? tabFiltered.filter((d) => `${d.hostname} ${d.location || ''} ${d.ip_address || ''} ${d.anydesk_id || ''} ${d.teamviewer_id || ''} ${d.logged_in_user || ''} ${d.os_name || ''} ${screenTextByDeviceId.get(d.id) || ''}`.toLowerCase().includes(search))
     : tabFiltered;
   const sorted = applySort(filtered, 'workspaceDevices', {
     hostname: (d) => d.hostname || '',
@@ -891,7 +945,7 @@ export function renderWorkspaceDirectory() {
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
         <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES}+ minutes (a light check-in runs every 20 minutes; remote-access/OS/antivirus info updates roughly every 6 hours when changed; software/hardware/disk info and the DU data-usage scrape update once a day, in each PC's own slot between 3 AM and 8 AM).${editOk ? ' Tick devices below to deploy a command (install/uninstall software, etc.) to several at once.' : ''}</div></div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <input placeholder="Search hostname, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+          <input placeholder="Search hostname, screen, venue, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
           <button class="btn-sm" title="Reload this page's data without refreshing the whole app" onclick="App.refreshWorkspaceDirectory()">&#8635; Refresh</button>
         </div>
       </div>
