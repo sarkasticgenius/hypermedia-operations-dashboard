@@ -1368,6 +1368,33 @@ $ServiceXmlPath = Join-Path $StateDir "$ServiceName.xml"
 $WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe"
 $WinSwSha256 = "B5066B7BBDFBA1293E5D15CDA3CAAEA88FBEAB35BD5B38C41C913D492AADFC4F"
 
+# Hides THIS process's OWN console window immediately, before anything else runs - a backstop for
+# when -WindowStyle Hidden at the launch site isn't honored, which is exactly what happens to the
+# -Verb RunAs re-elevation just below: the elevation broker (consent.exe/AppInfo), not this script's
+# own launcher, is what actually creates that new process, and it does not reliably pass the
+# STARTUPINFO window-style hint through - especially on Windows 11 machines where Windows Terminal
+# (not classic conhost) hosts the console. Confirmed live: PC-E89C258BF220 and HM-OFFICE-TEST both
+# reported "Unexpected window/popup detected: Administrator: ...powershell.exe (WindowsTerminal)" -
+# a visible elevated console left sitting on screen/taskbar after exactly that re-elevation, despite
+# -WindowStyle Hidden being passed on both Start-Process and inside -ArgumentList. Hiding from INSIDE
+# the process instead needs nothing from whoever/whatever created the window, so it works regardless
+# of the broker, the host (conhost vs Windows Terminal), or a future spawn point that forgets the
+# flag - every invocation of this script (elevated child included, since it re-executes this same
+# file from the top) hits this line and hides itself. Close-StrayAgentWindows further down is a
+# periodic backstop for anything that still somehow gets past this; this is what stops it happening
+# in the first place. Silently no-ops (try/catch) rather than risk a P/Invoke failure blocking the
+# real check-in logic that follows.
+Add-Type -ErrorAction SilentlyContinue -Namespace WorkspaceDirectoryAgent -Name Win32 -MemberDefinition @'
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+'@
+try {
+    $ownConsoleWindow = [WorkspaceDirectoryAgent.Win32]::GetConsoleWindow()
+    if ($ownConsoleWindow -ne [IntPtr]::Zero) { [WorkspaceDirectoryAgent.Win32]::ShowWindow($ownConsoleWindow, 0) | Out-Null } # 0 = SW_HIDE
+} catch {}
+
 # Self-elevate if not already running as Administrator (needed to register/unregister the
 # SYSTEM-level task either way, install OR uninstall). Skipped for -Once/-PollOnce - both only ever
 # run FROM an already-SYSTEM-elevated scheduled task, so re-elevating would pop a UAC prompt on a
