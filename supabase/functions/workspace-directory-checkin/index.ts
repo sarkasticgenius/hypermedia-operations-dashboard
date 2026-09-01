@@ -158,22 +158,43 @@ Deno.serve(async (req) => {
       .select('id, network_bytes_total, data_used_mb_period, data_usage_computed_at, du_data_used_gb, du_data_total_gb, du_data_left_gb, broadsign_player_id, grassfish_box_id')
       .eq('hostname', hostname).maybeSingle();
 
-    // Base fields: present on literally every check-in, light or not (see the header comment for
-    // the three-tier cadence) - hostname/agent_version/last_seen/force_checkin_requested are
-    // trivially small, and `problems` (the Issues tile) is deliberately sent every single cycle so
-    // it stays fresh at 20-minute resolution even though the raw data it's computed FROM
-    // (antivirus/volumes/remote-IDs) mostly isn't transmitted that often - see below.
+    // Base fields. Only hostname and last_seen are truly unconditional: every request that gets
+    // this far is genuine contact from that PC, whatever it had to say.
     const row: Record<string, unknown> = {
       hostname,
-      problems,
-      agent_version: body.agentVersion ? String(body.agentVersion).slice(0, 50) : null,
       last_seen: new Date().toISOString(),
-      // Whatever asked for this check-in to happen right now (a "Force Inventory Pull" click
-      // picked up by Jstar's polling, or just its normal schedule) is satisfied by the fact this
-      // check-in is happening at all - cleared unconditionally rather than only when it was true,
-      // since a stray still-true flag would otherwise force every future check-in.
-      force_checkin_requested: false,
     };
+
+    // NOT every POST here is a check-in. The user-session DU scrape reports its own result directly
+    // (see the $DuScrapeOnce branch in the agent) with a deliberately tiny payload - hostname,
+    // light, duScrapeAttemptedAt, duScrapeOutcome and nothing else. When agent_version/problems/
+    // force_checkin_requested were written unconditionally, that partial post silently destroyed
+    // all three: agent_version fell to null, the Issues list was replaced with an empty array
+    // (`Array.isArray(undefined)` is false, so `problems` above is []), and any pending Force
+    // Inventory Pull was marked satisfied by a post that never ran a check-in at all.
+    //
+    // Confirmed live on 1 Sep 2026: seven devices sat with agent_version null AND zero problems -
+    // exactly the set that had had a DU scrape reported from the user session, including
+    // CARREFOURLCD and DM02-LED-NESTO- minutes after a Check Data Usage was queued against them.
+    // ADCOOP-MINA-AR was the same, and its own agent log shows no matching entry, because the
+    // user-session task cannot write to the SYSTEM-owned log - so this post is invisible on the PC
+    // and looked like a healthy check-in from the server side.
+    //
+    // Presence, not the `light` flag, decides: a Light check-in is still a real check-in and does
+    // send these. Anything absent is left exactly as it was, which is the same sticky rule the
+    // moderate/heavy fields below already follow.
+    if (body.problems !== undefined) row.problems = problems;
+    if (body.agentVersion !== undefined) {
+      row.agent_version = body.agentVersion ? String(body.agentVersion).slice(0, 50) : null;
+    }
+    // Whatever asked for this check-in to happen right now (a "Force Inventory Pull" click picked
+    // up by Jstar's polling, or just its normal schedule) is satisfied by the fact a real check-in
+    // is happening - cleared regardless of whether it was set, since a stray still-true flag would
+    // otherwise force every future check-in. Gated on `problems` because that is the field the
+    // agent sends on every genuine cycle and the DU-only post never carries: clearing the flag for
+    // a post that did not collect anything would drop the request on the floor, and the admin would
+    // be left watching a Force that silently never happened.
+    if (body.problems !== undefined) row.force_checkin_requested = false;
 
     // Moderate (~6-hourly, if changed) and heavy (once-daily at 8am, if changed) fields - each one
     // is only written into the upsert row when the agent actually INCLUDED it this cycle
