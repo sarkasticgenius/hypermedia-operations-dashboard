@@ -3622,8 +3622,33 @@ try {
         Write-Host "Service '$ServiceName' is running." -ForegroundColor Green
         if ((Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue).State -ne 'Disabled') {
             Disable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null
-            Disable-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue | Out-Null
-            Write-AgentLog "Migrated to the Windows Service - the old 6-hourly and 20-minute Scheduled Tasks are now disabled (not removed; still available as a manual recovery path)."
+            Write-AgentLog "Migrated to the Windows Service - the 6-hourly Scheduled Task is now disabled (not removed; still available as a manual recovery path)."
+        }
+        # The 20-minute poll task stays ENABLED on purpose, and is re-enabled on PCs that a previous
+        # build already disabled it on. It is the service's watchdog, and the watchdog logic is the
+        # "elseif the service is not Running -> Start-Service" branch a few lines above: every
+        # -PollOnce run passes through this same block, so a stopped service is restarted within
+        # 20 minutes without anyone touching the PC.
+        #
+        # Disabling it alongside the 6-hourly task removed the only thing that could ever reach that
+        # recovery branch, which turned every clean stop into a PERMANENT outage. WinSW's onfailure
+        # restart policy covers a crash, but a service that exits 0 has "completed successfully" as
+        # far as WinSW is concerned and is left stopped - and with both tasks disabled nothing else
+        # on the PC runs at all.
+        #
+        # Confirmed live on ADCOOP-MINA-AR, 1 Sep 2026: WorkspaceDirectoryAgentSvc STOPPED with
+        # WIN32_EXIT_CODE 0 and SERVICE_EXIT_CODE 0, its own log ending mid-stride on "Checked in
+        # successfully" with no error, both Scheduled Tasks Disabled - silent for 3h48m and only
+        # recovered by a human running sc start by hand. The one contact in that window came from the
+        # user-session DU scrape, which runs under a different mechanism entirely and so made the
+        # device look alive for another 30 minutes on top.
+        #
+        # A healthy PC pays nothing for this: the poll task's own run is a light check-in that would
+        # be happening anyway, and hitting an already-Running service here is a single Get-Service.
+        $pollTask = Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue
+        if ($pollTask -and $pollTask.State -eq 'Disabled') {
+            Enable-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue | Out-Null
+            Write-AgentLog "Re-enabled the 20-minute poll task - it is the service's watchdog, and disabling it left a stopped service with no way back."
         }
     } else {
         $detail = (@($installOutput, $startOutput) | Where-Object { $_ }) -join ' | '
