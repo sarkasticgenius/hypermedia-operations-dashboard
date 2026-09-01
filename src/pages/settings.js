@@ -2038,6 +2038,30 @@ function Get-RemoteCollectorScript {
 # a single PowerShell one-liner. Runs invisibly either way: this whole task already executes as
 # SYSTEM in a non-interactive session (no signage-screen popups), so cmd.exe here never gets a
 # window to show even without an explicit -WindowStyle.
+# Ends a one-shot command branch that has already POSTed its own result. Exiting 0 is correct for a
+# -Once/-PollOnce process, which is what these branches were originally written for - but
+# Invoke-PendingCommand is ALSO reached from inside the -Service loop (the loop calls Invoke-Checkin,
+# which calls this), and there a clean exit 0 terminates the SERVICE itself. WinSW restarts on
+# failure only: a service that exits 0 has "completed successfully" as far as it is concerned, and is
+# left stopped.
+#
+# That is not a theoretical path. It is what took ADCOOP-MINA-AR offline for 3h48m on 1 Sep 2026
+# (its service log ends mid-stride on "Checked in successfully", WIN32_EXIT_CODE 0, both Scheduled
+# Tasks disabled by the service migration so nothing could restart it), and it took CARREFOURLCD and
+# DM02-LED-NESTO- down within minutes of a Check Data Usage being queued against them at 20:25 and
+# 20:26 Dubai the same evening. Clicking that button on a service-based PC killed its agent.
+#
+# 111 is the same deliberate non-zero code Invoke-SelfUpdate already uses to hand control back to
+# WinSW for a clean relaunch, so the loop comes back in about ten seconds instead of the PC going
+# silent until someone runs sc start by hand.
+function Exit-OneShotCommand {
+    if ($Service) {
+        Write-AgentLog "One-shot command finished inside the service - exiting 111 so WinSW relaunches the loop instead of leaving the service stopped."
+        exit 111
+    }
+    exit 0
+}
+
 function Invoke-PendingCommand($command) {
     # A dashboard-queued remote uninstall (the "Uninstall Agent" button on a removed-but-still-
     # reporting device) - distinct from the interactive -Uninstall flow's password prompt above,
@@ -2101,7 +2125,10 @@ function Invoke-PendingCommand($command) {
             Start-Sleep -Seconds 5
             try { Restart-Computer -Force -ErrorAction Stop } catch { Write-AgentLog "Rename applied but the restart failed - it will apply at the next reboot: $($_.Exception.Message)" }
         }
-        exit 0
+        # Reached when the rename did NOT restart the box (it failed, or renameSucceeded was false),
+        # so the process really does carry on afterwards - and inside the service that must not be a
+        # clean exit. See Exit-OneShotCommand.
+        Exit-OneShotCommand
     }
 
     # A dashboard-queued "Check Data Usage" (the button on a device's Details panel): re-runs the
@@ -2138,7 +2165,7 @@ function Invoke-PendingCommand($command) {
                 Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body ($ackPayload | ConvertTo-Json -Compress) -ContentType "application/json" \`
                     -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 30 | Out-Null
             } catch {}
-            exit 0
+            Exit-OneShotCommand
         }
         # No interactive session to hand it to (nobody logged in). Falling back to scraping here is
         # still worth doing - it costs one browser launch and correctly records 'error' rather than
@@ -2168,7 +2195,7 @@ function Invoke-PendingCommand($command) {
             # retries on the next cycle rather than being silently dropped.
             Write-AgentLog "On-demand data usage check could not be reported: $($_.Exception.Message)"
         }
-        exit 0
+        Exit-OneShotCommand
     }
 
     if ($command -eq '::UNINSTALL') {
@@ -2177,6 +2204,9 @@ function Invoke-PendingCommand($command) {
             $finalPayload = @{ hostname = $env:COMPUTERNAME; light = $true; commandOutput = "Agent uninstalled remotely from the dashboard - scheduled tasks removed, local state cleared." } | ConvertTo-Json -Compress
             Invoke-RestMethod -Method Post -Uri $CheckinUrl -Body $finalPayload -ContentType "application/json" -Headers @{ "x-agent-secret" = $AgentSecret; "apikey" = $AnonKey } -TimeoutSec 15 | Out-Null
         } catch {}
+        # Deliberately a plain exit 0, NOT Exit-OneShotCommand: the agent has just uninstalled
+        # itself, so the service stopping and staying stopped is the intended end state. Relaunching
+        # the loop here would resurrect an agent that was explicitly removed.
         exit 0
     }
     # Runs the actual command in a SEPARATE CHILD process (re-invoking this same script file with
