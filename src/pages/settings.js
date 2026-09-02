@@ -720,7 +720,7 @@ export function resetWorkspaceDirectoryOptimizerScript() {
 // percentage or a "first N devices" rule: which machines are safe to break is a judgement about
 // physical access (an office test bench you can walk over to) and business impact (not a signage
 // screen in a mall), and nothing in the device data expresses that.
-export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST', 'PC-CC28AA47304D', 'PC-1C697A0E88E4'];
+export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST', 'DESKTOP-OMM99EM', 'AE1PC119'];
 
 // Publishes to the TEST PCs only (see AGENT_CANARY_HOSTNAMES). Writes the canary slot, which
 // workspace-directory-agent-shell serves only to those hostnames - every other device keeps
@@ -1557,10 +1557,16 @@ $Script:ExpectedVisibleProcesses = @(
 # an unattended signage PC has no legitimate reason for that app to ever be open on screen anyway.
 
 function Get-UnexpectedWindows {
-    Add-Type -ErrorAction SilentlyContinue -Namespace WorkspaceDirectoryAgent -Name Win32 -MemberDefinition @'
-        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-'@
+    # IsWindowVisible/IsIconic already exist on WorkspaceDirectoryAgent.Win32 - it's defined once,
+    # unconditionally, near the top of the script (see the own-console-hiding Add-Type above), with
+    # all four P/Invoke members this file needs. Redefining it here used to fail EVERY single time,
+    # on every PC, on every invocation: Add-Type's "type already exists" is a terminating exception
+    # that -ErrorAction SilentlyContinue does not actually suppress, so it printed straight to the
+    # console - exactly the stray-window symptom this function exists to clean up - and, worse, the
+    # uncaught throw aborted the function before Close-StrayAgentWindows' own copy of this mistake
+    # ever reached its Stop-Process call, so the window it was supposed to close never actually got
+    # closed. Confirmed live on AE1PC119, 2 Sep 2026: the console sat in the taskbar printing
+    # "Cannot add type... already exists" once per cycle, forever, instead of self-closing.
 
     # Same two process names and same question the Jstar Agent tray icon already asks
     # (Test-SignagePlayerRunning, -Tray branch above) to decide whether it must stay hidden - but
@@ -1612,10 +1618,10 @@ function Get-UnexpectedWindows {
 # terminal session on an office PC (this agent runs on more than just locked-down totems) is
 # deliberately left alone, same as Get-UnexpectedWindows above never flags it either.
 function Close-StrayAgentWindows {
-    Add-Type -ErrorAction SilentlyContinue -Namespace WorkspaceDirectoryAgent -Name Win32 -MemberDefinition @'
-        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-'@
+    # See the matching comment in Get-UnexpectedWindows above - this redefined the same type a
+    # second time and reliably threw "already exists" (a terminating error -ErrorAction
+    # SilentlyContinue does not suppress) BEFORE the try block below, aborting this function every
+    # time it ran and leaving the stray window it exists to close sitting open indefinitely.
     try {
         $ownProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Filter (
             "Name='powershell.exe' or Name='powershell_ise.exe' or Name='pwsh.exe' or Name='cmd.exe'"
@@ -3075,7 +3081,16 @@ function Get-DuDataUsageViaDom {
         # the schedule runs it". Every other external call in this file is already bounded; this was
         # the last one that wasn't. Output goes to a file because --dump-dom writes the page to
         # stdout, which Start-Process can only capture by redirecting it.
-        $dumpArgs = @("--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=\`"$tempProfile\`"", "--no-first-run", "--disable-extensions") + $DuBrowserFrugalArgs + @("--virtual-time-budget=10000", "--dump-dom", "http://mydata.du.ae/")
+        #
+        # --virtual-time-budget was 10000 (10s) - raised to 20000 after comparing against a working
+        # reference script (the separate Python/GLPI agent - see Get-DuDataUsageViaNetwork's own
+        # comment on that lineage) that escalates from 15s to 20s on a retry rather than staying at
+        # 10s. This tier only runs after Selenium and Network/CDP have both already failed, so a
+        # 'partial'/'nofigures' outcome here is exactly the "page's async data not having rendered
+        # in time" case Test-DuScrapeDue's own comment describes - a longer budget directly targets
+        # that, at the cost of the browser process living up to 10s longer per attempt, still well
+        # inside the 60s WaitForExit ceiling below.
+        $dumpArgs = @("--headless=new", "--disable-gpu", "--incognito", "--user-data-dir=\`"$tempProfile\`"", "--no-first-run", "--disable-extensions") + $DuBrowserFrugalArgs + @("--virtual-time-budget=20000", "--dump-dom", "http://mydata.du.ae/")
         $bp = Start-Process -FilePath $browser -ArgumentList $dumpArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $dumpFile -RedirectStandardError $dumpErrFile
         if (-not $bp.WaitForExit(60000)) {
             Stop-Process -Id $bp.Id -Force -ErrorAction SilentlyContinue
@@ -3147,7 +3162,7 @@ function Save-AgentSnapshot($current, $stateFile) {
     ($current | ConvertTo-Json -Compress -Depth 6) | Set-Content -Path $stateFile -Encoding utf8 -NoNewline
 }
 
-function Invoke-Checkin([switch]$Light) {
+function Invoke-Checkin([switch]$Light, [switch]$Forced) {
     $remoteScript = Get-RemoteCollectorScript
     $data = $null
     if ($remoteScript) {
@@ -3334,7 +3349,21 @@ function Invoke-Checkin([switch]$Light) {
     # Both halves of the scrape - the SYSTEM check-in here and the user-session run launched by the
     # tray - ask these same two functions, so "when is a scrape due" has exactly one definition.
     $duState = Get-DuScrapeState
-    $duDue = Test-DuScrapeDue $duState
+    # A Force Inventory Pull normally only upgrades a check-in from light to moderate (IP/remote-IDs/
+    # OS/antivirus) - the heavy tier below (volumes/components/software/DU scrape) still waited for
+    # this PC's own 3-8AM window regardless of Force, so "Force" on a PC outside that window silently
+    # did nothing for exactly the fields an admin forcing a pull usually wants to see right now.
+    # Confirmed live 2 Sep 2026 on DESKTOP-OMM99EM/PC-E89C258BBD2F: both cleared force_checkin_
+    # requested and updated last_seen on a forced pull at 1pm Dubai time, and neither sent volumes or
+    # attempted a DU scrape, because $duDue was false at that hour regardless of the force.
+    #
+    # Bypassing the window entirely on every Force would recreate the exact thundering-herd risk the
+    # window exists to prevent - a bulk Force across many devices would blast du.ae with simultaneous
+    # logins. Scoped to $IsTestPc instead: only the small, deliberately-picked canary list (see
+    # AGENT_CANARY_HOSTNAMES) can force the heavy tier/DU scrape on demand, for exactly this kind of
+    # "does the fix actually work" check - the rest of the fleet keeps the safe once-a-day window
+    # no matter how Force is used against it, including after this build is ever promoted fleet-wide.
+    $duDue = (Test-DuScrapeDue $duState) -or ($Forced -and $IsTestPc)
     if ($duDue) {
         # Headless Edge renders nothing in Session 0 - confirmed live: about:blank itself returned
         # 0 bytes, so this is not about du, the network or the parser. Scraping is handed to the
@@ -3485,7 +3514,17 @@ if ($DuScrapeOnce) {
     $Script:DuIsUserSession = $true
     try {
         $duState = Get-DuScrapeState
-        if (Test-DuScrapeDue $duState) {
+        # $IsTestPc alongside the natural gate, for the same reason Invoke-Checkin's own $duDue
+        # carries it (see that comment) - SYSTEM only ever starts this task because ITS OWN $duDue
+        # was already true, whether that came from the natural window or the test-PC Force bypass.
+        # Without this, that bypass was a no-op for the delegated half of every scrape: SYSTEM would
+        # log "DU scrape delegated..." and this separate process, re-deriving Test-DuScrapeDue with
+        # no knowledge of why it was started, would find the window still closed and exit having done
+        # nothing - the exact silent gap confirmed live on ADCOOP-MINA-AR, 2 Sep 2026: "delegated" in
+        # the log, then nothing, Last Result 0 (clean exit, no error), du_scrape_attempted_at never
+        # advancing. This process has no $Forced switch of its own to check - it never runs at all
+        # except when something already decided a scrape was warranted.
+        if ((Test-DuScrapeDue $duState) -or $IsTestPc) {
             Write-AgentLog "User-session DU scrape starting (tray-triggered)."
             # Same strike-count hand-off as the SYSTEM path: 'partial' last time means this run is
             # the retry, and a second phone-only result records 'nofigures' instead of looping.
@@ -3927,7 +3966,7 @@ function Invoke-PollCycle {
         }
     } catch {}
     if ($forceRequested) {
-        Invoke-Checkin
+        Invoke-Checkin -Forced
     } else {
         # The common case - keeps Online/Offline, Issues, and Remote Access fresh at 20-minute
         # resolution instead of 6 hours, without resending the installed-software list (the one field
