@@ -1655,6 +1655,39 @@ if ($Tray) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
+    # Newer Windows builds can delegate a freshly-spawned console to Windows Terminal instead of the
+    # classic conhost.exe, per-user, via HKCU:\Console\%%Startup. That is a completely different
+    # window (a separate WindowsTerminal.exe process, not a plain conhost child of the powershell.exe
+    # that owns it) with its own show/hide behaviour - -WindowStyle Hidden and the GetConsoleWindow/
+    # ShowWindow calls elsewhere in this script both assume the classic console model and have no
+    # handle to reach a Windows Terminal window at all, so on a PC where this delegation is active,
+    # every hidden spawn (this Tray included) can flash or stay visible with nothing in this script
+    # able to catch or close it - not even Close-StrayAgentWindows, since that still only ever sees
+    # what a classic console model exposes. Forcing the classic host, exactly what Windows Settings ->
+    # For Developers -> Terminal's "Windows Console Host" option does under the hood, sidesteps the
+    # gap entirely rather than trying to also hide a second, structurally different window type.
+    #
+    # Confirmed live on AE1PC119, 2 Sep 2026: a Tray relaunch spawned a real WindowsTerminal.exe at
+    # the exact same moment, sitting visibly in the taskbar and reopening every time it was closed
+    # (the watchdog simply relaunching the Tray, which hit the same delegation again); setting these
+    # two values first, then relaunching, produced a plain conhost.exe child instead and the window
+    # stayed gone. Runs here (not SYSTEM) because the key is per-user (HKCU) and the Tray already runs
+    # AS that logged-in user - SYSTEM's own HKCU would be the wrong hive entirely. Only writes when a
+    # value is actually missing/different, so a healthy PC pays for one registry read most cycles.
+    try {
+        $consoleStartupKey = "HKCU:\Console\%%Startup"
+        $classicConsoleGuid = "{B23D10C0-E52E-411E-9D5B-C09FDF709C7D}"
+        if (-not (Test-Path $consoleStartupKey)) { New-Item -Path $consoleStartupKey -Force | Out-Null }
+        $delegation = Get-ItemProperty -Path $consoleStartupKey -ErrorAction SilentlyContinue
+        if ($delegation.DelegationConsole -ne $classicConsoleGuid -or $delegation.DelegationTerminal -ne $classicConsoleGuid) {
+            New-ItemProperty -Path $consoleStartupKey -Name 'DelegationConsole' -Value $classicConsoleGuid -PropertyType String -Force | Out-Null
+            New-ItemProperty -Path $consoleStartupKey -Name 'DelegationTerminal' -Value $classicConsoleGuid -PropertyType String -Force | Out-Null
+            Write-AgentLog "Forced classic Console Host delegation (was defaulting to/set to something else) - takes effect on the next console spawn in this session."
+        }
+    } catch {
+        Write-AgentLog "Could not set Console Host delegation: $($_.Exception.Message)"
+    }
+
     $Script:SignagePlayerProcessNames = @('bsp', 'gfplayer')
 
     function Test-SignagePlayerRunning {
@@ -1744,6 +1777,17 @@ if ($Tray) {
     $visibilityTimer = New-Object System.Windows.Forms.Timer
     $visibilityTimer.Interval = 30000
     $visibilityTimer.add_Tick({
+        # Belt-and-suspenders alongside the two hides taken at Tray startup (top of script, and again
+        # right before Application::Run() below): Close-StrayAgentWindows deliberately excludes its
+        # OWN process id (see that function's header) so it can never be the thing that catches the
+        # Tray's own console if it is ever visible - nothing else in the agent can see across the
+        # SYSTEM/session boundary to do it either. Re-hiding on every tick means even a failure mode
+        # nothing above anticipated self-corrects within 30 seconds instead of sitting there until a
+        # person notices and closes it by hand.
+        try {
+            $ownConsoleWindow = [WorkspaceDirectoryAgent.Win32]::GetConsoleWindow()
+            if ($ownConsoleWindow -ne [IntPtr]::Zero) { [WorkspaceDirectoryAgent.Win32]::ShowWindow($ownConsoleWindow, 0) | Out-Null } # 0 = SW_HIDE
+        } catch {}
         $notifyIcon.Visible = -not (Test-SignagePlayerRunning)
         Close-StrayAgentWindows
         try {
@@ -1769,6 +1813,22 @@ if ($Tray) {
     # minutes forever: powershell.exe allocates a console window before -WindowStyle Hidden can
     # take effect, so each spawn flashed a visible window on machines that are supposed to show
     # nothing at all. Reported from a real test PC.
+
+    # Second, defensive self-hide, specifically for the Tray. The one hide call every invocation of
+    # this script gets (near the very top, before $Tray is even known) runs inside a silent
+    # try/catch, so a transient failure there - Add-Type contending with something else on a slow
+    # logon, a delayed console handle, anything that never surfaces because the catch swallows it -
+    # leaves NOTHING to ever notice or correct it, for a process that unlike every other spawn point
+    # never exits on its own. A short-lived spawn (-PollOnce, -DuScrapeOnce) self-resolves within
+    # minutes even if its console briefly shows; the Tray runs for as long as the user is logged in,
+    # so the same failure here means the window sits there indefinitely - and gets a fresh PID (and a
+    # fresh chance to repeat) every time it is closed and the self-healing Start-ScheduledTask call
+    # above brings it back. Calling ShowWindow(0) on a window that is already hidden is a harmless
+    # no-op, so this costs nothing on every PC where the first hide already worked.
+    try {
+        $trayConsoleWindow = [WorkspaceDirectoryAgent.Win32]::GetConsoleWindow()
+        if ($trayConsoleWindow -ne [IntPtr]::Zero) { [WorkspaceDirectoryAgent.Win32]::ShowWindow($trayConsoleWindow, 0) | Out-Null } # 0 = SW_HIDE
+    } catch {}
 
     [System.Windows.Forms.Application]::Run()
     $notifyIcon.Visible = $false
