@@ -141,7 +141,7 @@ export function renderAssetsInventory() {
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
 
   const rowsHtml = pageItems.map((r) => `
-    <tr>
+    <tr style="cursor:pointer;" onclick="App.openAssetInvDetailsFromRow(event, '${r.id}')">
       ${bulkOk ? `<td style="width:28px;"><input type="checkbox" ${selectedIds.has(r.id) ? 'checked' : ''} onchange="App.toggleAssetInvSelection('${r.id}', this.checked)"></td>` : ''}
       <td><b>${esc(r.name)}</b>${r.source_asset_id ? `<div class="small muted">ID: ${esc(r.source_asset_id)}</div>` : ''}</td>
       <td class="tleft">${r.venue ? `${brandLogoTag(r.venue, 18)} ` : ''}${esc(r.venue || '-')}<div class="small muted">${esc(r.location || '')}</div></td>
@@ -219,7 +219,7 @@ export function renderAssetsInventory() {
       </div>
     </div>` : ''}
     <div class="card" style="padding:0;">
-      <table>
+      <table class="zebra">
         <thead><tr>${bulkOk ? `<th><input type="checkbox" ${allPageSelected ? 'checked' : ''} onchange="App.toggleAssetInvSelectAllOnPage(this.checked)" title="Select all on this page"></th>` : ''}${sortTh('assetsInventory', 'name', 'Name')}${sortTh('assetsInventory', 'venue', 'Venue / Location', null, 'left')}${sortTh('assetsInventory', 'category', 'Category')}${sortTh('assetsInventory', 'format', 'Format')}${sortTh('assetsInventory', 'player', 'Player', null, 'left')}${sortTh('assetsInventory', 'pdooh', 'pDOOH', null, 'center')}${sortTh('assetsInventory', 'contractor', 'Contractor')}<th>Tickets</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
@@ -372,6 +372,17 @@ export async function exportAssetInvExcel(filteredOnly) {
     { label: 'Networks', value: (r) => (r.networkNames || []).join(', ') },
     { label: 'Contractor', value: (r) => contractorLabel(data.contractors, r.contractor_id) },
   ], rows);
+}
+
+// Row-level click-through to the same Edit/Details modal - anything the user aimed at a real
+// control (the select checkbox, QR Code/Edit/Delete buttons, the ticket-count link) must keep doing
+// only its own thing, so those are filtered out before opening. Text selection is also respected:
+// dragging to highlight a name or ID shouldn't be punished with a modal on mouse-up.
+export function openAssetInvDetailsFromRow(event, id) {
+  if (event.target.closest('button, a, input, select, textarea, label')) return;
+  const selection = window.getSelection();
+  if (selection && String(selection).length > 0) return;
+  editAssetInv(id);
 }
 
 export function editAssetInv(id) {
