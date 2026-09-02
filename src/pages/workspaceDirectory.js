@@ -495,8 +495,12 @@ function deviceMatchesTab(d, tabKey, categoryByDeviceId) {
   return categoryByDeviceId.get(d.id) === tabKey;
 }
 
-// One console's worth of matches as text: the screen name when a player drives exactly one, or a
-// count plus venue when it drives several - listing seventeen names would swamp the cell.
+// One console's worth of matches as text: every screen's own name up to MAX_NAMED_SCREENS (a
+// two-sided totem like YAS Mall's 8A/8B, or any small handful sharing one player), or a count plus
+// venue beyond that - listing seventeen names (DR2-FOODCOURT's single Broadsign id maps to that
+// many rows) would swamp the cell, but collapsing a 2-screen match to a bare count hid exactly the
+// names an admin most wants to see, on exactly the cases small enough to just show.
+const MAX_NAMED_SCREENS = 3;
 function matchedScreenLabel({ source, rows }) {
   if (rows.length === 1) {
     const r = rows[0];
@@ -504,6 +508,10 @@ function matchedScreenLabel({ source, rows }) {
   }
   const venues = [...new Set(rows.map((r) => r.venue).filter(Boolean))];
   const where = venues.length === 1 ? venues[0] : `${venues.length} venues`;
+  if (rows.length <= MAX_NAMED_SCREENS) {
+    const names = [...rows].sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((r) => r.name).filter(Boolean).join(', ');
+    return `${source}: ${names} @ ${where}`;
+  }
   return `${source}: ${rows.length} screens @ ${where}`;
 }
 
@@ -534,6 +542,10 @@ function matchedScreenHtmlLabel({ source, rows }) {
   }
   const venues = [...new Set(rows.map((r) => r.venue).filter(Boolean))];
   const where = venues.length === 1 ? venues[0] : `${venues.length} venues`;
+  if (rows.length <= MAX_NAMED_SCREENS) {
+    const names = [...rows].sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((r) => esc(r.name)).filter(Boolean).join(', ');
+    return `${esc(source)}: <b>${names}</b> @ ${esc(where)}`;
+  }
   return `${esc(source)}: <b>${rows.length} screens</b> @ ${esc(where)}`;
 }
 
@@ -965,7 +977,7 @@ export function renderWorkspaceDirectory() {
   const tabFiltered = devices.filter((d) => deviceMatchesTab(d, activeTab, categoryByDeviceId));
   const search = (STATE.workspaceDirectorySearch || '').trim().toLowerCase();
   const filtered = search
-    ? tabFiltered.filter((d) => `${d.hostname} ${d.location || ''} ${d.ip_address || ''} ${d.anydesk_id || ''} ${d.teamviewer_id || ''} ${d.logged_in_user || ''} ${d.os_name || ''} ${screenTextByDeviceId.get(d.id) || ''}`.toLowerCase().includes(search))
+    ? tabFiltered.filter((d) => `${d.hostname} ${d.location || ''} ${d.ip_address || ''} ${d.anydesk_id || ''} ${d.teamviewer_id || ''} ${d.logged_in_user || ''} ${d.os_name || ''} ${d.broadsign_player_id || ''} ${d.grassfish_box_id || ''} ${screenTextByDeviceId.get(d.id) || ''}`.toLowerCase().includes(search))
     : tabFiltered;
   const sorted = applySort(filtered, 'workspaceDevices', {
     hostname: (d) => d.hostname || '',
@@ -1043,7 +1055,7 @@ export function renderWorkspaceDirectory() {
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
         <div><h3>All Devices</h3><div class="desc">${filtered.length} of ${devices.length} device(s) shown. Offline = no check-in for ${STALE_AFTER_MINUTES}+ minutes (a light check-in runs every 20 minutes; remote-access/OS/antivirus info updates roughly every 6 hours when changed; software/hardware/disk info and the DU data-usage scrape update once a day, in each PC's own slot between 3 AM and 8 AM).${editOk ? ' Tick devices below to deploy a command (install/uninstall software, etc.) to several at once.' : ''}</div></div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <input placeholder="Search hostname, screen, venue, location, IP, remote ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+          <input placeholder="Search hostname, screen, venue, location, IP, remote ID, Broadsign/Grassfish ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
           <button class="btn-sm" title="Reload this page's data without refreshing the whole app" onclick="App.refreshWorkspaceDirectory()">&#8635; Refresh</button>
         </div>
       </div>
