@@ -3163,6 +3163,17 @@ function Save-AgentSnapshot($current, $stateFile) {
 }
 
 function Invoke-Checkin([switch]$Light, [switch]$Forced) {
+    # Close-StrayAgentWindows was only ever called from the Tray's own timer loop (see -Tray below),
+    # which only runs in a real, logged-in interactive session. On any PC where nobody is currently
+    # logged in - or the Tray simply isn't running - nothing ever called it at all, regardless of
+    # whether it could successfully close a window once invoked. Fixing the duplicate Add-Type it
+    # used to throw on (see that function's own comment) only fixed what happens WHEN it runs; it
+    # never made it run anywhere a stray window could actually be waiting. SYSTEM checks in on every
+    # PC regardless of who is logged in and already has the rights to close a process in another
+    # session, so this is the one call site guaranteed to reach every machine. Confirmed live on
+    # multiple PCs, 2 Sep 2026: a stray console sat in the taskbar with no interactive user logged in
+    # at all, so the Tray - and therefore this cleanup - had never run since the PC last booted.
+    try { Close-StrayAgentWindows } catch {}
     $remoteScript = Get-RemoteCollectorScript
     $data = $null
     if ($remoteScript) {
@@ -3655,8 +3666,19 @@ $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
 # for the duration of any mains blip, which is exactly the moment monitoring needs to keep working
 # rather than switch itself off.
 $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+# Preserves a deliberate Disable-ScheduledTask from the service-migration step below, which this
+# same refresh would otherwise silently undo. Set-ScheduledTask replaces the whole task definition,
+# and $Settings.Enabled defaults to $true - so on a PC that has already migrated to the Windows
+# Service, THIS unconditional refresh re-enabled the very task the migration step had just disabled,
+# which then saw it "not yet disabled" and disabled it again, forever: every single cycle silently
+# re-enabling and re-disabling the same task, logging "Migrated to the Windows Service" every time
+# regardless of whether the service had ever actually gone down. Confirmed live on AE1PC119 and
+# multiple fleet PCs, 2 Sep 2026 - the message repeating roughly once per poll interval with the
+# service reporting Running throughout, which is what exposed this rather than an actual crash loop.
+$existingMainTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existingMainTask -and $existingMainTask.State -eq 'Disabled') { $Settings.Enabled = $false }
 try {
-    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    if ($existingMainTask) {
         Set-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($RepeatTrigger, $StartupTrigger) -Principal $Principal -Settings $Settings | Out-Null
     } else {
         Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($RepeatTrigger, $StartupTrigger) -Principal $Principal -Settings $Settings -Description "Reports this PC's inventory to the Hypermedia Operations Dashboard." | Out-Null
@@ -3804,7 +3826,17 @@ try {
     $ServiceOk = [bool]($checkedSvc -and $checkedSvc.Status -eq 'Running')
     if ($ServiceOk) {
         Write-Host "Service '$ServiceName' is running." -ForegroundColor Green
-        if ((Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue).State -ne 'Disabled') {
+        # $mainTaskState is $null both when the task genuinely isn't Disabled yet AND when it simply
+        # does not exist any more (fully unregistered on an earlier cycle, rather than left disabled
+        # as a recovery path - or never created at all on some install paths). $null -ne 'Disabled'
+        # is ALWAYS true in PowerShell, so without the explicit existence check below this logged
+        # "Migrated to the Windows Service" - and re-ran a no-op Disable-ScheduledTask - on EVERY
+        # single healthy poll cycle forever, on any PC where that task no longer exists, drowning the
+        # real signal in false alarms. Confirmed live on AE1PC119 and multiple fleet PCs, 2 Sep 2026:
+        # the message repeating roughly once per poll interval with the service reporting Running the
+        # entire time - not a crash-restart loop, just this one line firing every cycle regardless.
+        $mainTaskState = (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue).State
+        if ($mainTaskState -and $mainTaskState -ne 'Disabled') {
             Disable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null
             Write-AgentLog "Migrated to the Windows Service - the 6-hourly Scheduled Task is now disabled (not removed; still available as a manual recovery path)."
         }
