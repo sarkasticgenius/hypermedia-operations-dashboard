@@ -379,6 +379,58 @@ Deno.serve(async (req) => {
       if (historyErr) console.error('du usage history upsert failed', historyErr.message);
     }
 
+    // Several PCs can share one physical du SIM (see the shared-account clusters noted in the
+    // agent's DU-retry comments - Al Furjan, Discovery Garden, Jebel Ali, Expo Station, Jumeirah
+    // Golf Estates and others each run a handful of devices off a single account). The usage is one
+    // number regardless of which PC's browser actually managed to render it, but until now each
+    // device only ever showed ITS OWN last successful scrape - so a sibling stuck on
+    // 'partial'/'nofigures'/a browser fault kept displaying figures days older than what the SIM
+    // actually shows, even though another PC on the exact same number scraped it fine in the
+    // meantime. Confirmed live 2 Sep 2026: CARREFOURLCD and DM02-LED-NESTO- both answer
+    // +971556814967; DM02 scraped cleanly the day before while CARREFOURLCD's own attempts had been
+    // failing for two days straight, and the dashboard had no way to show CARREFOURLCD what its own
+    // SIM was actually doing.
+    //
+    // So a FRESH successful reading (this cycle, not a stale one already on `row`) is mirrored onto
+    // every other device holding the same phone number. Only the figures + du_scraped_at travel -
+    // the sibling's own du_scrape_outcome/du_scrape_note/du_scrape_attempted_at are left untouched,
+    // since those describe THAT PC's own last attempt, not whose figures are on screen. Deliberately
+    // excluded from crossed80/crossedLowFloor above (computed only against the reporting device's
+    // own before/after), so one crossing fires one Slack message, not one per sibling.
+    if (row.du_phone_number && row.du_data_used_gb !== undefined) {
+      const { data: siblings, error: siblingsErr } = await adminClient.from('workspace_devices')
+        .select('id, hostname').eq('du_phone_number', row.du_phone_number).neq('hostname', hostname);
+      if (siblingsErr) {
+        console.error('sibling SIM lookup failed', siblingsErr.message);
+      } else if (siblings?.length) {
+        const siblingIds = siblings.map((s: any) => s.id);
+        const { error: siblingWriteErr } = await adminClient.from('workspace_devices').update({
+          du_data_used_gb: row.du_data_used_gb,
+          du_data_left_gb: row.du_data_left_gb ?? existing?.du_data_left_gb ?? null,
+          du_data_total_gb: row.du_data_total_gb ?? existing?.du_data_total_gb ?? null,
+          du_scraped_at: row.du_scraped_at,
+        }).in('id', siblingIds);
+        if (siblingWriteErr) {
+          console.error('sibling SIM figures propagation failed', siblingWriteErr.message);
+        } else {
+          const usageDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(new Date());
+          for (const sib of siblings) {
+            const { error: sibHistErr } = await adminClient.from('workspace_device_du_usage_daily').upsert({
+              device_id: sib.id,
+              hostname: sib.hostname,
+              usage_date: usageDate,
+              used_gb: row.du_data_used_gb ?? null,
+              total_gb: row.du_data_total_gb ?? existing?.du_data_total_gb ?? null,
+              left_gb: row.du_data_left_gb ?? existing?.du_data_left_gb ?? null,
+              scraped_at: row.du_scraped_at ?? null,
+              updated_at: new Date().toISOString(),
+            }, { onConflict: 'device_id,usage_date' });
+            if (sibHistErr) console.error('sibling SIM usage history upsert failed', sibHistErr.message);
+          }
+        }
+      }
+    }
+
     if (crossed80 || crossedLowFloor) {
       try {
         // Leads with the matched SCREEN and VENUE this PC drives, not the hostname - "TOTEM-8"
