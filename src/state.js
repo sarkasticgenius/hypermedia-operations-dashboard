@@ -54,11 +54,11 @@ export function initRender(el, fn) {
 }
 
 // Callbacks run after every render() call, in addition to the normal HTML-string rebuild above.
-// Only needed by pages that own a real, persistent (non-string) DOM subtree - e.g. Creative
-// Resizer's canvas/video/ffmpeg workspace, which can't be safely torn down and recreated from a
-// string every time some unrelated part of the app calls setState() (a toast elsewhere, a
-// background data refresh). Such a page keeps its live subtree in a detached element and uses this
-// hook to re-attach it into its render()-generated placeholder every time, instead of rebuilding it.
+// Only needed by pages that own a real, persistent (non-string) DOM subtree, which can't be safely
+// torn down and recreated from a string every time some unrelated part of the app calls setState()
+// (a toast elsewhere, a background data refresh). Such a page keeps its live subtree in a detached
+// element and uses this hook to re-attach it into its render()-generated placeholder every time,
+// instead of rebuilding it. Currently unused - no registered page needs it.
 const afterRenderHooks = [];
 export function onAfterRender(fn) {
   afterRenderHooks.push(fn);

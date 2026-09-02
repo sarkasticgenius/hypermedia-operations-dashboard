@@ -22,7 +22,6 @@ import * as adminPage from './pages/admin.js';
 import * as settingsPage from './pages/settings.js';
 import * as networkPanelsPage from './pages/networkPanels.js';
 import * as bulkImportPage from './pages/bulkImport.js';
-import * as creativeResizerPage from './pages/creativeResizer.js';
 import * as workspaceDirectoryPage from './pages/workspaceDirectory.js';
 import * as recycleBinPage from './pages/recycleBin.js';
 import * as clientCampaignMonitorPage from './pages/clientCampaignMonitor.js';
@@ -83,7 +82,6 @@ registerPage('recycleBin', recycleBinPage.renderRecycleBin);
 registerPage('broadsignPanel', networkPanelsPage.renderBroadsignPanel);
 registerPage('grassfishPanel', networkPanelsPage.renderGrassfishPanel);
 registerPage('iotPanel', networkPanelsPage.renderIotPanel);
-registerPage('creativeResizer', creativeResizerPage.renderCreativeResizer);
 registerPage('workspaceDirectory', workspaceDirectoryPage.renderWorkspaceDirectory);
 registerPage('screenReports', screenReportsPage.renderScreenReports);
 
