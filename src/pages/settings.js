@@ -3387,7 +3387,16 @@ function Invoke-Checkin([switch]$Light, [switch]$Forced) {
     # ever fired despite the detection genuinely working.
     if ($__unexpected.Count -gt 0) {
         $popupSummary = ($__unexpected | ForEach-Object { "$($_.title) ($($_.process))" }) -join '; '
-        $existingProblems = @($data.problems) | Where-Object { $_ }
+        # @() wraps the WHOLE filtered pipeline, not just $data.problems going in - piping to
+        # Where-Object and assigning its output directly collapses to a bare STRING (not a
+        # 1-element array) whenever exactly one problem passes the filter, which made the "+"
+        # below silently do STRING concatenation instead of array-append: confirmed live on
+        # AE1PC119, 3 Sep 2026, with exactly one pre-existing problem ("Windows Defender is
+        # reporting disabled") - stored as one squished string, "...disabledUnexpected window...",
+        # with no space between the two messages. Never showed with 0 problems (nothing to
+        # concatenate onto) or 2+ (multiple pipeline results already assign as an array), which is
+        # exactly why this sat unnoticed until a PC had precisely one.
+        $existingProblems = @($data.problems | Where-Object { $_ })
         $data.problems = @($existingProblems + "Unexpected window/popup detected: $popupSummary")
     }
     # The state file and log line stay gated on an actual CHANGE, same as before - that part was
