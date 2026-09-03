@@ -105,6 +105,19 @@ export async function login(identifier, password) {
   });
   if (sessionError) throw sessionError;
   await logAudit('Login', '');
+  await recordLoginEvent('login');
+}
+
+// IP/location/browser for the Admin > Login History tab - see record-login-event, which resolves
+// all of that server-side from the request itself rather than trusting the client. Best-effort and
+// never lets a login/logout fail because of it: this is a secondary audit trail, not something
+// worth blocking or erroring a real sign-in/out over if the function call itself has a bad moment.
+async function recordLoginEvent(event) {
+  try {
+    await supabase.functions.invoke('record-login-event', { body: { event } });
+  } catch (e) {
+    console.warn('login history record failed', e);
+  }
 }
 
 // Self-service "forgot password" - always resolves to the same generic summary string regardless
@@ -121,6 +134,9 @@ export async function requestPasswordReset(identifier) {
 
 export async function logout() {
   await logAudit('Logout', '');
+  // Must happen BEFORE signOut() - record-login-event authenticates the caller from this session's
+  // own JWT, which stops being valid the moment signOut() below actually completes.
+  await recordLoginEvent('logout');
   await supabase.auth.signOut();
 }
 

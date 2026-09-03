@@ -4,13 +4,19 @@ import { PERMISSION_AREAS, PERM_FULL, PERM_NONE } from '../auth.js';
 import { listUsers, createUser, updateUserProfile, updateUserPermissions, setUserActive } from '../data/users.js';
 import { listClients } from '../data/clients.js';
 import { listAuditLog } from '../data/auditLog.js';
+import { listLoginHistory } from '../data/loginHistory.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, fmtDateTime } from '../lib/format.js';
+import { summarizeUserAgent } from '../lib/userAgent.js';
 import { startImpersonation } from '../impersonate.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
 
-const TABS = [{ key: 'users', label: 'Users' }, { key: 'audit', label: 'Audit Log' }];
+const TABS = [
+  { key: 'users', label: 'Users' },
+  { key: 'audit', label: 'Audit Log' },
+  { key: 'logins', label: 'Login History' },
+];
 
 // PERMISSION_AREAS entries are raw camelCase keys ('workspaceDirectory') shared with page routing
 // and the DB's area check constraint - this table is the one place they're shown to a user, so it
@@ -23,7 +29,8 @@ function areaLabel(area) {
 
 export function renderAdmin() {
   const tab = STATE.adminTab || 'users';
-  return `${renderTabs(TABS, tab, 'App.setAdminTab')}${tab === 'audit' ? renderAuditTab() : renderUsersTab()}`;
+  const body = tab === 'audit' ? renderAuditTab() : tab === 'logins' ? renderLoginHistoryTab() : renderUsersTab();
+  return `${renderTabs(TABS, tab, 'App.setAdminTab')}${body}`;
 }
 
 export function setAdminTab(tab) {
@@ -94,6 +101,87 @@ function renderAuditTab() {
       ${log.length === 0 ? '<div class="empty">No activity logged yet.</div>' : `
         <table>
           <thead><tr>${sortTh('auditLog', 'time', 'Time')}${sortTh('auditLog', 'user', 'User')}${sortTh('auditLog', 'action', 'Action')}${sortTh('auditLog', 'detail', 'Detail')}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `}
+    </div>
+  `;
+}
+
+// Raw login_history rows are one event (login OR logout) each - paired here into sessions so the
+// tab can show a login alongside ITS OWN logout and how long that session actually lasted, instead
+// of two disconnected rows the reader has to match up by eye. Paired FIFO per user (oldest open
+// login gets the next logout) rather than by exact device/IP match, since nothing here guarantees a
+// logout event carries the same IP a login did (a laptop can change networks mid-session) - good
+// enough for the common single-session-at-a-time case, and a user genuinely signed in on two
+// devices at once just gets two rows, each still individually correct on its own login/logout pair.
+// A login with no logout yet (still signed in, or the tab was closed without one) surfaces as
+// "Active"; a logout with no open login (predates this feature, or its login row aged out of the
+// query's own limit) still shows on its own with a blank Login Time rather than being dropped.
+function pairLoginSessions(rows) {
+  const byUser = new Map();
+  for (const r of [...rows].sort((a, b) => new Date(a.ts) - new Date(b.ts))) {
+    const key = r.user_id || r.username || '?';
+    if (!byUser.has(key)) byUser.set(key, { open: [], sessions: [] });
+    const bucket = byUser.get(key);
+    if (r.event === 'login') {
+      bucket.open.push(r);
+    } else {
+      const login = bucket.open.shift() || null;
+      bucket.sessions.push({ login, logout: r });
+    }
+  }
+  const sessions = [];
+  for (const bucket of byUser.values()) {
+    sessions.push(...bucket.sessions);
+    for (const stillOpen of bucket.open) sessions.push({ login: stillOpen, logout: null });
+  }
+  return sessions.sort((a, b) => new Date((b.login || b.logout).ts) - new Date((a.login || a.logout).ts));
+}
+
+// "2h 14m" / "38m" / "less than a minute" - an actual elapsed span between two known instants,
+// unlike fmtRelativeTime (lib/format.js), which is "how long ago from NOW" and not what a session's
+// own login-to-logout duration needs.
+function fmtDuration(startIso, endIso) {
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (!(ms >= 0)) return '-';
+  const totalMinutes = Math.floor(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m`;
+  return 'less than a minute';
+}
+
+function renderLoginHistoryTab() {
+  const log = loadData('loginHistory', () => listLoginHistory(500));
+  if (log === null) return loadingCard();
+  if (log?.__error) return loadingCard(log.__error);
+
+  const sessions = pairLoginSessions(log);
+  const rows = sessions.map(({ login, logout }) => {
+    const who = login?.username || logout?.username || '-';
+    const ip = login?.ip_address || logout?.ip_address || '-';
+    const location = login?.location || logout?.location || '-';
+    const device = summarizeUserAgent(login?.user_agent || logout?.user_agent);
+    return `
+      <tr>
+        <td>${esc(who)}</td>
+        <td>${login ? fmtDateTime(login.ts) : '-'}</td>
+        <td>${logout ? fmtDateTime(logout.ts) : '<span class="badge b-green">Active</span>'}</td>
+        <td>${login && logout ? fmtDuration(login.ts, logout.ts) : '-'}</td>
+        <td>${esc(ip)}</td>
+        <td>${esc(location)}</td>
+        <td>${esc(device)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="card">
+      ${sessions.length === 0 ? '<div class="empty">No logins recorded yet.</div>' : `
+        <table>
+          <thead><tr><th>User</th><th>Login Time</th><th>Logout Time</th><th>Duration</th><th>IP Address</th><th>Location</th><th>Device</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `}
