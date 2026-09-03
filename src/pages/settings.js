@@ -2541,6 +2541,22 @@ function Invoke-DuScrape($PriorOutcome) {
     # stays deliberately non-committal (the dashboard reads it as "no answer yet", not as a verdict
     # about the connection) until the real outcome overwrites it below.
     Save-DuScrapeState $at "pending" $null
+    # Wiped BEFORE every attempt now, not just after a failed one. Get-DuDataUsageViaSelenium/
+    # ViaNetwork/ViaDom all reuse this SAME --user-data-dir across runs as a speed optimisation, and
+    # the old cleanup only ran when $outcome -ne "ok" - exactly the branch a stale-but-still-
+    # answering cache would never take. mydata.du.ae writes the subscriber's "serviceNo" into the
+    # page's own localStorage once it auto-identifies them over a real SIM connection, and its
+    # client-side JS is happy to fetch usage for a serviceNo it already has cached rather than
+    # re-proving the network path on every visit - so a PC that legitimately had this SIM once
+    # (provisioning, a temporary dongle, a profile folder cloned from another PC) kept reporting
+    # "ok" with that account's live, still-updating figures forever after, on ANY connection.
+    # Confirmed live on DESKTOP-8S3G9M2 (Yas Mall), 3 Sep 2026: reporting a real phone number and
+    # current GB figures while actually sitting on a wired connection through an unrelated D-Link
+    # home router, no SIM anywhere in the path. Wiping first means every "ok" has to re-earn itself
+    # each time, at the cost of paying Chromium's first-run setup on every single scrape instead of
+    # only on the rare failure - worth it since a false "ok" is exactly the case
+    # dataCheckFailedToday (workspaceDirectory.js) can never catch.
+    Remove-Item -Path $DuBrowserProfileDir -Recurse -Force -ErrorAction SilentlyContinue
     $outcome = "error"
     $note = $null
     $du = $null
@@ -2626,12 +2642,9 @@ function Invoke-DuScrape($PriorOutcome) {
         $note = "Scrape failed: $($_.Exception.Message)"
         Write-AgentLog "DU data-usage scrape failed: $($_.Exception.Message)"
     }
-    # A reused browser profile is a speed/data optimisation, not something worth defending when it
-    # goes wrong: a Chromium profile can be left locked by a killed process or subtly corrupted, and
-    # that would otherwise turn one bad run into a permanent failure. Cleared on any non-ok outcome
-    # so the next attempt rebuilds it from scratch - paying the first-run cost once, on the rare
-    # failure path, rather than on every single scrape.
-    if ($outcome -ne "ok") { Remove-Item -Path $DuBrowserProfileDir -Recurse -Force -ErrorAction SilentlyContinue }
+    # No end-of-run cleanup needed any more - the wipe at the top of this function already handles
+    # both a stale cached identity AND a locked/corrupted profile from a killed process, on every
+    # attempt, not just a failed one.
     Save-DuScrapeState $at $outcome $note
     return [pscustomobject]@{ at = $at; outcome = $outcome; note = $note; du = $du }
 }
@@ -2882,10 +2895,11 @@ function Get-DuDataUsageViaSelenium {
     } finally {
         if ($sessionId) { try { Invoke-RestMethod -Uri "$base/session/$sessionId" -Method Delete -TimeoutSec 5 | Out-Null } catch {} }
         if ($driverProc) { try { Stop-Process -Id $driverProc.Id -Force -ErrorAction SilentlyContinue } catch {} }
-        # NOT deleted here any more - $DuBrowserProfileDir is deliberately reused so Chromium
-        # skips first-run setup on every scrape (see its definition). It is cleared only when a
-        # scrape FAILS, in Invoke-DuScrape, so a corrupted or lock-wedged profile still
-        # self-heals on the next attempt instead of failing forever.
+        # Not deleted here - $DuBrowserProfileDir is deliberately reused so Chromium skips first-run
+        # setup on every scrape (see its definition). It's wiped at the START of every attempt, in
+        # Invoke-DuScrape, not here at the end - both a locked/corrupted profile from a killed
+        # process AND a stale cached du identity (see Invoke-DuScrape's own comment) need to be gone
+        # BEFORE the next launch reads from this same directory, not just cleaned up after.
         Remove-Item -Path $wdOut -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $wdErr -Force -ErrorAction SilentlyContinue
     }
@@ -3104,10 +3118,11 @@ function Get-DuDataUsageViaNetwork {
     } finally {
         if ($client) { try { $client.Dispose() } catch {} }
         if ($proc) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {} }
-        # NOT deleted here any more - $DuBrowserProfileDir is deliberately reused so Chromium
-        # skips first-run setup on every scrape (see its definition). It is cleared only when a
-        # scrape FAILS, in Invoke-DuScrape, so a corrupted or lock-wedged profile still
-        # self-heals on the next attempt instead of failing forever.
+        # Not deleted here - $DuBrowserProfileDir is deliberately reused so Chromium skips first-run
+        # setup on every scrape (see its definition). It's wiped at the START of every attempt, in
+        # Invoke-DuScrape, not here at the end - both a locked/corrupted profile from a killed
+        # process AND a stale cached du identity (see Invoke-DuScrape's own comment) need to be gone
+        # BEFORE the next launch reads from this same directory, not just cleaned up after.
         Remove-Item -Path $cdpOut -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $cdpErr -Force -ErrorAction SilentlyContinue
     }
@@ -3122,11 +3137,11 @@ function Get-DuDataUsageViaDom {
     $browser = Get-DuScrapeBrowserPath
     if (-not $browser) { return $null }
 
-    # A stable --user-data-dir (see $DuBrowserProfileDir), on top of --incognito, so there's no way a cookie/session
-    # from a previous scrape (or a different SIM that used to be in this PC) lingers and causes
-    # mydata.du.ae to show stale or wrong-account data - --incognito alone is normally enough, but a
-    # brand-new profile directory removes any doubt, and it's deleted again right after since
-    # nothing here needs to persist between runs anyway.
+    # The same reused --user-data-dir the other two methods use (see $DuBrowserProfileDir) - reused
+    # for the first-run-setup speedup, but wiped at the START of every Invoke-DuScrape attempt so no
+    # cookie/localStorage identity (a du "serviceNo") from a previous scrape or a different SIM that
+    # used to be in this PC can linger and make mydata.du.ae show stale or wrong-account data.
+    # --incognito on top is defense in depth, not the thing actually preventing that here.
     $tempProfile = $DuBrowserProfileDir
     $dumpFile = Join-Path $env:TEMP ("du-dump-" + [guid]::NewGuid().ToString("N") + ".html")
     $dumpErrFile = "$dumpFile.err"
@@ -3188,10 +3203,11 @@ function Get-DuDataUsageViaDom {
     } catch {
         return $null
     } finally {
-        # NOT deleted here any more - $DuBrowserProfileDir is deliberately reused so Chromium
-        # skips first-run setup on every scrape (see its definition). It is cleared only when a
-        # scrape FAILS, in Invoke-DuScrape, so a corrupted or lock-wedged profile still
-        # self-heals on the next attempt instead of failing forever.
+        # Not deleted here - $DuBrowserProfileDir is deliberately reused so Chromium skips first-run
+        # setup on every scrape (see its definition). It's wiped at the START of every attempt, in
+        # Invoke-DuScrape, not here at the end - both a locked/corrupted profile from a killed
+        # process AND a stale cached du identity (see Invoke-DuScrape's own comment) need to be gone
+        # BEFORE the next launch reads from this same directory, not just cleaned up after.
         Remove-Item -Path $dumpFile -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $dumpErrFile -Force -ErrorAction SilentlyContinue
     }
