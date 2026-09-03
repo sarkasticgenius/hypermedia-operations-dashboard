@@ -2868,13 +2868,16 @@ function Get-DuDataUsageViaSelenium {
             try {
                 $exec = Invoke-RestMethod -Uri "$base/session/$sessionId/execute/sync" -Method Post -Body (@{ script = "return document.body.innerText;"; args = @() } | ConvertTo-Json) -ContentType "application/json" -TimeoutSec 10
                 $bodyText = $exec.value
-                # Same broadened "up to 12 non-digit characters between the two GBs" match as
+                # Same broadened "up to 12 non-digit characters between the two figures" match as
                 # Get-DuUsageFromLines below, for the same reason - kept consistent so this early-
                 # exit check and the actual parsing agree on what counts as "the data is ready" (a
                 # real innerText newline is \s-matched fine either way, so this specific check
                 # likely still worked with the old strict pattern, but there's no reason for it to
                 # drift from the one pattern that's actually confirmed against the real page).
-                if ($bodyText -match '\\d+(?:\\.\\d+)?\\s*GB[^0-9]{1,12}\\d+(?:\\.\\d+)?\\s*GB') { break }
+                # GB-or-MB on both sides, not just GB - the used side switches to MB below ~1GB (see
+                # ConvertTo-DuGb), and a GB-only check here never exits early for that page, wasting
+                # the full 25s poll before Get-DuUsageFromLines parses it correctly anyway.
+                if ($bodyText -match '\\d+(?:\\.\\d+)?\\s*(GB|MB)[^0-9]{1,12}\\d+(?:\\.\\d+)?\\s*(GB|MB)') { break }
             } catch {}
             Start-Sleep -Milliseconds 750
         }
@@ -2925,6 +2928,15 @@ function ConvertTo-DuPhoneNumber($rawServiceNo) {
     return "+971" + $raw.Substring(2, 2) + $raw.Substring(4, 3) + $raw.Substring(7)
 }
 
+# mydata.du.ae switches the USED figure to MB below ~1GB (confirmed live, 3 Sep 2026: a real 15GB-
+# plan account reading "482.03 MB / 15.00 GB" - the plan/total side stays in GB regardless). Every
+# figure this file parses off that page has to go through this rather than assuming GB, or a light
+# user's real reading is silently invisible to a "GB" pattern.
+function ConvertTo-DuGb($value, $unit) {
+    if ($unit -eq 'MB') { return $value / 1024 }
+    return $value
+}
+
 # Given the page's rendered text broken into one "line" per element/block, extracts the used/
 # total/left GB figures. Shared by both methods that parse rendered text (Selenium and DOM-dump)
 # so a layout-parsing fix made for one doesn't silently drift out of sync with the other.
@@ -2938,7 +2950,7 @@ function Get-DuUsageFromLines($lines) {
     # kept only as a fallback for account states that might render differently (e.g. a different
     # plan type), so a layout change degrades gracefully instead of returning nothing.
     #
-    # The gap between the two "GB"s is matched as "up to 12 non-digit characters", not a literal
+    # The gap between the two figures is matched as "up to 12 non-digit characters", not a literal
     # "/" with optional whitespace - confirmed live on a real account, "4.67 GB" / "/" / "6.00 GB"
     # render as three SEPARATE block elements, which the line-joining logic above (both here and in
     # Get-DuDataUsageViaDom) turns into "4.67 GB | / | 6.00 GB", not "4.67 GB / 6.00 GB" - the old
@@ -2946,11 +2958,18 @@ function Get-DuUsageFromLines($lines) {
     # on the real page, no matter how the DOM/Selenium capture itself was done. This was confirmed
     # to be the actual reason usage figures were never being read even when the raw page text
     # plainly contained them.
+    #
+    # Each side matches GB OR MB independently, not just GB on both - the used side specifically is
+    # exactly what switches to MB below ~1GB (see ConvertTo-DuGb above), so "482.03 MB | / | 15.00
+    # GB" is a completely real, common render, not an edge case. Matching GB-only here silently
+    # dropped every account whose current usage happened to be under 1GB at scrape time - confirmed
+    # live, 3 Sep 2026: 15GB/28GB-plan (lighter-traffic) devices landed in this exact gap 3-6x more
+    # often than 43GB-plan ones, simply because they spend more of the month still under 1GB used.
     $used = $null
     $total = $null
-    if ($joined -match '(\\d+(?:\\.\\d+)?)\\s*GB[^0-9]{1,12}(\\d+(?:\\.\\d+)?)\\s*GB') {
-        $used = [double]$matches[1]
-        $total = [double]$matches[2]
+    if ($joined -match '(\\d+(?:\\.\\d+)?)\\s*(GB|MB)[^0-9]{1,12}(\\d+(?:\\.\\d+)?)\\s*(GB|MB)') {
+        $used = ConvertTo-DuGb ([double]$matches[1]) $matches[2]
+        $total = ConvertTo-DuGb ([double]$matches[3]) $matches[4]
     }
 
     function Find-GbNear($lines, $keywords) {
@@ -2959,7 +2978,7 @@ function Get-DuUsageFromLines($lines) {
             foreach ($kw in $keywords) { if ($lines[$i] -match "(?i)$kw") { $isLabel = $true; break } }
             if (-not $isLabel) { continue }
             foreach ($idx in @($i, ($i + 1), ($i - 1))) {
-                if ($idx -ge 0 -and $idx -lt $lines.Count -and $lines[$idx] -match '(\\d+(?:\\.\\d+)?)\\s*GB') { return [double]$matches[1] }
+                if ($idx -ge 0 -and $idx -lt $lines.Count -and $lines[$idx] -match '(\\d+(?:\\.\\d+)?)\\s*(GB|MB)') { return ConvertTo-DuGb ([double]$matches[1]) $matches[2] }
             }
         }
         return $null
