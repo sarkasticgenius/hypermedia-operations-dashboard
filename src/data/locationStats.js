@@ -106,11 +106,23 @@ function effectiveLocations(loc, allLocations) {
 // Offline/online tally including Broadsign/Grassfish health-count padding on
 // the total (matches the original's locationOfflineStats - used for the
 // Network Health donut, not the per-page heatmap).
+//
+// Deduped by the vendor's own Broadsign/Grassfish box id, same fix and same reason as sourceStats
+// below: location_sub_assets holds one row per OFFLINE face, and a single player driving several
+// faces (a multi-face totem/column) syncs as several rows sharing one id - counting rows as-is
+// double(or more)-counted that one outage. A row with no parseable id (a manual/other-source entry,
+// or an older pre-id sync) can't be deduped against anything and still counts on its own.
+const BOX_ID_PATTERN = /(?:Broadsign ID|Grassfish Box ID|IoT Device ID):\s*(.+)$/;
 export function locationOfflineStats(loc, allLocations) {
   let offline = 0;
   let total = 0;
   for (const l of effectiveLocations(loc, allLocations)) {
+    const seenBoxIds = new Set();
     for (const sa of l.location_sub_assets || []) {
+      const boxIdMatch = BOX_ID_PATTERN.exec(sa.notes || '');
+      const boxId = boxIdMatch ? boxIdMatch[1].trim() : null;
+      if (boxId && seenBoxIds.has(boxId)) continue;
+      if (boxId) seenBoxIds.add(boxId);
       total++;
       if (sa.status === 'Offline') offline++;
     }
@@ -177,7 +189,7 @@ export function sourceStats(loc, allLocations, source, healthyField) {
       // "Broadsign ID: <id>" / "Grassfish Box ID: <id>" / "IoT Device ID: <id>" - parsed back out
       // here (rather than a dedicated column) so the console pages can cross-reference this screen
       // against a Digital Directory device reporting the same id, without a schema change.
-      const boxIdMatch = /(?:Broadsign ID|Grassfish Box ID|IoT Device ID):\s*(.+)$/.exec(sa.notes || '');
+      const boxIdMatch = BOX_ID_PATTERN.exec(sa.notes || '');
       const boxId = boxIdMatch ? boxIdMatch[1].trim() : null;
       const isNewPlayer = !boxId || !seenBoxIds.has(boxId);
       if (boxId) seenBoxIds.add(boxId);
@@ -196,6 +208,35 @@ export function sourceStats(loc, allLocations, source, healthyField) {
     if (l[healthyField]) total += l[healthyField];
   }
   return { offline, total, offlineFaces, offlineItems };
+}
+
+// One representative {lat,lng} per venue name, averaged from every Asset Inventory row for that
+// venue that has a plausible coordinate - built once per call site (cache the result yourself if
+// calling this on every render) since it scans the whole inventory. Bounded to a rough UAE
+// bounding box (lat 22-27, lng 51-57) rather than accepting any numeric lat/lng: confirmed live
+// that a real chunk of rows across several venues (Dubai Festival City, Burjuman Mall, Union Coop
+// AL WARQA, EXPOCITY among them) carry lat/lng in Morocco's range instead - looks like leftover
+// data from a different rollout that got imported into the wrong rows. Excluding anything outside
+// the bounding box means a venue with ONLY bad coordinates simply has no marker (see the map's own
+// "not shown" handling) rather than plotting a UAE dashboard's data in North Africa.
+const UAE_BOUNDS = { minLat: 22, maxLat: 27, minLng: 51, maxLng: 57 };
+export function locationCoordsIndex(assetInventory) {
+  const sums = new Map(); // venue -> { latSum, lngSum, n }
+  for (const row of assetInventory || []) {
+    const venue = (row.venue || '').trim();
+    if (!venue) continue;
+    const lat = parseFloat(row.lat), lng = parseFloat(row.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (lat < UAE_BOUNDS.minLat || lat > UAE_BOUNDS.maxLat || lng < UAE_BOUNDS.minLng || lng > UAE_BOUNDS.maxLng) continue;
+    const entry = sums.get(venue) || { latSum: 0, lngSum: 0, n: 0 };
+    entry.latSum += lat; entry.lngSum += lng; entry.n += 1;
+    sums.set(venue, entry);
+  }
+  const index = new Map();
+  for (const [venue, { latSum, lngSum, n }] of sums) {
+    index.set(venue, { lat: latSum / n, lng: lngSum / n });
+  }
+  return index;
 }
 
 // Offline-ratio thresholds, ported exactly from the original's heatmapColor().

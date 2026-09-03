@@ -755,7 +755,20 @@ function dataUsageCellHtml(d, sim) {
   }
   const pct = Math.min(100, (usedGb / allocGb) * 100);
   const color = pct >= 80 ? '#c0392b' : pct >= 70 ? '#e07a2c' : '#1f9d55';
-  return `<div title="${fmtGb(usedGb)} of ${fmtGb(allocGb)} used${haveDu ? ' (DU)' : ''}">${phoneHtml}${stripedBarHtml(pct, color)}</div>`;
+  // A 'partial'/'nofigures' outcome means TODAY's check ran and got no figures back - so the bar
+  // below is not confirming current usage, it's replaying whatever was last actually read, however
+  // long ago that was. Nothing distinguished that from a bar refreshed minutes ago: a real device
+  // stuck in this state for days (du.ae answering phone-only on every attempt, not this PC's fault)
+  // read as an ordinary live percentage - exactly what made a frozen 3-day-old figure look like fast
+  // ongoing consumption to someone scanning the list, instead of what it actually was: unconfirmed
+  // and stale. duScrapeStatusHtml already says this in the Details modal; the compact cell here
+  // showed nothing of it at all.
+  const isStale = d.du_scrape_outcome === 'partial' || d.du_scrape_outcome === 'nofigures';
+  const staleBadge = isStale ? `<span class="small" style="color:#e07a2c;white-space:nowrap;" title="Today's check ran but du returned no usage figures - this bar is unconfirmed, last actually read ${d.du_scraped_at ? esc(fmtRelativeTime(d.du_scraped_at)) : 'a while ago'}.">&#9201; stale</span>` : '';
+  const tooltip = isStale
+    ? `${fmtGb(usedGb)} of ${fmtGb(allocGb)} used - NOT confirmed today (du returned no figures); last actually read ${d.du_scraped_at ? fmtRelativeTime(d.du_scraped_at) : 'unknown'}.`
+    : `${fmtGb(usedGb)} of ${fmtGb(allocGb)} used${haveDu ? ' (DU)' : ''}`;
+  return `<div title="${esc(tooltip)}">${phoneHtml}${stripedBarHtml(pct, color)}${staleBadge}</div>`;
 }
 
 // One line in the Details modal saying what the once-a-day mydata.du.ae check last did, so the

@@ -4,7 +4,8 @@ import { getSetting, saveSetting } from '../data/settings.js';
 import { listLocations } from '../data/locations.js';
 import { listAssetInventory, resetAssetInventoryCache } from '../data/assetsInventory.js';
 import { listWorkspaceDevices } from '../data/workspaceDevices.js';
-import { hiddenMemberIds, resolveMembers, sourceStats, heatmapColor } from '../data/locationStats.js';
+import { hiddenMemberIds, resolveMembers, sourceStats, heatmapColor, locationCoordsIndex } from '../data/locationStats.js';
+import { setNetworkMapMarkers, networkMapSlotHtml } from '../lib/networkMap.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { listSyncLogs } from '../data/syncLogs.js';
 import { supabase } from '../supabaseClient.js';
@@ -162,6 +163,48 @@ function renderNetworkPanel(source, healthyField, title, settingKey, syncFnName)
   const visibleTiles = search ? allTiles.filter((t) => t.name.toLowerCase().includes(search)) : allTiles;
   const tiles = visibleTiles.map((t) => t.html).join('');
 
+  // Map mode plots individual locations only (never the chain-merged tiles above) - a chain like
+  // "Metro Red Line" has no coordinate of its own, only its member stations do, and a real map
+  // reads better as one pin per physical site anyway rather than a synthetic merged point.
+  const viewMode = (STATE.networkViewMode && STATE.networkViewMode[source]) || 'heatmap';
+  let mapSection = '';
+  if (viewMode === 'map') {
+    const inventory = loadData('assetInventory', listAssetInventory);
+    if (inventory === null) {
+      mapSection = loadingCard();
+    } else if (inventory?.__error) {
+      mapSection = loadingCard(inventory.__error);
+    } else {
+      const coordsIndex = locationCoordsIndex(inventory);
+      const plottable = dataLocs.filter((l) => !l.is_combined);
+      const markers = [];
+      const unmapped = [];
+      for (const l of plottable) {
+        const stats = sourceStats(l, allLocations, source, healthyField);
+        const coords = coordsIndex.get(l.name);
+        if (coords) {
+          markers.push({
+            // Plain JSON.stringify, NOT jsonAttr - jsonAttr's single-quote escaping is for embedding
+            // inside a single-quoted onclick='...' HTML attribute (every other use of it on this
+            // page), but the popup markup this feeds (networkMap.js's escapeHtml) HTML-escapes the
+            // WHOLE onclick string itself, quotes included - jsonAttr's extra escaping here would
+            // have doubled up and produced literal "&#39;" text inside the JS argument instead of an
+            // apostrophe, breaking the object literal for any location name with one in it.
+            name: l.name, lat: coords.lat, lng: coords.lng, offline: stats.offline, total: stats.total,
+            onClick: `App.openOfflineAssetsModal(${JSON.stringify({ locId: l.id, source, healthyField })})`,
+          });
+        } else if (stats.total) {
+          unmapped.push(l.name);
+        }
+      }
+      setNetworkMapMarkers(markers);
+      mapSection = `
+        ${networkMapSlotHtml(520)}
+        ${unmapped.length ? `<div class="small muted" style="margin-top:8px;"><b>Not shown on the map</b> (no usable coordinates in Asset Inventory): ${unmapped.map(esc).join(', ')}</div>` : ''}
+      `;
+    }
+  }
+
   return `${onlineOfflineSummary(dataLocs, allLocations, source, healthyField)}
   ${admin ? syncStatBar(c, settingKey, source) : ''}
   <div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
@@ -173,14 +216,25 @@ function renderNetworkPanel(source, healthyField, title, settingKey, syncFnName)
   </div>
   ${allTiles.length ? `<div class="card">
     <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-      <div><h3>Site Status Heatmap</h3><div class="desc">Colored by number/share of offline units - green = all online, red = high offline share. Locations that belong to the same chain are merged into one tile. Click a tile to see what's offline and raise a ticket.</div></div>
-      <input id="net-search" placeholder="Search by location or chain name..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
+      <div><h3>Site Status ${viewMode === 'map' ? 'Map' : 'Heatmap'}</h3><div class="desc">${viewMode === 'map' ? 'Real satellite map (Esri World Imagery) - one pin per site, colored the same as the heatmap. Click a pin to see what\'s offline and raise a ticket.' : 'Colored by number/share of offline units - green = all online, red = high offline share. Locations that belong to the same chain are merged into one tile. Click a tile to see what\'s offline and raise a ticket.'}</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <div class="seg" style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+          <button class="btn-sm" style="border:none;border-radius:0;${viewMode !== 'map' ? 'background:var(--brand-orange);color:#fff;' : ''}" onclick="App.setNetworkViewMode('${source}','heatmap')">Heatmap</button>
+          <button class="btn-sm" style="border:none;border-radius:0;${viewMode === 'map' ? 'background:var(--brand-orange);color:#fff;' : ''}" onclick="App.setNetworkViewMode('${source}','map')">Map</button>
+        </div>
+        ${viewMode !== 'map' ? `<input id="net-search" placeholder="Search by location or chain name..." value="${esc(STATE.networkSearch || '')}" oninput="App.setNetworkSearch(this.value)" style="min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">` : ''}
+      </div>
     </div>
-    ${visibleTiles.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No location or chain matches "${esc(STATE.networkSearch || '')}".</div>`}
+    ${viewMode === 'map' ? mapSection : (visibleTiles.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">${tiles}</div>` : `<div class="empty">No location or chain matches "${esc(STATE.networkSearch || '')}".</div>`)}
   </div>` : `<div class="card"><div class="empty">No ${esc(title)} data yet.${admin ? ' Configure the API above, or run a sync, to populate this view.' : ' Ask an Admin to configure this.'}</div></div>`}`;
 }
 
 export function setNetworkSearch(value) { setState({ networkSearch: value }); }
+
+// Per-source ('broadsign'/'grassfish') so switching one console to Map doesn't also flip the other.
+export function setNetworkViewMode(source, mode) {
+  setState({ networkViewMode: { ...(STATE.networkViewMode || {}), [source]: mode } });
+}
 
 export function renderBroadsignPanel() {
   return renderNetworkPanel('broadsign', 'broadsign_healthy_count', 'Broadsign Console', 'broadsignApi', 'broadsign-sync');
