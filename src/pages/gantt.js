@@ -35,6 +35,7 @@ import { TAB_DEFS, VENUE_CATEGORY_KEYS, venueMatchesTab, mergeVenueName } from '
 import { supabase } from '../supabaseClient.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
 import { esc, jsAttr } from '../lib/format.js';
+import { edgeFunctionErrorMessage } from '../lib/edgeFunctionError.js';
 
 const COLORS = ['#e8951f', '#2563eb', '#1f9d55', '#b45309', '#c0392b', '#8b5e34'];
 const TAB_LABELS = Object.fromEntries(TAB_DEFS.map((t) => [t.key, t.label]));
@@ -165,7 +166,7 @@ async function fetchGanttTrafficSheet(month) {
   setState({ ganttTsLoading: true, ganttTsError: null });
   try {
     const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { startMonth: month, endMonth: month } });
-    if (error) throw error;
+    if (error) throw new Error(await edgeFunctionErrorMessage(error));
     if (data?.error) throw new Error(data.error);
     setState({ ganttTsData: data, ganttTsMonth: month, ganttTsLoading: false });
   } catch (e) {

@@ -56,6 +56,7 @@ import { renderTabs } from '../lib/tabs.js';
 import { exportTrafficSheetExcel, exportOverallTrafficSheetExcel } from '../lib/excelExport.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 import { logAudit } from '../lib/audit.js';
+import { edgeFunctionErrorMessage } from '../lib/edgeFunctionError.js';
 
 // "Today's Campaigns" and "FOC / Marketing" are both cross-category views - venueMatchesTab
 // matches every venue for either, so neither is scoped to a single venueType/network the way the
@@ -1015,7 +1016,7 @@ function normalizeBridgeVenueTypes(data) {
 // own loadData() key instead of trafficSheetData.
 export async function fetchTrafficSheetCampaigns(startMonth, endMonth) {
   const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { startMonth, endMonth } });
-  if (error) throw error;
+  if (error) throw new Error(await edgeFunctionErrorMessage(error));
   if (data?.error) throw new Error(data.error);
   return normalizeBridgeVenueTypes(data);
 }
@@ -1028,7 +1029,7 @@ export async function fetchTrafficSheetCampaigns(startMonth, endMonth) {
 // bulk campaign list response carries at all.
 async function fetchCampaignCreatives(contract) {
   const { data, error } = await supabase.functions.invoke('traffic-sheet-proxy', { body: { contract } });
-  if (error) throw error;
+  if (error) throw new Error(await edgeFunctionErrorMessage(error));
   if (data?.error) throw new Error(data.error);
   return data;
 }
