@@ -1546,6 +1546,15 @@ $Script:ExpectedVisibleProcesses = @(
     # single networked screen. Kept the older/longer names too in case some builds still use them.
     'bsp', 'broadsignplayer', 'broadsign', 'gfplayer', 'grassfishplayer', 'grassfish',
     'chrome', 'msedge', 'iexplore',
+    # MicrosoftEdge/MicrosoftEdgeCP are the deprecated pre-Chromium Edge engine's process names
+    # (main + content process) - NOT the same as 'msedge' above, which is modern Chromium Edge.
+    # Windows itself still spins this old engine up internally for some shell features (Search/
+    # Widgets web content, SmartScreen, etc.), with a blank window title and no user ever having
+    # opened a browser. Confirmed live on PC-94C691A39CE3, 3 Sep 2026: both processes launched
+    # together, blank MainWindowTitle, parent process svchost (a Windows service) - not
+    # explorer.exe, not a double-click. Flagged as an "unexpected popup" every single check-in
+    # with nothing on screen a person standing at the PC would ever see.
+    'microsoftedge', 'microsoftedgecp',
     'powershell', 'powershell_ise', 'pwsh', 'conhost', 'cmd',
     # The remote-access tools this whole agent depends on (Get-Problems elsewhere in this script
     # separately flags their ABSENCE as its own problem) - their own window should never itself count
