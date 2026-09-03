@@ -146,16 +146,25 @@ export function locationManualStats(loc, allLocations) {
 // by the dedicated network console panels. Also tallies offlineFaces (sum of each offline row's
 // faces, defaulting to 1 for historical rows synced before that column existed) so callers can
 // show a faces-based count alongside the plain screen count without a second pass.
+//
+// `offline`/`total` count distinct PLAYERS (by the vendor's own Broadsign/Grassfish box id), not
+// raw location_sub_assets rows - one player driving a multi-face totem/column syncs as ONE row per
+// face, all sharing the same id (confirmed live: YAS Mall's box id 583312670 syncs as two rows,
+// "DIGITAL TOTEM 19A" and "19B", one physical player behind both). Counting rows as-is double-
+// counted that single outage as two offline screens and skewed the heatmap ratio/color the same
+// way. offlineFaces is unaffected by this - it already summed every row's own faces regardless, so
+// a shared player's full face count still shows correctly, just attached to one offline unit
+// instead of N. A row with no parseable box id (older pre-id syncs, or a source that never sets
+// one) can't be deduped against anything and is counted on its own, same as before.
 export function sourceStats(loc, allLocations, source, healthyField) {
   let offline = 0;
   let total = 0;
   let offlineFaces = 0;
   const offlineItems = [];
+  const seenBoxIds = new Set();
   for (const l of effectiveLocations(loc, allLocations)) {
     const subs = (l.location_sub_assets || []).filter((sa) => sa.source === source);
     for (const sa of subs) {
-      total++;
-      offline++;
       offlineFaces += sa.faces || 1;
       // status_label ('Missing in Action' | 'Offline') and poll_last_utc are set at sync time;
       // the relative-time portion is always computed fresh here at render time, never stored, so
@@ -170,7 +179,19 @@ export function sourceStats(loc, allLocations, source, healthyField) {
       // against a Digital Directory device reporting the same id, without a schema change.
       const boxIdMatch = /(?:Broadsign ID|Grassfish Box ID|IoT Device ID):\s*(.+)$/.exec(sa.notes || '');
       const boxId = boxIdMatch ? boxIdMatch[1].trim() : null;
-      offlineItems.push({ location: l.name, name: sa.name, detail, statusLabel: label, pollLastUtc: sa.poll_last_utc, boxId });
+      const isNewPlayer = !boxId || !seenBoxIds.has(boxId);
+      if (boxId) seenBoxIds.add(boxId);
+      if (isNewPlayer) {
+        total++;
+        offline++;
+        offlineItems.push({ location: l.name, name: sa.name, detail, statusLabel: label, pollLastUtc: sa.poll_last_utc, boxId });
+      } else {
+        // Same player as an already-counted row - fold this face into the existing offlineItems
+        // entry's name instead of dropping it silently, so the drill-down list still shows both
+        // physical screens ("DIGITAL TOTEM 19A + 19B") rather than only whichever synced first.
+        const existing = offlineItems.find((item) => item.boxId === boxId);
+        if (existing && !existing.name.includes(sa.name)) existing.name += ` + ${sa.name}`;
+      }
     }
     if (l[healthyField]) total += l[healthyField];
   }
