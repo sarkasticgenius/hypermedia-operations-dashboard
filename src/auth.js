@@ -46,11 +46,17 @@ export async function initAuth() {
 }
 
 async function loadProfile(userId) {
-  const { data: profile, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .maybeSingle();
+  // Fired together rather than fetching user_permissions only after learning the role isn't
+  // admin: userId alone is enough to kick both off, and waiting on them sequentially cost every
+  // non-admin sign-in/session-restore a full second round trip an admin never paid (admin
+  // permissions are just PERM_FULL for every area, built locally with no query at all) - visible
+  // as admins landing on the dashboard noticeably faster than everyone else. The only cost is an
+  // admin's session also fetches a user_permissions row set it then ignores below, which is a
+  // handful of rows at most.
+  const [{ data: profile, error }, { data: perms }] = await Promise.all([
+    supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
+    supabase.from('user_permissions').select('*').eq('user_id', userId),
+  ]);
 
   // A transient/network error fetching the profile must not force a sign-out of an otherwise
   // valid session - this can run again on a background token refresh, and one flaky request
@@ -67,10 +73,6 @@ async function loadProfile(userId) {
   if (profile.role === 'admin') {
     for (const area of PERMISSION_AREAS) permissions[area] = { ...PERM_FULL };
   } else {
-    const { data: perms } = await supabase
-      .from('user_permissions')
-      .select('*')
-      .eq('user_id', userId);
     for (const area of PERMISSION_AREAS) {
       const row = (perms || []).find((p) => p.area === area);
       permissions[area] = row
