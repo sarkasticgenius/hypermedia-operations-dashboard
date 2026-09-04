@@ -7,10 +7,11 @@
 // runs far more often than the real check-in does. The flag itself is cleared by
 // workspace-directory-checkin once a real check-in actually lands, not here.
 //
-// ALSO delivers one-shot secrets (currently: a new AnyDesk password set from the dashboard). This
-// piggybacks on the poll the agent already makes rather than adding a second endpoint call: these
-// PCs are on metered cellular SIMs, and a separate per-cycle request for something that is almost
-// always absent would cost data on every device, every cycle, to say "nothing" nearly every time.
+// ALSO delivers one-shot secrets (currently: a new AnyDesk or RustDesk password set from the
+// dashboard). This piggybacks on the poll the agent already makes rather than adding a second
+// endpoint call: these PCs are on metered cellular SIMs, and a separate per-cycle request for
+// something that is almost always absent would cost data on every device, every cycle, to say
+// "nothing" nearly every time.
 //
 // Secrets travel here rather than through pending_command deliberately. A queued Run Command lands
 // in workspace_devices.pending_command, in the audit_log detail, and afterwards in
@@ -81,6 +82,9 @@ Deno.serve(async (req) => {
       if (gone?.kind === 'anydeskPassword') {
         await adminClient.from('workspace_devices')
           .update({ anydesk_password_set_at: new Date().toISOString() }).eq('hostname', hostname);
+      } else if (gone?.kind === 'rustdeskPassword') {
+        await adminClient.from('workspace_devices')
+          .update({ rustdesk_password_set_at: new Date().toISOString() }).eq('hostname', hostname);
       }
       return new Response(JSON.stringify({ ok: true, confirmed: !!gone }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,

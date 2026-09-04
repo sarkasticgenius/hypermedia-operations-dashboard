@@ -1336,6 +1336,36 @@ export async function saveWorkspaceAnyDeskPassword(event, deviceId) {
   }
 }
 
+export function openWorkspaceRustDeskPasswordModal(deviceId) {
+  openModal('workspaceRustDeskPassword', { deviceId });
+}
+
+// Sends a new RustDesk password to ONE device. Same agent_secret_deliveries path as
+// saveWorkspaceAnyDeskPassword above and the same reasoning for using it (never a queued Run
+// Command - see that function's own comment) - just no `target`, since rustDeskIdFor only ever
+// resolves one id per device.
+export async function saveWorkspaceRustDeskPassword(event, deviceId) {
+  event.preventDefault();
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const device = devices.find((d) => d.id === deviceId);
+  if (!device) { toast('Device not found', 'error'); return; }
+  const pw = document.getElementById('wd-rustdesk-pw').value || '';
+  const pw2 = document.getElementById('wd-rustdesk-pw2').value || '';
+  if (pw !== pw2) { toast('The two passwords do not match.', 'error'); return; }
+  if (pw.length < 8) { toast('Use at least 8 characters - this password grants remote control of the PC.', 'error'); return; }
+  try {
+    const { error } = await supabase.from('agent_secret_deliveries')
+      .insert({ hostname: device.hostname, kind: 'rustdeskPassword', secret: pw });
+    if (error) throw error;
+    await logAudit('Send RustDesk password', device.hostname);
+    closeModal();
+    toast(`Password sent to ${device.hostname} - it applies within a minute or two.`);
+    setState({});
+  } catch (e) {
+    toast(e.message || 'Could not send the password', 'error');
+  }
+}
+
 export function openWorkspaceRenameModal(deviceId) {
   openModal('workspaceRename', { deviceId });
 }
@@ -1855,6 +1885,10 @@ registerModal('workspaceDetails', (data) => {
         : 'No AnyDesk detected on this PC.'}</span>
       ${anyDeskInstallsFor(d).length ? `<button class="btn-sm" onclick="App.openWorkspaceAnyDeskPasswordModal('${d.id}')">Set AnyDesk Password</button>` : ''}
     </div>` : ''}
+    ${editOk && rustDeskIdFor(d) ? `<div class="small" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span>RustDesk <b>${esc(rustDeskIdFor(d))}</b>${d.rustdesk_password_set_at ? `<div class="small muted">Last changed from here ${esc(fmtRelativeTime(d.rustdesk_password_set_at))}.</div>` : ''}</span>
+      <button class="btn-sm" onclick="App.openWorkspaceRustDeskPasswordModal('${d.id}')">Set RustDesk Password</button>
+    </div>` : ''}
     ${editOk ? `<div class="small" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;${d.updates_disabled ? 'padding:8px 10px;border-radius:6px;background:var(--row-alt);border-left:3px solid #c0392b;' : ''}">
       <span>${d.updates_disabled
         ? `<b>Agent updates held</b>${d.updates_pinned_version ? ` at v${d.updates_pinned_version}` : ''} - this PC will not self-update until re-enabled.`
@@ -1924,6 +1958,13 @@ function anyDeskInstallsFor(d) {
   return [...new Set(ids)].map((id) => ({ id, passwordSet: null }));
 }
 
+// One id at most, unlike anyDeskInstallsFor - Get-RustDeskId (the agent's own lookup) only ever
+// reports a single RustDesk id per PC, so there is no "which installation" ambiguity to resolve.
+function rustDeskIdFor(d) {
+  const hit = (d.other_remote_ids || []).find((r) => /^RustDesk/i.test(r.tool || '') && r.id);
+  return hit ? String(hit.id) : null;
+}
+
 function anyDeskInstallLabel(a) {
   // null (rather than false) means "this device predates the indicator" - saying "no password set"
   // there would be a claim the data does not support.
@@ -1962,6 +2003,40 @@ registerModal('workspaceAnyDeskPassword', (data) => {
         never stored in the device's command history, never written to the audit log, and cannot be
         read back from this dashboard by anyone - <b>including you</b>. Note it down somewhere safe
         before sending, because nothing here can show it to you again.
+        ${setAt ? `<div style="margin-top:6px;">Last changed from here <b>${esc(setAt)}</b>.</div>` : ''}
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+        <button type="submit" class="btn-sm">Send to this PC</button>
+      </div>
+    </form>`;
+});
+
+registerModal('workspaceRustDeskPassword', (data) => {
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const device = devices.find((d) => d.id === data.deviceId);
+  if (!device) return `<div class="empty">Device not found.</div><div class="modal-actions"><button class="btn-sm" onclick="App.closeModal()">Close</button></div>`;
+  const setAt = device.rustdesk_password_set_at ? fmtRelativeTime(device.rustdesk_password_set_at) : null;
+  return `
+    <h3>Set RustDesk Password - ${esc(device.hostname)}</h3>
+    <form onsubmit="App.saveWorkspaceRustDeskPassword(event, '${device.id}')" autocomplete="off">
+      <div class="field">
+        <label>New RustDesk password</label>
+        <input id="wd-rustdesk-pw" type="password" autocomplete="new-password" spellcheck="false" required>
+        <div class="small muted" style="margin-top:4px;">Sets RustDesk's permanent password (rustdesk.exe --password) for id ${esc(rustDeskIdFor(device) || '-')}.</div>
+      </div>
+      <div class="field">
+        <label>Confirm password</label>
+        <input id="wd-rustdesk-pw2" type="password" autocomplete="new-password" spellcheck="false" required>
+      </div>
+      <div class="small" style="border-left:3px solid #e07a2c;padding:8px 12px;margin:12px 0;background:var(--bg);">
+        The password is sent to that one PC and destroyed as soon as it confirms the change. It is
+        never stored in the device's command history, never written to the audit log, and cannot be
+        read back from this dashboard by anyone - <b>including you</b>. Note it down somewhere safe
+        before sending, because nothing here can show it to you again.
+        Unlike AnyDesk, RustDesk takes this as a command-line argument rather than over stdin, so
+        it is briefly visible to anything reading the process list on that PC while it applies -
+        a limitation of RustDesk itself, not this dashboard.
         ${setAt ? `<div style="margin-top:6px;">Last changed from here <b>${esc(setAt)}</b>.</div>` : ''}
       </div>
       <div class="modal-actions">

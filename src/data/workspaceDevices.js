@@ -27,7 +27,7 @@ const LIST_COLUMNS = [
   'du_data_total_gb', 'du_scraped_at', 'force_checkin_requested', 'removed_at',
   'ignored_problem_types', 'offline_alerted_at', 'du_scrape_attempted_at', 'du_scrape_note',
   'du_scrape_outcome', 'updates_disabled', 'updates_pinned_version', 'anydesk_password_set_at',
-  'anydesk_installs', 'du_stale_alerted_at', 'problems_last_alerted',
+  'anydesk_installs', 'du_stale_alerted_at', 'problems_last_alerted', 'rustdesk_password_set_at',
 ].join(', ');
 
 // One row per Dubai calendar day of this device's du readings, newest last. Each row holds that
@@ -68,7 +68,7 @@ export async function listWorkspaceDevices() {
 // thing a plain "removed_at is set" can't tell you on its own is whether that's happened yet, hence
 // the last_seen > removed_at filter.
 export async function listGhostWorkspaceDevices() {
-  const { data, error } = await supabase.from('workspace_devices').select('*').not('removed_at', 'is', null).order('last_seen', { ascending: false });
+  const { data, error } = await supabase.from('workspace_devices').select(LIST_COLUMNS).not('removed_at', 'is', null).order('last_seen', { ascending: false });
   if (error) throw error;
   return (data || []).filter((d) => d.last_seen && d.removed_at && new Date(d.last_seen) > new Date(d.removed_at));
 }
