@@ -27,7 +27,7 @@ import { loadingCard } from '../modals.js';
 import { supabase } from '../supabaseClient.js';
 import { getSetting } from '../data/settings.js';
 import { renderTabs } from '../lib/tabs.js';
-import { esc, fmtDateTime } from '../lib/format.js';
+import { esc, jsAttrSq, fmtDateTime } from '../lib/format.js';
 import { exportReportingCampaignExcel, exportToExcel } from '../lib/excelExport.js';
 import { exportCampaignPptxReport } from '../lib/pptxReport.js';
 import { isFocMarketingCampaign, statusBadge, groupDatesByMonth, formatMonthLabel } from './trafficSheet.js';
@@ -747,7 +747,7 @@ function renderCampaignList(rows, fields) {
 
   const campaigns = campaignSummaries(rows, fields);
   const bodyRows = campaigns.map((c) => `
-    <tr style="cursor:pointer;" onclick="App.setReportCampaign('${esc(c.name)}')">
+    <tr style="cursor:pointer;" onclick="App.setReportCampaign('${jsAttrSq(c.name)}')">
       <td>${esc(c.name)}</td>
       <td class="tright">${c.impressions.toLocaleString()}</td>
       <td class="tright">${c.playouts.toLocaleString()}</td>
@@ -1407,9 +1407,9 @@ function renderGenericTable(title, desc, rows, opts = {}) {
         <table class="zebra" style="${FIXED_TABLE_STYLE}"><thead><tr>${columns.map((c) => sortTh(title, c, c, c === flexCol ? undefined : widths[c])).join('')}${opts.highlightRow ? '<th style="width:14ch;"></th>' : ''}</tr></thead><tbody>${tableRows}</tbody></table>
       </div>
       ${totalPages > 1 ? `<div style="display:flex;justify-content:center;gap:10px;align-items:center;margin-top:10px;">
-        <button class="btn-sm" ${page === 0 ? 'disabled' : ''} onclick="App.setGenericTablePage('${esc(title)}',${page - 1})">Prev</button>
+        <button class="btn-sm" ${page === 0 ? 'disabled' : ''} onclick="App.setGenericTablePage('${jsAttrSq(title)}',${page - 1})">Prev</button>
         <span class="small muted">Page ${page + 1} of ${totalPages} (${sortedRows.length} rows)</span>
-        <button class="btn-sm" ${page >= totalPages - 1 ? 'disabled' : ''} onclick="App.setGenericTablePage('${esc(title)}',${page + 1})">Next</button>
+        <button class="btn-sm" ${page >= totalPages - 1 ? 'disabled' : ''} onclick="App.setGenericTablePage('${jsAttrSq(title)}',${page + 1})">Next</button>
       </div>` : ''}
     </div>
   `;
@@ -1635,7 +1635,7 @@ export function renderReporting() {
           ${selectedOptions.length ? `
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0;">
               ${selectedOptions.map((o) => `
-                <span class="badge b-blue" style="cursor:pointer;" onclick="App.toggleAvailsPlacement('${esc(String(o.id))}')" title="Click to remove">
+                <span class="badge b-blue" style="cursor:pointer;" onclick="App.toggleAvailsPlacement('${jsAttrSq(String(o.id))}')" title="Click to remove">
                   ${esc(o.site)}${o.site && o.placement ? ' - ' : ''}${esc(o.placement)} &times;
                 </span>
               `).join('')}
@@ -1648,7 +1648,7 @@ export function renderReporting() {
               <div style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);border-radius:8px;padding:8px;">
                 ${matchedAssets.length ? matchedAssets.map((o) => `
                   <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                    <input type="checkbox" style="width:auto;" onchange="App.toggleAvailsPlacement('${esc(String(o.id))}')" ${pickedIds.has(String(o.id)) ? 'checked' : ''}>
+                    <input type="checkbox" style="width:auto;" onchange="App.toggleAvailsPlacement('${jsAttrSq(String(o.id))}')" ${pickedIds.has(String(o.id)) ? 'checked' : ''}>
                     ${esc(o.placement)}
                   </label>
                 `).join('') : `<div class="empty">No assets at this location match that filter.</div>`}

@@ -34,7 +34,7 @@ import { MAF_MALL_VENUE_KEYWORDS } from '../data/locationStats.js';
 import { TAB_DEFS, VENUE_CATEGORY_KEYS, venueMatchesTab, mergeVenueName } from './trafficSheet.js';
 import { supabase } from '../supabaseClient.js';
 import { svgGroupedBarChart } from '../lib/charts.js';
-import { esc, jsAttr } from '../lib/format.js';
+import { esc, jsAttrSq } from '../lib/format.js';
 import { edgeFunctionErrorMessage } from '../lib/edgeFunctionError.js';
 
 const COLORS = ['#e8951f', '#2563eb', '#1f9d55', '#b45309', '#c0392b', '#8b5e34'];
@@ -226,7 +226,7 @@ function renderInternalGanttRow(name, info, monthStart, monthEnd, daysInMonth, c
   const widthPct = Math.max(2, ((endDay - startDay + 1) / daysInMonth) * 100);
   const clickable = name !== 'Unspecified';
   return `
-    <div class="gantt-flexrow gantt-body-row" ${clickable ? `style="cursor:pointer;" onclick="App.goToLocationSearch('${jsAttr(name)}')" title="View ${esc(name)} in Locations"` : ''}>
+    <div class="gantt-flexrow gantt-body-row" ${clickable ? `style="cursor:pointer;" onclick="App.goToLocationSearch('${jsAttrSq(name)}')" title="View ${esc(name)} in Locations"` : ''}>
       <div class="gantt-name-col">${esc(name)} <span class="tab-count">${info.count}</span></div>
       <div class="gantt-track" style="--days:${daysInMonth};">
         <div class="gantt-bar" style="left:${leftPct}%;width:${widthPct}%;background:${color};">${info.count} campaign(s)</div>

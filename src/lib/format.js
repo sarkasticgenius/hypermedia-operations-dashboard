@@ -70,6 +70,28 @@ export function jsAttr(s) {
     .replace(/\r?\n/g, '\\n');
 }
 
+// The mirror image of jsAttr(), for the far more common shape in this codebase:
+// onclick="App.foo('...')" - a double-quoted HTML attribute wrapping a single-quoted JS string
+// literal. Plain esc() is NOT safe here even though it looks like it should be: esc() turns a
+// literal ' into the HTML entity &#39;, but the browser decodes attribute text back to literal
+// characters BEFORE running it as the onclick handler's JS, so the &#39; becomes a real ' again
+// right before execution and still closes the JS string early. Confirmed exploitable via
+// workspace_devices.anydesk_id/teamviewer_id/other_remote_ids (self-reported by the kiosk agent)
+// and the IoT panel's vendor-sourced deviceId - both are strings this app doesn't fully control
+// the content of, rendered straight into an admin's browser as executable JS via that gap.
+// Escapes the JS string boundary at the JS level (backslash-escaped, not HTML-entity-escaped, so
+// it can't be decoded back into a live quote) and only THEN HTML-escapes & and " for the outer
+// attribute - order matters, since HTML-escaping first would leave the JS-level backslash/quote
+// untouched but HTML-escaping after is a no-op on those characters, so the two passes don't fight.
+export function jsAttrSq(s) {
+  return String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r?\n/g, '\\n')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;');
+}
+
 // "2 days, 4 hours and 16 minutes ago" - deliberately computed at render time from a raw
 // timestamp rather than ever being baked into a stored string, so it stays accurate no matter how
 // long ago the sync that captured the timestamp actually ran.

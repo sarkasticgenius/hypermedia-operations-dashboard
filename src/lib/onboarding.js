@@ -1,5 +1,5 @@
 import { STATE, setState } from '../state.js';
-import { esc } from './format.js';
+import { esc, jsAttrSq } from './format.js';
 
 // Explanatory (not functional/status) banners across the app - "here's what this page is",
 // "here's where a feature moved to" - were previously shown to every user on every visit
@@ -40,6 +40,6 @@ export function renderInfoBanner(tipId, message, isPersistent) {
   if (hasSeenTip(tipId)) return '';
   return `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
     <span>${message}</span>
-    <button class="btn-sm" onclick="App.dismissOnboardingTip('${esc(tipId)}')">Got it</button>
+    <button class="btn-sm" onclick="App.dismissOnboardingTip('${jsAttrSq(tipId)}')">Got it</button>
   </div>`;
 }

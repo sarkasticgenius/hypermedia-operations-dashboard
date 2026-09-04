@@ -6,7 +6,7 @@ import { listAssetInventory, resetAssetInventoryCache } from '../data/assetsInve
 import { canEdit, canDelete } from '../auth.js';
 import { AGENT_CANARY_HOSTNAMES, defaultOptimizerScript } from './settings.js';
 import { remoteAccessUrl } from '../lib/remoteAccess.js';
-import { esc, fmtRelativeTime } from '../lib/format.js';
+import { esc, jsAttrSq, fmtRelativeTime } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
 import { logAudit } from '../lib/audit.js';
@@ -45,7 +45,7 @@ function remoteIdChip(tool, id) {
   return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 6px;margin:1px 3px 1px 0;font-size:11px;white-space:nowrap;">
     <b>${esc(tool)}</b> <span style="font-family:monospace;">${esc(id)}</span>
     ${url ? `<a href="${url}" title="Connect via ${esc(tool)}" style="text-decoration:none;">&#128279;</a>` : ''}
-    <button type="button" class="link-btn" style="padding:0;" title="Copy ID" onclick="App.copyWorkspaceId(event,'${esc(id)}')">&#128203;</button>
+    <button type="button" class="link-btn" style="padding:0;" title="Copy ID" onclick="App.copyWorkspaceId(event,'${jsAttrSq(id)}')">&#128203;</button>
   </span>`;
 }
 
@@ -391,6 +391,16 @@ const HOSTNAME_CATEGORY_OVERRIDES = {
   'MOEHLGPC02': 'hologram',
 };
 
+// Confirmed by ops, 4 Sep 2026: both hostnames' matched Broadsign screens carry venue "Emirates
+// Towers" with category "Metro" - one of the two SHZ_BRIDGE_VENUE_NAMES entries with no AUH/DXB
+// suffix at all (see that comment), so Asset Inventory has no text signal to tell the real
+// pedestrian-bridge screen apart from the in-station one for this specific venue, and
+// assetCategoryTab's exact-match falls into 'shzBridges' by default. The hostnames themselves say
+// otherwise - EMT-CONCOURSELE/EMT-CONCOURSERI are Emirates Towers station's Concourse Left/Right
+// screens, not the SHZ bridge placement - so they're pulled back to 'metro' in deviceCategoryTab
+// below rather than trying to make the venue-name match itself smarter.
+const METRO_NOT_BRIDGE_HOSTNAMES = new Set(['EMT-CONCOURSELE', 'EMT-CONCOURSERI']);
+
 // A device's venue category, resolved the same way its Location cell is (see locationCellHtml):
 // prefer the venue of the screen it actually drives (matched by Broadsign/Grassfish Player Box ID)
 // since that's set on almost every device, falling back to a venue match on the rarely-populated
@@ -398,7 +408,8 @@ const HOSTNAME_CATEGORY_OVERRIDES = {
 function deviceCategoryTab(d, assetInventory, venueCategoryFallbackMap) {
   for (const { rows } of matchedScreensFor(d, assetInventory)) {
     for (const r of rows) {
-      const tab = assetCategoryTab(r, venueCategoryFallbackMap);
+      let tab = assetCategoryTab(r, venueCategoryFallbackMap);
+      if (tab === 'shzBridges' && METRO_NOT_BRIDGE_HOSTNAMES.has(d.hostname)) tab = 'metro';
       if (tab) return tab;
     }
   }

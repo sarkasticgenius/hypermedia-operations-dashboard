@@ -51,7 +51,7 @@ import { getAllSettings, getSetting, saveSetting } from '../data/settings.js';
 import { MAF_MALL_VENUE_KEYWORDS, normalizeVenueText, canonicalChainBrandName } from '../data/locationStats.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin } from '../auth.js';
-import { esc, jsAttr, todayISO } from '../lib/format.js';
+import { esc, jsAttrSq, todayISO } from '../lib/format.js';
 import { renderTabs } from '../lib/tabs.js';
 import { exportTrafficSheetExcel, exportOverallTrafficSheetExcel } from '../lib/excelExport.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
@@ -634,7 +634,7 @@ function renderSummaryCard(campaigns, summary, totalScreens, capacitySummary, ca
         : `<span class="badge b-green">${available} available</span>`;
     }
     return `
-      <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttr(s.venue)}')" title="Click to filter to this location">
+      <tr style="cursor:pointer;" onclick="App.setTrafficSheetLocation('${jsAttrSq(s.venue)}')" title="Click to filter to this location">
         <!-- brandNameForVenue() returns null for Royals/Gems on purpose (no real external brand
              exists, so it must never be proposed as a Brandfetch search candidate - see
              gatherTrafficSheetVenueNames in settings.js). Falling back to the raw venue name HERE
@@ -722,14 +722,14 @@ function todayListTable(campaigns, emptyText, rosterByNetwork, isFocSection) {
     let actionHtml = '';
     if (admin) {
       if (!isFocSection) {
-        actionHtml = `<button class="btn-sm" title="Move this campaign to FOC/Marketing - it has no FOC/MKTG wording in its name, so this is remembered separately and only affects this dashboard's own grouping." onclick="App.toggleFocMarketingOverride('${jsAttr(c.contract || '')}', '${jsAttr(c.campaignName || '')}', true)">Move to FOC/Marketing</button>`;
+        actionHtml = `<button class="btn-sm" title="Move this campaign to FOC/Marketing - it has no FOC/MKTG wording in its name, so this is remembered separately and only affects this dashboard's own grouping." onclick="App.toggleFocMarketingOverride('${jsAttrSq(c.contract || '')}', '${jsAttrSq(c.campaignName || '')}', true)">Move to FOC/Marketing</button>`;
       } else if (isFocMarketingByOverrideOnly(c)) {
-        actionHtml = `<button class="btn-sm" onclick="App.toggleFocMarketingOverride('${jsAttr(c.contract || '')}', '${jsAttr(c.campaignName || '')}', false)">Move to Active</button>`;
+        actionHtml = `<button class="btn-sm" onclick="App.toggleFocMarketingOverride('${jsAttrSq(c.contract || '')}', '${jsAttrSq(c.campaignName || '')}', false)">Move to Active</button>`;
       }
     }
     return `
     <tr>
-      <td class="tleft">${esc(c.campaignName || '')}${c.contract ? ` <button class="btn-sm" style="padding:1px 6px;font-size:11px;" title="View this campaign's creative assets (approval status, matched venues, actual files) from AdLive" onclick="App.openCampaignCreativesModal('${jsAttr(c.contract)}', '${jsAttr(c.campaignName || '')}')">Creatives</button>` : ''}</td>
+      <td class="tleft">${esc(c.campaignName || '')}${c.contract ? ` <button class="btn-sm" style="padding:1px 6px;font-size:11px;" title="View this campaign's creative assets (approval status, matched venues, actual files) from AdLive" onclick="App.openCampaignCreativesModal('${jsAttrSq(c.contract)}', '${jsAttrSq(c.campaignName || '')}')">Creatives</button>` : ''}</td>
       <!-- Same Royals/Gems fallback as the venue table above - brandNameForVenue's null there is a
            deliberate "never search for this" signal, not a "never display anything" one. -->
       <td class="tleft">${(c.__matchedVenues || [])[0] ? brandLogoTag(brandNameForVenue((c.__matchedVenues || [])[0]) || (c.__matchedVenues || [])[0].venue, 18, brandFallbackForVenue((c.__matchedVenues || [])[0])) : ''} ${esc(describeMatchedVenues(c, rosterByNetwork))}</td>
@@ -803,7 +803,7 @@ export function renderDayGrid(campaigns, startDate, endDate) {
     const dayMap = {};
     (c.days || []).forEach((d) => { dayMap[d.date] = d.spots; });
     return `<tr>
-      <td class="tleft">${esc(c.campaignName || '')}${c.contract ? ` <button class="btn-sm" style="padding:1px 6px;font-size:11px;" title="View this campaign's creative assets (approval status, matched venues, actual files) from AdLive" onclick="App.openCampaignCreativesModal('${jsAttr(c.contract)}', '${jsAttr(c.campaignName || '')}')">Creatives</button>` : ''}</td>
+      <td class="tleft">${esc(c.campaignName || '')}${c.contract ? ` <button class="btn-sm" style="padding:1px 6px;font-size:11px;" title="View this campaign's creative assets (approval status, matched venues, actual files) from AdLive" onclick="App.openCampaignCreativesModal('${jsAttrSq(c.contract)}', '${jsAttrSq(c.campaignName || '')}')">Creatives</button>` : ''}</td>
       <td>${esc(c.startDate || '')}</td>
       <td>${esc(c.endDate || '')}</td>
       <td class="tcenter">${c.campaignDays ?? ''}</td>

@@ -8,7 +8,7 @@
 import { STATE, setState, loadData, invalidate, toast, openModal, closeModal } from '../state.js';
 import { loadingCard, registerModal } from '../modals.js';
 import { isAdmin, isClientUser, canEdit } from '../auth.js';
-import { esc, jsAttr } from '../lib/format.js';
+import { esc, jsAttrSq } from '../lib/format.js';
 import { logAudit } from '../lib/audit.js';
 import { listClients } from '../data/clients.js';
 import { listApprovalsForClient, upsertPendingApproval, approveCampaign, markCampaignLive } from '../data/campaignApprovals.js';
@@ -137,7 +137,7 @@ function renderClientPicker(clients, activeId) {
 function approvalCell(approval, isClient, canMarkLive, clientName, campaignName) {
   const status = approval?.status || 'pending';
   if (isClient && status === 'pending' && approval) {
-    return `<button class="btn-sm btn-orange" onclick="App.openApproveCampaignModal('${approval.id}','${jsAttr(clientName)}','${jsAttr(campaignName)}')">Approve</button>`;
+    return `<button class="btn-sm btn-orange" onclick="App.openApproveCampaignModal('${approval.id}','${jsAttrSq(clientName)}','${jsAttrSq(campaignName)}')">Approve</button>`;
   }
   if (canMarkLive && status === 'approved' && approval) {
     return `<button class="btn-sm btn-orange" onclick="App.markClientCampaignLive('${approval.id}')">Mark Live</button>`;
@@ -347,7 +347,7 @@ export function openApproveCampaignModal(approvalId, clientName, campaignName) {
 registerModal('approveCampaignComment', (data) => `
   <h3>Approve Campaign</h3>
   <p class="small muted">"${esc(data.campaignName || '')}"</p>
-  <form onsubmit="App.submitApproveCampaign(event,'${data.approvalId}','${jsAttr(data.clientName)}','${jsAttr(data.campaignName)}')">
+  <form onsubmit="App.submitApproveCampaign(event,'${data.approvalId}','${jsAttrSq(data.clientName)}','${jsAttrSq(data.campaignName)}')">
     <div class="field"><label>Comments (optional)</label>
       <textarea id="approve-comment" rows="3" placeholder="Anything Ops should know before taking this live?"></textarea>
       <div class="small muted" style="margin-top:4px;">Shown alongside the Slack notification this sends to Ops.</div>

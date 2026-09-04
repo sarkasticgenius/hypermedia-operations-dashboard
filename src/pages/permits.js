@@ -3,7 +3,7 @@ import { loadingCard, registerModal } from '../modals.js';
 import { canAdd, canEdit, canDelete, canExportArea, isAdmin } from '../auth.js';
 import { listPermits, savePermit, deletePermit, permitStatus, permitDaysToExpire, permitStatusColor } from '../data/permits.js';
 import { logAudit } from '../lib/audit.js';
-import { esc, fmtDate, jsAttr } from '../lib/format.js';
+import { esc, fmtDate, jsAttrSq } from '../lib/format.js';
 import { exportToExcel } from '../lib/excelExport.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { getSignedUrl } from '../lib/storage.js';
@@ -48,7 +48,7 @@ export function renderPermits() {
         <td>${fmtDate(p.expiry_date)}</td>
         <td class="tcenter"><span class="badge ${color}">${esc(daysToExpireLabel(p))}</span></td>
         <td class="tcenter"><span class="badge ${color}">${status}</span></td>
-        <td class="tleft">${p.document_path ? `<span class="file-chip">FILE: ${esc(p.document_filename || 'document')}</span> <a href="#" onclick="App.viewPermitDocument('${jsAttr(p.document_path)}');return false;" class="link-btn" style="font-size:11px;">View</a> <a href="#" onclick="App.downloadPermitDocument('${jsAttr(p.document_path)}','${jsAttr(p.document_filename || 'document')}');return false;" class="link-btn" style="font-size:11px;">Download</a>` : '<span class="muted small">-</span>'}</td>
+        <td class="tleft">${p.document_path ? `<span class="file-chip">FILE: ${esc(p.document_filename || 'document')}</span> <a href="#" onclick="App.viewPermitDocument('${jsAttrSq(p.document_path)}');return false;" class="link-btn" style="font-size:11px;">View</a> <a href="#" onclick="App.downloadPermitDocument('${jsAttrSq(p.document_path)}','${jsAttrSq(p.document_filename || 'document')}');return false;" class="link-btn" style="font-size:11px;">Download</a>` : '<span class="muted small">-</span>'}</td>
         <td>
           ${canEdit('permits') ? `<button class="btn-sm" onclick="App.editPermit('${p.id}')">Edit</button>` : ''}
           ${canDelete('permits') ? `<button class="btn-sm" onclick="App.removePermit('${p.id}')">Delete</button>` : ''}
@@ -178,7 +178,7 @@ registerModal('permit', (data) => {
     </div>
     <div class="field"><label>Expiry Date</label><input id="pm-expiry-date" type="date" value="${data.expiry_date || ''}"></div>
     <div class="field"><label>Document</label><input id="pm-file" type="file" accept="application/pdf,image/*">
-      ${data.document_path ? `<div class="small" style="margin-top:6px;">Current file: <b>${esc(data.document_filename || 'document')}</b> <a href="#" onclick="App.viewPermitDocument('${jsAttr(data.document_path)}');return false;" class="link-btn">View</a> <a href="#" onclick="App.downloadPermitDocument('${jsAttr(data.document_path)}','${jsAttr(data.document_filename || 'document')}');return false;" class="link-btn">Download</a></div>` : ''}
+      ${data.document_path ? `<div class="small" style="margin-top:6px;">Current file: <b>${esc(data.document_filename || 'document')}</b> <a href="#" onclick="App.viewPermitDocument('${jsAttrSq(data.document_path)}');return false;" class="link-btn">View</a> <a href="#" onclick="App.downloadPermitDocument('${jsAttrSq(data.document_path)}','${jsAttrSq(data.document_filename || 'document')}');return false;" class="link-btn">Download</a></div>` : ''}
     </div>
     <div class="field"><label>Notes (title/type/details can go here)</label><textarea id="pm-notes" rows="3">${esc(data.notes || '')}</textarea></div>
     <div class="modal-actions">

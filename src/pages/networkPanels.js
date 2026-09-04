@@ -11,7 +11,7 @@ import { listSyncLogs } from '../data/syncLogs.js';
 import { supabase } from '../supabaseClient.js';
 import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
-import { esc, fmtRelativeTime, fmtDateTime } from '../lib/format.js';
+import { esc, jsAttrSq, fmtRelativeTime, fmtDateTime } from '../lib/format.js';
 import { remoteAccessUrl } from '../lib/remoteAccess.js';
 import { aiooSiteCategory, aiooSiteDisplayName, SITE_CATEGORIES } from '../lib/aiooSiteCategory.js';
 import { sortTh, applySort, colWidthCh, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
@@ -484,7 +484,7 @@ function renderIotDeviceTable(cfg) {
       <td class="small">${esc(d.state)}</td>
       <td>${connBadge}</td>
       <td class="small">${d.lastSeenUtc ? esc(fmtRelativeTime(d.lastSeenUtc)) : 'never'}</td>
-      <td>${admin ? `<button class="btn-sm" onclick="App.toggleIotDeviceExcluded('${esc(d.deviceId)}', ${!isExcluded})">${isExcluded ? 'Include' : 'Exclude'}</button>` : (isExcluded ? '<span class="small muted">Excluded</span>' : '')}</td>
+      <td>${admin ? `<button class="btn-sm" onclick="App.toggleIotDeviceExcluded('${jsAttrSq(d.deviceId)}', ${!isExcluded})">${isExcluded ? 'Include' : 'Exclude'}</button>` : (isExcluded ? '<span class="small muted">Excluded</span>' : '')}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="9"><div class="empty">No devices match.</div></td></tr>`;
 
@@ -622,7 +622,7 @@ function renderIotCategoryHeatmap(cfg) {
     const siteCount = new Set(devices.map((d) => d.storeName || d.venue || 'Unassigned')).size;
     const label = category === 'Other' ? 'Other / Unclassified' : category;
     const flag = category === 'Other' ? ` <span style="background:rgba(255,255,255,.18);border-radius:4px;padding:1px 5px;font-size:10px;font-weight:600;">check</span>` : '';
-    return `<div style="background:#2a3441;border-radius:10px;padding:12px;color:#fff;min-height:96px;display:flex;flex-direction:column;justify-content:space-between;gap:9px;cursor:pointer;" onclick="App.openIotCategoryModal('${esc(category)}')" title="Click to see sites and devices">
+    return `<div style="background:#2a3441;border-radius:10px;padding:12px;color:#fff;min-height:96px;display:flex;flex-direction:column;justify-content:space-between;gap:9px;cursor:pointer;" onclick="App.openIotCategoryModal('${jsAttrSq(category)}')" title="Click to see sites and devices">
       <div>
         <div style="font-size:13px;font-weight:700;line-height:1.3;">${esc(label)}${flag} <span style="font-weight:400;opacity:.8;">(${siteCount} site${siteCount === 1 ? '' : 's'})</span></div>
         <div style="font-size:11px;opacity:.85;margin-top:2px;"><span style="color:#5fd88f;">${online} online</span>, <span style="color:#f2857a;">${offline} offline</span> of ${total}</div>
