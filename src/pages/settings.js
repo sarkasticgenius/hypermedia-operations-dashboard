@@ -720,7 +720,7 @@ export function resetWorkspaceDirectoryOptimizerScript() {
 // percentage or a "first N devices" rule: which machines are safe to break is a judgement about
 // physical access (an office test bench you can walk over to) and business impact (not a signage
 // screen in a mall), and nothing in the device data expresses that.
-export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST', 'DESKTOP-OMM99EM', 'AE1PC119'];
+export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST'];
 
 // Publishes to the TEST PCs only (see AGENT_CANARY_HOSTNAMES). Writes the canary slot, which
 // workspace-directory-agent-shell serves only to those hostnames - every other device keeps
