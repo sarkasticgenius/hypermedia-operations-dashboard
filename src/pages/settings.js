@@ -4074,12 +4074,20 @@ try {
     Write-Warning "Could not register the tray task: $($_.Exception.Message)"
 }
 
-# Suppresses two known interruption classes at the source, since detecting them after the fact
-# turned out to be more trouble than it's worth on a real signage PC (see below):
+# Suppresses known interruption classes at the source, since detecting them after the fact turned
+# out to be more trouble than it's worth on a real signage PC (see below):
 #  - Windows Action Center/toast notifications, via the Explorer policy key.
-#  - Chrome/Edge's own "Show notifications?" permission prompt bar, via a browser policy - this one
-#    can't be caught by watching for popups at all, since it renders INSIDE the browser's own window,
-#    not as a separate one.
+#  - Every Chrome/Edge permission-prompt bar/dialog this policy set covers (notifications,
+#    geolocation, camera/mic, device sensors) plus password-manager/autofill/translate prompts and
+#    the "where do you want to save this?" download dialog - none of these can be caught by
+#    watching for popups at all, and not just because of the AMSI history below. Get-UnexpectedWindows
+#    only ever sees ONE window per running process (.NET's own MainWindowHandle) and chrome/msedge
+#    are themselves allowlisted as the expected kiosk browser - so a dialog Chrome spawns from that
+#    SAME process (a permission prompt, an infobar, a JS-level popup) is invisible to it twice over,
+#    not just once. Confirmed live on PC-88AEDD61E8C5, 5 Sep 2026: a browser-native prompt sat on
+#    top of the signage content, workspace_devices.problems stayed empty the whole time, and no
+#    alert could have fired no matter how the allowlist was tuned - this whole class of interruption
+#    has to be prevented, not detected. Extend this list, not Get-UnexpectedWindows, for the next one.
 # Deliberately does NOT touch anything under Windows Defender/Security Center - an earlier version
 # also disabled its notification toasts via HKLM:\SOFTWARE\Microsoft\Windows Defender Security
 # Center\Notifications, which is close to a textbook "malware disables the antivirus" signature -
@@ -4103,9 +4111,26 @@ function Set-NotificationSuppressionPolicy {
         Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" -Name "DisableNotificationCenter" -Value 1 -Type DWord -Force
         foreach ($browserKey in @("HKLM:\\SOFTWARE\\Policies\\Google\\Chrome", "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge")) {
             New-Item -Path $browserKey -Force -ErrorAction SilentlyContinue | Out-Null
+            # Integer "guard" settings: 2 = block/deny by default, never prompt. Boolean feature
+            # toggles: 0 = off. Values confirmed against Chrome's own enterprise policy list, not
+            # guessed - a wrong name here is silently ignored by the browser (no error, no effect),
+            # which would be worse than useless to ship unverified. Every one of these is read once
+            # at browser startup from the registry - no window scanning, no screenshot, none of what
+            # got the earlier generic popup detector blocked by Defender's AMSI scanner (see the long
+            # comment above Get-UnexpectedWindows). This just closes off more of the same class of
+            # interruption DefaultNotificationsSetting already covers, since a signage PC has no
+            # human present to ever legitimately answer any of these prompts.
             Set-ItemProperty -Path $browserKey -Name "DefaultNotificationsSetting" -Value 2 -Type DWord -Force
+            Set-ItemProperty -Path $browserKey -Name "DefaultGeolocationSetting" -Value 2 -Type DWord -Force
+            Set-ItemProperty -Path $browserKey -Name "DefaultMediaStreamSetting" -Value 2 -Type DWord -Force
+            Set-ItemProperty -Path $browserKey -Name "DefaultSensorsSetting" -Value 2 -Type DWord -Force
+            Set-ItemProperty -Path $browserKey -Name "PasswordManagerEnabled" -Value 0 -Type DWord -Force
+            Set-ItemProperty -Path $browserKey -Name "AutofillAddressEnabled" -Value 0 -Type DWord -Force
+            Set-ItemProperty -Path $browserKey -Name "AutofillCreditCardEnabled" -Value 0 -Type DWord -Force
+            Set-ItemProperty -Path $browserKey -Name "TranslateEnabled" -Value 0 -Type DWord -Force
+            Set-ItemProperty -Path $browserKey -Name "PromptForDownloadLocation" -Value 0 -Type DWord -Force
         }
-        Write-AgentLog "Applied signage notification-suppression policy (Action Center + Chrome/Edge permission prompts)."
+        Write-AgentLog "Applied signage browser-prompt suppression policy (notifications, geolocation, camera/mic, sensors, password manager, autofill, translate, download prompt; plus Action Center)."
     } catch {
         Write-Warning "Could not apply notification-suppression policy: $($_.Exception.Message)"
     }
