@@ -4271,7 +4271,14 @@ function Invoke-PollCycle {
                 Write-AgentLog "Could not update the RustDesk password: $applyResult"
             }
         }
-    } catch {}
+    } catch {
+        # This used to be an empty catch, which silently swallowed anything that went wrong handling
+        # a delivered secret - the server would still mark the delivery claimed (that happens inside
+        # the same request that returns it), so it looked identical to a successful, quiet no-op poll
+        # forever, with no way to tell the two apart from the dashboard. Logging it here is what
+        # actually surfaces the real cause instead of guessing at one.
+        Write-AgentLog "Poll cycle error: $($_.Exception.Message)"
+    }
     if ($forceRequested) {
         Invoke-Checkin -Forced
     } else {
