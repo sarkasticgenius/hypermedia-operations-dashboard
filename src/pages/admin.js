@@ -1,4 +1,5 @@
 import { STATE, loadData, invalidate, openModal, closeModal, toast, setState } from '../state.js';
+import { supabase } from '../supabaseClient.js';
 import { loadingCard, registerModal } from '../modals.js';
 import { PERMISSION_AREAS, PERM_FULL, PERM_NONE } from '../auth.js';
 import { listUsers, createUser, updateUserProfile, updateUserPermissions, setUserActive } from '../data/users.js';
@@ -6,7 +7,7 @@ import { listClients } from '../data/clients.js';
 import { listAuditLog } from '../data/auditLog.js';
 import { listLoginHistory } from '../data/loginHistory.js';
 import { logAudit } from '../lib/audit.js';
-import { esc, fmtDateTime } from '../lib/format.js';
+import { esc, fmtDateTime, jsAttrSq } from '../lib/format.js';
 import { summarizeUserAgent } from '../lib/userAgent.js';
 import { startImpersonation } from '../impersonate.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
@@ -62,6 +63,7 @@ function renderUsersTab() {
           <button class="btn-sm" onclick="App.editUser('${u.id}')">Edit</button>
           <button class="btn-sm" onclick="App.toggleUserActive('${u.id}', ${u.active})">${u.active ? 'Deactivate' : 'Activate'}</button>
           ${u.id !== STATE.user?.id && u.active ? `<button class="btn-sm" onclick="App.impersonateUser('${u.id}')">Impersonate</button>` : ''}
+          ${u.id !== STATE.user?.id ? `<button class="btn-sm" onclick="App.resetUserMfa('${u.id}', '${jsAttrSq(u.name || u.username)}')">Reset 2FA</button>` : ''}
         </td>
       </tr>
     `;
@@ -212,6 +214,22 @@ export async function impersonateUser(id) {
   try {
     await startImpersonation(id);
     toast('Now viewing as this user - use "Return to Admin" at the top to switch back');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// The recovery path for the opt-in two-factor feature (see src/pages/account.js) - a user who
+// enrolled and then lost their phone would otherwise be permanently stuck on the login challenge
+// screen with no way to prove the second factor. Removes whatever TOTP factor(s) exist on the
+// target account server-side (see supabase/functions/admin-reset-mfa); they can enroll a new one
+// from Account once they're back in.
+export async function resetUserMfa(id, name) {
+  if (!confirm(`Reset two-factor authentication for ${name}? They will only need their password to sign in until they set it up again.`)) return;
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-reset-mfa', { body: { targetUserId: id } });
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+    await logAudit('Reset two-factor authentication', data.targetName || name);
+    toast(data.removed > 0 ? 'Two-factor authentication reset' : 'This account had no two-factor authentication enabled');
   } catch (e) { toast(e.message, 'error'); }
 }
 
