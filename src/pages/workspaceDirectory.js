@@ -977,7 +977,13 @@ export function renderWorkspaceDirectory() {
   if (devices?.__error) return loadingCard(devices.__error);
   if (simCards?.__error) return loadingCard(simCards.__error);
   if (assetInventory?.__error) return loadingCard(assetInventory.__error);
-  const ghostHtml = ghostBannerHtml(Array.isArray(ghostDevices) ? ghostDevices : []);
+  // listGhostWorkspaceDevices only checks whether last_seen EVER landed after removed_at - a fact
+  // that stays true forever once it happens once, even long after the PC has genuinely stopped
+  // checking in (e.g. a remote uninstall that actually took). Narrowed to isOnline() here so the
+  // banner reflects "is this device still actually reporting in right now", not "did that ever
+  // happen historically" - a ghost ages out of the banner on its own once it truly goes quiet,
+  // instead of sitting there forever needing someone to notice and delete it permanently.
+  const ghostHtml = ghostBannerHtml((Array.isArray(ghostDevices) ? ghostDevices : []).filter(isOnline));
 
   if (!devices.length) {
     return `${ghostHtml}<div class="card"><div class="empty">No devices have checked in yet. Install the agent (Settings &gt; Integrations &gt; Jstar Agent) on a PC and it'll appear here within a few minutes of install (after that, it checks in every 6 hours).</div></div>`;
