@@ -1,15 +1,13 @@
 import { supabase } from '../supabaseClient.js';
 import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
+import { fetchAllPages } from '../lib/pagedFetch.js';
 
 export async function listLocations() {
-  const { data, error } = await supabase
+  return fetchAllPages((withCount) => supabase
     .from('locations')
-    .select('*, location_sub_assets(*)')
+    .select('*, location_sub_assets(*)', withCount ? { count: 'exact' } : undefined)
     .is('deleted_at', null)
-    .order('name')
-    .range(0, 9999);
-  if (error) throw error;
-  return data;
+    .order('name'));
 }
 
 export async function saveLocation(row) {

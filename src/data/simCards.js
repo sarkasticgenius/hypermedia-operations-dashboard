@@ -1,10 +1,11 @@
 import { supabase } from '../supabaseClient.js';
 import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
+import { fetchAllPages } from '../lib/pagedFetch.js';
 
 export async function listSimCards() {
-  const { data, error } = await supabase.from('sim_cards').select('*').is('deleted_at', null).order('sim_number').range(0, 9999);
-  if (error) throw error;
-  return data;
+  return fetchAllPages((withCount) => supabase.from('sim_cards')
+    .select('*', withCount ? { count: 'exact' } : undefined)
+    .is('deleted_at', null).order('sim_number'));
 }
 
 export async function saveSimCard(row) {

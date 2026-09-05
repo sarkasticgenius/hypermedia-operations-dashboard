@@ -1,5 +1,6 @@
 import { supabase } from '../supabaseClient.js';
 import { STATE } from '../state.js';
+import { fetchAllPages } from '../lib/pagedFetch.js';
 
 // Shared soft-delete primitives reused by every entity's delete/restore functions, so "delete"
 // never removes a row outright - it's recoverable from the Recycle Bin until an admin purges it
@@ -24,10 +25,8 @@ export async function permanentlyDeleteRow(table, id) {
 }
 
 export async function listDeletedRows(table, select) {
-  const { data, error } = await supabase.from(table)
-    .select(select || '*')
+  return fetchAllPages((withCount) => supabase.from(table)
+    .select(select || '*', withCount ? { count: 'exact' } : undefined)
     .not('deleted_at', 'is', null)
-    .order('deleted_at', { ascending: false });
-  if (error) throw error;
-  return data;
+    .order('deleted_at', { ascending: false }));
 }

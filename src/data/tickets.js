@@ -1,11 +1,12 @@
 import { supabase } from '../supabaseClient.js';
 import { uploadAttachment } from '../lib/storage.js';
 import { softDeleteRow, restoreRow, permanentlyDeleteRow, listDeletedRows } from './softDelete.js';
+import { fetchAllPages } from '../lib/pagedFetch.js';
 
 export async function listTickets() {
-  const { data, error } = await supabase.from('tickets').select('*').is('deleted_at', null).order('date_reported', { ascending: false }).range(0, 9999);
-  if (error) throw error;
-  return data;
+  return fetchAllPages((withCount) => supabase.from('tickets')
+    .select('*', withCount ? { count: 'exact' } : undefined)
+    .is('deleted_at', null).order('date_reported', { ascending: false }));
 }
 
 export async function saveTicket(row, photoFile) {
