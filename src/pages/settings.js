@@ -725,7 +725,7 @@ export function resetWorkspaceDirectoryOptimizerScript() {
 // they close (same same-process-popup case, 5 Sep 2026), not just an unrelated office machine -
 // remove it once that's confirmed clean. PC-88AEDD61E8C5 served the same purpose and already
 // confirmed running v86 clean, so it's back off the canary list.
-export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST', 'PC-88AEDD621627'];
+export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST'];
 
 // Publishes to the TEST PCs only (see AGENT_CANARY_HOSTNAMES). Writes the canary slot, which
 // workspace-directory-agent-shell serves only to those hostnames - every other device keeps
@@ -1976,6 +1976,7 @@ function Invoke-UninstallCleanup {
     Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
     Get-ScheduledTask -TaskName $PollTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
     Get-ScheduledTask -TaskName $TrayTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    Get-ScheduledTask -TaskName $DuScrapeTaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
     # Must run BEFORE the Remove-Item below deletes $ServiceExePath out from under it - stop+uninstall
     # via WinSW itself when it's still on disk, falling back to sc.exe delete (which needs no exe at
     # all) for the rare case the wrapper is already gone but Windows still has the service registered.
@@ -1991,6 +1992,21 @@ function Invoke-UninstallCleanup {
         } catch {}
     }
     Stop-TrayProcesses
+    # Backstop: the WinSW stop/uninstall above is wrapped in a try/catch with no fallback, so a
+    # silent failure there (or of the scheduled-task unregisters) used to leave an already-running
+    # instance alive and still checking in forever after an "uninstall". Kill any surviving process
+    # running this agent's own installed script directly - same safe match Close-StrayAgentWindows
+    # uses. Excludes $PID so an uninstall invoked as one of these processes itself (the ::UNINSTALL
+    # pending-command path runs inline on the poll process) can still finish and report its result.
+    try {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Filter (
+            "Name='powershell.exe' or Name='powershell_ise.exe' or Name='pwsh.exe'"
+        ) | Where-Object {
+            $_.CommandLine -and $_.CommandLine -like "*$InstalledScriptPath*" -and $_.ProcessId -ne $PID
+        } | ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
     Remove-Item -Path $StateDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
