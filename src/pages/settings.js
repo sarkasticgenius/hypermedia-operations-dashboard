@@ -720,7 +720,10 @@ export function resetWorkspaceDirectoryOptimizerScript() {
 // percentage or a "first N devices" rule: which machines are safe to break is a judgement about
 // physical access (an office test bench you can walk over to) and business impact (not a signage
 // screen in a mall), and nothing in the device data expresses that.
-export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST'];
+// PC-88AEDD61E8C5 added alongside HM-OFFICE-TEST specifically to verify the new
+// BrowserPopupScanner/browser-prompt-suppression changes against the real PC that surfaced the
+// gap they close, not just an unrelated office machine - remove it once that's confirmed clean.
+export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST', 'PC-88AEDD61E8C5'];
 
 // Publishes to the TEST PCs only (see AGENT_CANARY_HOSTNAMES). Writes the canary slot, which
 // workspace-directory-agent-shell serves only to those hostnames - every other device keeps
@@ -1486,6 +1489,60 @@ try {
     if ($ownConsoleWindow -ne [IntPtr]::Zero) { [WorkspaceDirectoryAgent.Win32]::ShowWindow($ownConsoleWindow, 0) | Out-Null } # 0 = SW_HIDE
 } catch {}
 
+# Finds a SEPARATE class of stray window Get-UnexpectedWindows (defined later) can never see on its
+# own: Get-Process exposes exactly one MainWindowHandle per process, so a native dialog Chrome/Edge
+# spawns from its OWN process (a permission prompt, a JS alert()/confirm(), a print dialog) has no
+# property anywhere in .NET to read it from - it is a second top-level window Windows associates
+# with that PID, and chrome/msedge are themselves allowlisted below as the expected kiosk browser
+# regardless. Deliberately narrower than the generic EnumWindows+screenshot scan that got an earlier
+# version of this agent blocked by Windows Defender's AMSI scanner (see the long comment on
+# Set-NotificationSuppressionPolicy and Get-UnexpectedWindows further down): this walks every window
+# on the desktop the same way that one did, but keeps only the ones owned by a process id already
+# known to be chrome.exe/msedge.exe - never captures a pixel, never touches the network directly
+# (title text rides in the normal check-in payload, exactly like Get-UnexpectedWindows' own findings
+# already do) - a materially different shape than "enumerate + screenshot + upload everything",
+# closer to Get-Process's own already-uncontested MainWindowTitle read than to what was blocked.
+# Declared once here, at the top, never inside a function the -Service loop calls repeatedly - see
+# Get-UnexpectedWindows' and Close-StrayAgentWindows' own comments for exactly what "Add-Type inside
+# a repeating call" breaks (a terminating "already exists" that -ErrorAction SilentlyContinue does
+# not actually suppress).
+Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace WorkspaceDirectoryAgent {
+    public static class BrowserPopupScanner {
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+        [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+
+        public static List<KeyValuePair<uint, string>> FindExtraWindows(HashSet<uint> pids, HashSet<IntPtr> mainHandles) {
+            var result = new List<KeyValuePair<uint, string>>();
+            EnumWindows(delegate (IntPtr hWnd, IntPtr lParam) {
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (!pids.Contains(pid)) return true;
+                if (mainHandles.Contains(hWnd)) return true;
+                if (!IsWindowVisible(hWnd) || IsIconic(hWnd)) return true;
+                int len = GetWindowTextLength(hWnd);
+                if (len == 0) return true;
+                var sb = new StringBuilder(len + 1);
+                GetWindowText(hWnd, sb, sb.Capacity);
+                string title = sb.ToString().Trim();
+                if (title.Length > 0) { result.Add(new KeyValuePair<uint, string>(pid, title)); }
+                return true;
+            }, IntPtr.Zero);
+            return result;
+        }
+    }
+}
+'@
+
 # Self-elevate if not already running as Administrator (needed to register/unregister the
 # SYSTEM-level task either way, install OR uninstall). Skipped for -Once/-PollOnce - both only ever
 # run FROM an already-SYSTEM-elevated scheduled task, so re-elevating would pop a UAC prompt on a
@@ -1641,6 +1698,30 @@ function Get-UnexpectedWindows {
             $found.Add([pscustomobject]@{ title = $_.MainWindowTitle.Trim(); process = $procName })
         }
     }
+
+    # Chrome/Edge's OWN secondary windows - see the long comment on BrowserPopupScanner near the
+    # top of this file for why the loop above can never see these no matter how the allowlist is
+    # tuned. Wrapped in its own try/catch and kept fully separate from the loop above so a problem
+    # here (a marshaling edge case, a missing type on some Windows build) degrades to "this one
+    # extra check found nothing this cycle" rather than ever breaking the already-working detector
+    # above it.
+    try {
+        $browserProcs = @(Get-Process -Name 'chrome', 'msedge' -ErrorAction SilentlyContinue)
+        if ($browserProcs.Count -gt 0) {
+            $pids = New-Object 'System.Collections.Generic.HashSet[uint32]'
+            $mainHandles = New-Object 'System.Collections.Generic.HashSet[IntPtr]'
+            foreach ($bp in $browserProcs) {
+                [void]$pids.Add([uint32]$bp.Id)
+                if ($bp.MainWindowHandle -ne [IntPtr]::Zero) { [void]$mainHandles.Add($bp.MainWindowHandle) }
+            }
+            $extraWindows = [WorkspaceDirectoryAgent.BrowserPopupScanner]::FindExtraWindows($pids, $mainHandles)
+            foreach ($extra in $extraWindows) {
+                $ownerProc = $browserProcs | Where-Object { [uint32]$_.Id -eq $extra.Key } | Select-Object -First 1
+                $found.Add([pscustomobject]@{ title = $extra.Value; process = if ($ownerProc) { $ownerProc.ProcessName } else { 'browser' } })
+            }
+        }
+    } catch {}
+
     return $found
 }
 
