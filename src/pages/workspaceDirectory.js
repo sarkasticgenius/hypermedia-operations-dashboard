@@ -391,15 +391,19 @@ const HOSTNAME_CATEGORY_OVERRIDES = {
   'MOEHLGPC02': 'hologram',
 };
 
-// Confirmed by ops, 4 Sep 2026: both hostnames' matched Broadsign screens carry venue "Emirates
-// Towers" with category "Metro" - one of the two SHZ_BRIDGE_VENUE_NAMES entries with no AUH/DXB
-// suffix at all (see that comment), so Asset Inventory has no text signal to tell the real
-// pedestrian-bridge screen apart from the in-station one for this specific venue, and
-// assetCategoryTab's exact-match falls into 'shzBridges' by default. The hostnames themselves say
-// otherwise - EMT-CONCOURSELE/EMT-CONCOURSERI are Emirates Towers station's Concourse Left/Right
-// screens, not the SHZ bridge placement - so they're pulled back to 'metro' in deviceCategoryTab
-// below rather than trying to make the venue-name match itself smarter.
-const METRO_NOT_BRIDGE_HOSTNAMES = new Set(['EMT-CONCOURSELE', 'EMT-CONCOURSERI']);
+// Confirmed by ops: these hostnames' matched Broadsign screens carry venue "Emirates Towers" or
+// "Financial Centre" with category "Metro" - the ONLY two SHZ_BRIDGE_VENUE_NAMES entries with no
+// AUH/DXB suffix at all (see that comment), so Asset Inventory has no text signal to tell the
+// real pedestrian-bridge screen apart from the in-station one for either venue, and
+// assetCategoryTab's exact-match falls into 'shzBridges' by default for both. The hostnames
+// themselves say otherwise - EMT-CONCOURSELE/EMT-CONCOURSERI are Emirates Towers station's
+// Concourse Left/Right screens, FINANCIAL-CONCO/FINANCIALCENTRE are Financial Centre station's -
+// so they're pulled back to 'metro' in deviceCategoryTab below rather than trying to make the
+// venue-name match itself smarter. Since these are the only two ambiguous bare names that exist,
+// any future PC matched to one of them belongs here too rather than needing a third mechanism.
+const METRO_NOT_BRIDGE_HOSTNAMES = new Set([
+  'EMT-CONCOURSELE', 'EMT-CONCOURSERI', 'FINANCIAL-CONCO', 'FINANCIALCENTRE',
+]);
 
 // A device's venue category, resolved the same way its Location cell is (see locationCellHtml):
 // prefer the venue of the screen it actually drives (matched by Broadsign/Grassfish Player Box ID)
