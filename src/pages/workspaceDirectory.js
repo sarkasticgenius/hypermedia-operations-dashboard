@@ -12,7 +12,8 @@ import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
 import { logAudit } from '../lib/audit.js';
 import { supabase } from '../supabaseClient.js';
-import { problemType, problemTypeLabel, visibleProblems } from '../lib/workspaceProblems.js';
+import { problemType, problemTypeLabel, visibleProblems, PROBLEM_TYPE_OPTIONS } from '../lib/workspaceProblems.js';
+import { getAllSettings, saveSetting } from '../data/settings.js';
 import { isMafRow, normalizeVenueText, assetInventoryForLocation } from '../data/locationStats.js';
 
 // The agent's light heartbeat runs every 20 minutes (see Invoke-Checkin's -Light handling in the
@@ -524,9 +525,18 @@ function matchedScreenSearchText(d, index) {
   return [...parts, ...venues].join(' ');
 }
 
+// Wraps visibleProblems with whatever this fleet has globally marked as a known issue (see
+// renderWorkspaceDirectory's own settings load and the Known Issues toggle near the KPI row) -
+// centralized here so every call site in this file agrees on the same list, rather than each one
+// re-reading STATE.pageData.settings itself.
+function visibleDeviceProblems(d) {
+  const globalIgnored = STATE.pageData.settings?.data?.workspaceDirectoryIgnoredProblemTypes || [];
+  return visibleProblems(d, globalIgnored);
+}
+
 function deviceMatchesTab(d, tabKey, categoryByDeviceId) {
   if (tabKey === 'all') return true;
-  if (tabKey === 'withIssues') return visibleProblems(d).length > 0;
+  if (tabKey === 'withIssues') return visibleDeviceProblems(d).length > 0;
   if (tabKey === 'dataCheckFailed') return dataCheckFailedToday(d);
   return categoryByDeviceId.get(d.id) === tabKey;
 }
@@ -857,7 +867,7 @@ function duScrapeStatusHtml(d) {
 
 function deviceRow(d, editOk, deleteOk, assetInventory, selectedIds, sim) {
   const online = isOnline(d);
-  const problemCount = visibleProblems(d).length;
+  const problemCount = visibleDeviceProblems(d).length;
   // Resolved once and reused by both the Location and Matched Screen cells below.
   const matches = matchedScreensFor(d, assetInventory);
   // The whole row opens Details. Handled on the <tr> rather than by styling the hostname as a link,
@@ -973,6 +983,9 @@ export function renderWorkspaceDirectory() {
   // reuses whatever's already fetched instead of pulling a second copy of a large table.
   const assetInventory = loadData('assetInventory', listAssetInventory);
   const ghostDevices = loadData('ghostWorkspaceDevices', listGhostWorkspaceDevices);
+  // Same cache key settings.js itself uses - drives visibleDeviceProblems' fleet-wide "known issue"
+  // ignore list (see the Known Issues toggle near the KPI row below).
+  loadData('settings', getAllSettings);
   if (devices === null || simCards === null || assetInventory === null) return loadingCard();
   if (devices?.__error) return loadingCard(devices.__error);
   if (simCards?.__error) return loadingCard(simCards.__error);
@@ -992,7 +1005,7 @@ export function renderWorkspaceDirectory() {
   const simById = new Map(simCards.map((s) => [s.id, s]));
   const online = devices.filter(isOnline).length;
   const offline = devices.length - online;
-  const withProblems = devices.filter((d) => visibleProblems(d).length).length;
+  const withProblems = devices.filter((d) => visibleDeviceProblems(d).length).length;
 
   // Resolved once per device up front (each call walks that device's matched screens) and reused
   // for every tab's count plus the active filter below, rather than recomputing per tab.
@@ -1095,12 +1108,15 @@ export function renderWorkspaceDirectory() {
       <div class="kpi"><div class="label">Offline</div><div class="value" style="color:#c0392b;">${offline}</div></div>
       <div class="kpi"><div class="label">With Issues</div><div class="value" style="color:${withProblems ? '#c0392b' : 'inherit'};">${withProblems}</div></div>
     </div>
+    ${isAdmin() ? knownIssuesToggleHtml(STATE.pageData.settings?.data?.workspaceDirectoryIgnoredProblemTypes || []) : ''}
     ${tabsHtml}
     ${editOk && selectedIds.size > 0 ? `<div class="banner" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
       <span><b>${selectedIds.size}</b> device${selectedIds.size === 1 ? '' : 's'} selected</span>
       <div style="display:flex;gap:8px;">
         <button class="btn-sm" title="Pull fresh inventory (or push each one's queued command) within ~20 minutes instead of waiting for its next scheduled cycle" onclick="App.bulkForceWorkspaceInventoryPull()">Force Selected</button>
         <button class="btn-sm" onclick="App.openWorkspaceBulkDeployModal()">Deploy to Selected</button>
+        <button class="btn-sm" onclick="App.openWorkspaceBulkAnyDeskPasswordModal()">Reset AnyDesk Passwords</button>
+        <button class="btn-sm" onclick="App.openWorkspaceBulkRustDeskPasswordModal()">Reset RustDesk Passwords</button>
         <button class="btn-sm" title="Hold these PCs at the agent version they are running now - no self-update until re-enabled" onclick="App.bulkToggleWorkspaceDeviceUpdates(true)">Disable Updates</button>
         <button class="btn-sm" title="Let these PCs self-update again - each jumps straight to the latest published version, not through the ones it missed" onclick="App.bulkToggleWorkspaceDeviceUpdates(false)">Enable Updates</button>
         <button class="btn-sm" onclick="App.clearWorkspaceSelection()">Clear Selection</button>
@@ -1165,6 +1181,35 @@ export function refreshWorkspaceDirectory() {
   toast('Refreshed');
 }
 
+// Collapsed by default so it doesn't compete with the KPI row for attention - this is a set-and-
+// forget control, not something admins need looking at every visit.
+function knownIssuesToggleHtml(ignoredTypes) {
+  const ignored = new Set(ignoredTypes);
+  return `<details style="margin-bottom:14px;">
+    <summary style="cursor:pointer;font-size:12.5px;color:var(--muted);">Known Issues (ignored fleet-wide)</summary>
+    <div class="small muted" style="margin:6px 0 8px;">Checked types never count toward "With Issues" or show on any device's problem list, fleet-wide - for problems every admin has already agreed aren't worth surfacing per-device (e.g. antivirus intentionally disabled on a locked-down kiosk). A device's own per-problem "Ignore" link is separate and only ever mutes that one PC.</div>
+    <div style="display:flex;flex-direction:column;gap:4px;">
+      ${PROBLEM_TYPE_OPTIONS.map((t) => `<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;">
+        <input type="checkbox" ${ignored.has(t.type) ? 'checked' : ''} onchange="App.toggleKnownIssueType('${t.type}', this.checked)">
+        ${esc(t.label)}
+      </label>`).join('')}
+    </div>
+  </details>`;
+}
+
+export async function toggleKnownIssueType(type, checked) {
+  const settings = STATE.pageData.settings?.data || {};
+  const current = new Set(settings.workspaceDirectoryIgnoredProblemTypes || []);
+  if (checked) current.add(type); else current.delete(type);
+  try {
+    await saveSetting('workspaceDirectoryIgnoredProblemTypes', [...current]);
+    await logAudit(checked ? 'Mark problem type as known issue (fleet-wide)' : 'Un-mark fleet-wide known issue', type);
+    invalidate('settings');
+    setState({});
+    toast(checked ? 'Ignored fleet-wide from now on' : 'No longer ignored fleet-wide');
+  } catch (e) { toast(e.message || 'Failed to update', 'error'); }
+}
+
 // Admin-only (the button that calls this is gated by isAdmin() in renderWorkspaceDirectory) - the
 // whole fleet, every field the table/Details modal surfaces, not just what's currently
 // filtered/paged on screen. Reuses whatever's already loaded rather than re-fetching, so this is
@@ -1205,7 +1250,7 @@ export async function exportWorkspaceDirectoryExcel() {
     { label: 'DU Scraped At', value: (d) => fmtDateTime(d.du_scraped_at) },
     { label: 'Volumes', value: (d) => (d.volumes || []).map((v) => `${v.drive || ''}${v.label ? ` (${v.label})` : ''}: ${v.freeGb ?? '?'} of ${v.sizeGb ?? '?'} GB free`).join('; ') },
     { label: 'Antivirus', value: (d) => d.antivirus || '' },
-    { label: 'Problems', value: (d) => visibleProblems(d).join('; ') },
+    { label: 'Problems', value: (d) => visibleDeviceProblems(d).join('; ') },
     { label: 'Updates Disabled', value: (d) => (d.updates_disabled ? 'Yes' : 'No') },
     { label: 'Updates Pinned Version', value: (d) => (d.updates_pinned_version ? formatAgentVersion(d.updates_pinned_version) : '') },
     { label: 'Notes', value: (d) => d.notes || '' },
@@ -1440,6 +1485,73 @@ export async function saveWorkspaceRustDeskPassword(event, deviceId) {
     closeModal();
     toast(`Password sent to ${device.hostname} - it applies within a minute or two.`);
     setState({});
+  } catch (e) {
+    toast(e.message || 'Could not send the password', 'error');
+  }
+}
+
+export function openWorkspaceBulkAnyDeskPasswordModal() {
+  if (!(STATE.workspaceDirectorySelectedIds || []).length) { toast('Select at least one device first', 'error'); return; }
+  openModal('workspaceBulkAnyDeskPassword', {});
+}
+
+// Sends the SAME AnyDesk password to every selected device's PRIMARY AnyDesk install (d.anydesk_id)
+// in one batch insert - same agent_secret_deliveries path as the single-device version above, just
+// fanned out over N rows in one request instead of N requests. A device with no AnyDesk id at all
+// (never installed, or not yet reported) is skipped rather than sent a delivery that can never
+// match an install - see the modal's own skipped-count line. A device running more than one AnyDesk
+// install only gets its primary one changed here; use the single-device modal for a secondary one.
+export async function saveWorkspaceBulkAnyDeskPassword(event) {
+  event.preventDefault();
+  const ids = STATE.workspaceDirectorySelectedIds || [];
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const targets = ids.map((id) => devices.find((d) => d.id === id)).filter((d) => d && d.anydesk_id);
+  if (!targets.length) { toast('None of the selected devices have a known AnyDesk ID.', 'error'); return; }
+  const pw = document.getElementById('wd-bulk-anydesk-pw').value || '';
+  const pw2 = document.getElementById('wd-bulk-anydesk-pw2').value || '';
+  if (pw !== pw2) { toast('The two passwords do not match.', 'error'); return; }
+  if (pw.length < 8) { toast('Use at least 8 characters - this password grants remote control of the PC.', 'error'); return; }
+  try {
+    const { error } = await supabase.from('agent_secret_deliveries')
+      .insert(targets.map((d) => ({ hostname: d.hostname, kind: 'anydeskPassword', secret: pw, target: d.anydesk_id })));
+    if (error) throw error;
+    await logAudit('Bulk send AnyDesk password', `${targets.length} device(s): ${targets.map((d) => d.hostname).join(', ')}`);
+    closeModal();
+    setState({ workspaceDirectorySelectedIds: [] });
+    toast(`Password sent to ${targets.length} device(s) - each applies within a minute or two of its next check-in.`);
+  } catch (e) {
+    toast(e.message || 'Could not send the password', 'error');
+  }
+}
+
+export function openWorkspaceBulkRustDeskPasswordModal() {
+  if (!(STATE.workspaceDirectorySelectedIds || []).length) { toast('Select at least one device first', 'error'); return; }
+  openModal('workspaceBulkRustDeskPassword', {});
+}
+
+// Same batch-insert approach as the AnyDesk version above, but every selected device is sent a
+// delivery regardless of whether a RustDesk id has ever been reported for it - there's no target to
+// resolve up front (Get-RustDeskId/Set-RustDeskPassword only ever address the one install a PC can
+// have), and a PC with RustDesk not installed just logs "RustDesk is not installed on this PC" and
+// moves on, the same as it would for a single-device send.
+export async function saveWorkspaceBulkRustDeskPassword(event) {
+  event.preventDefault();
+  const ids = STATE.workspaceDirectorySelectedIds || [];
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const targets = ids.map((id) => devices.find((d) => d.id === id)).filter(Boolean);
+  if (!targets.length) { toast('No devices selected', 'error'); return; }
+  const pw = document.getElementById('wd-bulk-rustdesk-pw').value || '';
+  const pw2 = document.getElementById('wd-bulk-rustdesk-pw2').value || '';
+  if (pw !== pw2) { toast('The two passwords do not match.', 'error'); return; }
+  if (pw.length < 8) { toast('Use at least 8 characters - this password grants remote control of the PC.', 'error'); return; }
+  try {
+    const { error } = await supabase.from('agent_secret_deliveries')
+      .insert(targets.map((d) => ({ hostname: d.hostname, kind: 'rustdeskPassword', secret: pw })));
+    if (error) throw error;
+    await logAudit('Bulk send RustDesk password', `${targets.length} device(s): ${targets.map((d) => d.hostname).join(', ')}`);
+    closeModal();
+    setState({ workspaceDirectorySelectedIds: [] });
+    toast(`Password sent to ${targets.length} device(s) - each applies within a minute or two of its next check-in.`);
   } catch (e) {
     toast(e.message || 'Could not send the password', 'error');
   }
@@ -1942,7 +2054,7 @@ registerModal('workspaceDetails', (data) => {
   // since most problem strings embed details that change over time (a disk-space message's exact GB
   // free, a popup message's exact window title) - matching literal text would stop working the
   // moment those details shifted even slightly.
-  const shownProblems = visibleProblems(d);
+  const shownProblems = visibleDeviceProblems(d);
   const ignoredTypes = d.ignored_problem_types || [];
   const problemsHtml = shownProblems.length
     ? `<ul style="margin:0;padding-left:18px;">${shownProblems.map((p) => `<li class="small" style="color:var(--red);display:flex;justify-content:space-between;gap:8px;align-items:center;">
@@ -2141,6 +2253,71 @@ registerModal('workspaceRustDeskPassword', (data) => {
       <div class="modal-actions">
         <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
         <button type="submit" class="btn-sm">Send to this PC</button>
+      </div>
+    </form>`;
+});
+
+registerModal('workspaceBulkAnyDeskPassword', () => {
+  const ids = STATE.workspaceDirectorySelectedIds || [];
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const selected = ids.map((id) => devices.find((d) => d.id === id)).filter(Boolean);
+  const targets = selected.filter((d) => d.anydesk_id);
+  const skipped = selected.filter((d) => !d.anydesk_id);
+  return `
+    <h3>Set AnyDesk Password - ${targets.length} device(s)</h3>
+    <div class="small muted" style="margin-bottom:10px;">${esc(targets.map((d) => d.hostname).join(', ')) || 'None of the selected devices have a known AnyDesk ID.'}</div>
+    ${skipped.length ? `<div class="small" style="border-left:3px solid #e07a2c;padding:8px 12px;margin-bottom:10px;background:var(--bg);">${skipped.length} selected device(s) skipped - no AnyDesk ID reported yet: ${esc(skipped.map((d) => d.hostname).join(', '))}</div>` : ''}
+    <form onsubmit="App.saveWorkspaceBulkAnyDeskPassword(event)" autocomplete="off">
+      <div class="field">
+        <label>New AnyDesk password</label>
+        <input id="wd-bulk-anydesk-pw" type="password" autocomplete="new-password" spellcheck="false" required>
+        <div class="small muted" style="margin-top:4px;">Applies to each device's PRIMARY AnyDesk install only. A device running a second AnyDesk install needs the single-device modal for that one.</div>
+      </div>
+      <div class="field">
+        <label>Confirm password</label>
+        <input id="wd-bulk-anydesk-pw2" type="password" autocomplete="new-password" spellcheck="false" required>
+      </div>
+      <div class="small" style="border-left:3px solid #e07a2c;padding:8px 12px;margin:12px 0;background:var(--bg);">
+        <b>The SAME password is set on all ${targets.length} device(s).</b> It is sent to each PC and
+        destroyed as soon as that PC confirms the change - never stored in this dashboard, never
+        written to the audit log, and cannot be read back by anyone, including you. Note it down
+        somewhere safe before sending. Consider whether one shared password across this many
+        machines is the right tradeoff versus setting them individually.
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+        <button type="submit" class="btn-sm" ${targets.length ? '' : 'disabled'}>Send to ${targets.length} device(s)</button>
+      </div>
+    </form>`;
+});
+
+registerModal('workspaceBulkRustDeskPassword', () => {
+  const ids = STATE.workspaceDirectorySelectedIds || [];
+  const devices = STATE.pageData.workspaceDevices?.data || [];
+  const targets = ids.map((id) => devices.find((d) => d.id === id)).filter(Boolean);
+  return `
+    <h3>Set RustDesk Password - ${targets.length} device(s)</h3>
+    <div class="small muted" style="margin-bottom:10px;">${esc(targets.map((d) => d.hostname).join(', ')) || `${targets.length} device(s)`}</div>
+    <form onsubmit="App.saveWorkspaceBulkRustDeskPassword(event)" autocomplete="off">
+      <div class="field">
+        <label>New RustDesk password</label>
+        <input id="wd-bulk-rustdesk-pw" type="password" autocomplete="new-password" spellcheck="false" required>
+        <div class="small muted" style="margin-top:4px;">A device with RustDesk not installed simply logs that and is skipped - no harm in including it.</div>
+      </div>
+      <div class="field">
+        <label>Confirm password</label>
+        <input id="wd-bulk-rustdesk-pw2" type="password" autocomplete="new-password" spellcheck="false" required>
+      </div>
+      <div class="small" style="border-left:3px solid #e07a2c;padding:8px 12px;margin:12px 0;background:var(--bg);">
+        <b>The SAME password is set on all ${targets.length} device(s).</b> It is sent to each PC and
+        destroyed as soon as that PC confirms the change - never stored in this dashboard, never
+        written to the audit log, and cannot be read back by anyone, including you. Note it down
+        somewhere safe before sending. Consider whether one shared password across this many
+        machines is the right tradeoff versus setting them individually.
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+        <button type="submit" class="btn-sm" ${targets.length ? '' : 'disabled'}>Send to ${targets.length} device(s)</button>
       </div>
     </form>`;
 });

@@ -15,8 +15,21 @@ const PROBLEM_TYPES = [
   { type: 'no-antivirus', label: 'No antivirus detected', test: (p) => p === 'No antivirus product detected' },
   { type: 'antivirus-disabled', label: 'Antivirus disabled', test: (p) => /is reporting disabled$/.test(p) },
   { type: 'no-remote-access', label: 'No remote-access tool detected', test: (p) => p === 'No remote-access tool (AnyDesk/TeamViewer) detected' },
+  // Checked BEFORE the generic unexpected-popup catch-all below (PROBLEM_TYPES.find stops at the
+  // first match) so this one specific, known-harmless window gets its own narrower type instead of
+  // being lumped in with every other kind of unexpected popup - ignoring it fleet-wide should not
+  // also hide a genuinely different popup (Settings, Microsoft Edge, a driver-updater nag, etc.).
+  // Exact-match on the whole message deliberately: a combined report like "Mappedin Directory
+  // (MappedinDirectory); debug - Notepad (notepad)" still falls through to unexpected-popup below,
+  // since that message also carries a real, different popup worth seeing.
+  { type: 'unexpected-popup-debug-notepad', label: 'Unexpected popup: "debug - Notepad"', test: (p) => /^Unexpected window\/popup detected: debug - Notepad \(notepad\)$/i.test(p) },
   { type: 'unexpected-popup', label: 'Unexpected window/popup detected', test: (p) => /^Unexpected window\/popup detected:/.test(p) },
 ];
+
+// {type, label} pairs only - never the internal `test` matcher - for UI that needs to list every
+// known type (e.g. a fleet-wide "known issues" ignore toggle), without exposing matching internals
+// that aren't its concern.
+export const PROBLEM_TYPE_OPTIONS = PROBLEM_TYPES.map(({ type, label }) => ({ type, label }));
 
 export function problemType(text) {
   const match = PROBLEM_TYPES.find((t) => t.test(text));
@@ -29,8 +42,12 @@ export function problemTypeLabel(type) {
 }
 
 // The problems a device should actually show as issues right now - whatever the agent most
-// recently reported, minus any type this device's admin has chosen to stop seeing.
-export function visibleProblems(device) {
-  const ignored = new Set(device.ignored_problem_types || []);
+// recently reported, minus any type this device's admin has chosen to stop seeing on this one
+// device (ignored_problem_types) or fleet-wide (globalIgnoredTypes - a "known issue" every admin
+// has already agreed isn't worth surfacing per-device, e.g. antivirus intentionally disabled on
+// locked-down kiosks). Defaults to no global list so callers that only ever cared about the
+// per-device case keep working unchanged.
+export function visibleProblems(device, globalIgnoredTypes = []) {
+  const ignored = new Set([...(device.ignored_problem_types || []), ...globalIgnoredTypes]);
   return (device.problems || []).filter((p) => !ignored.has(problemType(p)));
 }
