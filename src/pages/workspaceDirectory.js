@@ -31,6 +31,19 @@ function isOnline(d) {
   return (Date.now() - new Date(d.last_seen).getTime()) / 60000 <= STALE_AFTER_MINUTES;
 }
 
+// Windows' own root/SecurityCenter2 AntivirusProduct WMI class (what Get-AntivirusStatus reads) is
+// known to leave stale duplicate registrations behind after some products update themselves -
+// CrowdStrike Falcon in particular. Deduped by name here, at the two places d.antivirus is actually
+// displayed, rather than at the agent - takes effect immediately instead of waiting for a republish
+// + fleet self-update. An enabled instance wins over a disabled one of the same name, so a leftover
+// stale "disabled" registration can never hide that the product is genuinely running.
+function dedupedAntivirus(d) {
+  return Object.values((d.antivirus || []).reduce((acc, a) => {
+    if (!acc[a.name] || a.enabled) acc[a.name] = a;
+    return acc;
+  }, {}));
+}
+
 // JSON.stringify escapes backslashes/double-quotes per spec but not single quotes - these payloads
 // sit inside single-quoted onclick='...' attributes, so an apostrophe in a location name would
 // otherwise break out (same helper as networkPanels.js's jsonAttr).
@@ -1249,7 +1262,7 @@ export async function exportWorkspaceDirectoryExcel() {
     { label: 'DU Data Left (GB)', value: (d) => d.du_data_left_gb ?? '' },
     { label: 'DU Scraped At', value: (d) => fmtDateTime(d.du_scraped_at) },
     { label: 'Volumes', value: (d) => (d.volumes || []).map((v) => `${v.drive || ''}${v.label ? ` (${v.label})` : ''}: ${v.freeGb ?? '?'} of ${v.sizeGb ?? '?'} GB free`).join('; ') },
-    { label: 'Antivirus', value: (d) => d.antivirus || '' },
+    { label: 'Antivirus', value: (d) => dedupedAntivirus(d).map((a) => `${a.name} (${a.enabled ? 'Enabled' : 'Disabled'})`).join('; ') },
     { label: 'Problems', value: (d) => visibleDeviceProblems(d).join('; ') },
     { label: 'Updates Disabled', value: (d) => (d.updates_disabled ? 'Yes' : 'No') },
     { label: 'Updates Pinned Version', value: (d) => (d.updates_pinned_version ? formatAgentVersion(d.updates_pinned_version) : '') },
@@ -2045,7 +2058,7 @@ registerModal('workspaceDetails', (data) => {
       : ''}
   </div>`;
 
-  const antivirus = d.antivirus || [];
+  const antivirus = dedupedAntivirus(d);
   const antivirusHtml = antivirus.length
     ? antivirus.map((a) => `<span class="badge ${a.enabled ? 'b-blue' : 'b-red'}" style="margin:0 4px 4px 0;">${esc(a.name)} - ${a.enabled ? 'Enabled' : 'Disabled'}</span>`).join('')
     : '<div class="empty">No antivirus data reported.</div>';
