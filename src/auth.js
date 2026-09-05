@@ -59,19 +59,29 @@ export async function initAuth() {
 // false) on any error here - this client-side gate is a UX nudge, not the actual security
 // boundary; that's Stage B's RLS-level aal2 check on is_admin/has_permission/is_own_client/
 // is_active_user, which fails CLOSED regardless of what this function does.
+//
+// The "no challenge needed" branches assign STATE.mfaChallenge directly rather than going through
+// setState() - both call sites (initAuth's bootstrap block and its onAuthStateChange listener)
+// already do their own render() once this whole gate+loadProfile sequence finishes, so a setState()
+// here would only ever add an EXTRA, premature render in between: STATE.user is still null at that
+// point (loadProfile hasn't run yet), so rootRender briefly shows the login page before the real
+// one replaces it a moment later. Confirmed live - a refresh with an already-aal2 session flashed
+// the login screen for a beat on every single reload before this was a direct assignment. Only the
+// genuine "show the challenge screen" transition actually needs setState's immediate render, since
+// that IS the next thing the user should see, with nothing else about to render over it.
 async function gateOnMfaChallenge() {
   try {
     const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-    if (error || !data) { setState({ mfaChallenge: null }); return false; }
+    if (error || !data) { STATE.mfaChallenge = null; return false; }
     if (data.nextLevel === 'aal2' && data.currentLevel !== data.nextLevel) {
       const { data: factorsData } = await supabase.auth.mfa.listFactors();
       const factor = factorsData?.totp?.find((f) => f.status === 'verified');
       if (factor) { setState({ mfaChallenge: { factorId: factor.id } }); return true; }
     }
-    setState({ mfaChallenge: null });
+    STATE.mfaChallenge = null;
     return false;
   } catch {
-    setState({ mfaChallenge: null });
+    STATE.mfaChallenge = null;
     return false;
   }
 }
