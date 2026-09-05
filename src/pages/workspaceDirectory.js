@@ -180,8 +180,19 @@ function commandPresetsHtml(pkgInputId, chocoInputId, targetId) {
       <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('Get-DuDataUsage | ConvertTo-Json', '${targetId}')">Test DU Scrape</button>
       <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget list', '${targetId}')">List Installed (winget)</button>
       <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('choco list --local-only', '${targetId}')">List Installed (choco)</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand(${jsonAttr(EVENT_LOG_CHECK_COMMAND)}, '${targetId}')">Check Event Logs</button>
     </div>`;
 }
+
+// Read-only Get-WinEvent pull, reusing the same Run Command / last_command_output round-trip every
+// other Diagnostics preset already uses - no new backend, no new UI surface. Two logs, since they
+// answer two different questions this fleet actually needs answered: has Defender flagged/blocked
+// anything on this PC (Event IDs 1116/1117 = threat detected/action taken, 5007 = a real-time-
+// protection setting changed - exactly what an AMSI block on the agent would show up as), and has
+// Chrome/Edge/this agent itself crashed or logged an error recently. Capped at 10/15 events and each
+// message flattened to one line so the result stays readable in the Last Command Output box instead
+// of one giant unreadable blob.
+const EVENT_LOG_CHECK_COMMAND = "$d = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational';Id=1116,1117,5007} -MaxEvents 10 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,@{n='Message';e={$_.Message -replace \"`r`n\",' '}}; $a = Get-WinEvent -FilterHashtable @{LogName='Application';Level=2,3} -MaxEvents 15 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -match 'Chrome|MsEdge|Application Error|WorkspaceDirectoryAgent|.NET Runtime' } | Select-Object TimeCreated,Id,ProviderName,@{n='Message';e={$_.Message -replace \"`r`n\",' '}}; @{defenderEvents=@($d); chromeEdgeAgentErrors=@($a)} | ConvertTo-Json -Depth 4 -Compress";
 
 // Lets an admin queue an actual installer package (not just a script referencing a URL) - uploads
 // the file to the private agent-installers bucket, mints a signed URL (expires in 7 days - long
