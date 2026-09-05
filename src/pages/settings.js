@@ -15,7 +15,7 @@ import { brandNameForVenue, brandFallbackForVenue, isBrandedMetroStation } from 
 import { supabase } from '../supabaseClient.js';
 import { notifySlack } from '../data/slack.js';
 import { logAudit } from '../lib/audit.js';
-import { esc, fmtDateTime } from '../lib/format.js';
+import { esc, fmtDateTime, formatAgentVersion } from '../lib/format.js';
 import { brandLogoTag } from '../lib/brandLogo.js';
 import { sortTh, applySort } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
@@ -587,13 +587,13 @@ function renderWorkspaceDirectoryAgentCard(settings) {
         <label>Published Agent Version</label>
         <div class="small muted" style="margin-bottom:6px;">The install script (scheduled task setup, remote-command runner, self-update logic itself) - unlike the Data Collector Script below, this normally requires re-running the installer to change. Publishing pushes the CURRENT version of that logic here; an already-installed agent compares itself against it on each check-in and silently updates itself if different, no physical reinstall needed.<br><br><b>Publishing is a two-step rollout.</b> The first button reaches ONLY the test PCs (${AGENT_CANARY_HOSTNAMES.join(', ')}) - every other machine keeps running the fleet version, untouched. Once you have confirmed the new build behaves on those, the second button rolls that exact same script out to everything else. This exists because most of the fleet drives signage screens in malls that nobody can walk up to and fix.</div>
         <div class="small" style="margin-bottom:8px;display:flex;flex-direction:column;gap:2px;">
-          <span><b>Fleet (all PCs):</b> ${shell.version ? `v${shell.version}${shell.publishedAt ? ` - ${fmtDateTime(shell.publishedAt)}` : ''}` : '<span class="muted">nothing published yet</span>'}</span>
-          <span><b>Test PCs:</b> ${canary.version ? `v${canary.version}${canary.publishedAt ? ` - ${fmtDateTime(canary.publishedAt)}` : ''}${canary.version > (shell.version || 0) ? ' <span class="badge b-amber">awaiting promotion</span>' : ' <span class="muted">(same as fleet)</span>'}` : '<span class="muted">nothing published yet</span>'}</span>
+          <span><b>Fleet (all PCs):</b> ${shell.version ? `v${formatAgentVersion(shell.version)}${shell.publishedAt ? ` - ${fmtDateTime(shell.publishedAt)}` : ''}` : '<span class="muted">nothing published yet</span>'}</span>
+          <span><b>Test PCs:</b> ${canary.version ? `v${formatAgentVersion(canary.version)}${canary.publishedAt ? ` - ${fmtDateTime(canary.publishedAt)}` : ''}${canary.version > (shell.version || 0) ? ' <span class="badge b-amber">awaiting promotion</span>' : ' <span class="muted">(same as fleet)</span>'}` : '<span class="muted">nothing published yet</span>'}</span>
         </div>
-        ${shell.frozen ? `<div class="small" style="margin-bottom:8px;padding:8px 10px;border-radius:6px;background:var(--row-alt);border-left:3px solid #c0392b;"><b>Fleet updates are frozen.</b> Every PC except the test machines (${AGENT_CANARY_HOSTNAMES.join(', ')}) is pinned to v${shell.frozenAtVersion ?? shell.version ?? 0} and will not self-update, even if a newer version is published. The test PCs are unaffected.${shell.frozenAt ? ` Frozen ${fmtDateTime(shell.frozenAt)}.` : ''}</div>` : ''}
+        ${shell.frozen ? `<div class="small" style="margin-bottom:8px;padding:8px 10px;border-radius:6px;background:var(--row-alt);border-left:3px solid #c0392b;"><b>Fleet updates are frozen.</b> Every PC except the test machines (${AGENT_CANARY_HOSTNAMES.join(', ')}) is pinned to v${formatAgentVersion(shell.frozenAtVersion ?? shell.version ?? 0)} and will not self-update, even if a newer version is published. The test PCs are unaffected.${shell.frozenAt ? ` Frozen ${fmtDateTime(shell.frozenAt)}.` : ''}</div>` : ''}
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button type="button" class="btn-outline btn-sm" ${cfg.secret ? '' : 'disabled title="Save a secret first"'} onclick="App.publishWorkspaceDirectoryAgentShell()">Publish to Test PCs</button>
-          <button type="button" class="btn-outline btn-sm" ${shell.frozen ? 'disabled title="Fleet updates are frozen - unfreeze first"' : (canary.version && canary.version > (shell.version || 0) ? '' : 'disabled title="Publish to the test PCs first, and confirm it works there"')} onclick="App.promoteWorkspaceDirectoryAgentShell()">Roll Out to All PCs${canary.version && canary.version > (shell.version || 0) ? ` (v${canary.version})` : ''}</button>
+          <button type="button" class="btn-outline btn-sm" ${shell.frozen ? 'disabled title="Fleet updates are frozen - unfreeze first"' : (canary.version && canary.version > (shell.version || 0) ? '' : 'disabled title="Publish to the test PCs first, and confirm it works there"')} onclick="App.promoteWorkspaceDirectoryAgentShell()">Roll Out to All PCs${canary.version && canary.version > (shell.version || 0) ? ` (v${formatAgentVersion(canary.version)})` : ''}</button>
           <button type="button" class="btn-outline btn-sm" onclick="App.toggleWorkspaceFleetUpdateFreeze(${shell.frozen ? 'false' : 'true'})">${shell.frozen ? 'Unfreeze Fleet Updates' : 'Freeze Fleet Updates'}</button>
         </div>
       </div>
@@ -746,9 +746,9 @@ export async function publishWorkspaceDirectoryAgentShell() {
     await saveSetting('workspaceDirectoryAgentShellCanary', {
       script, version, hostnames: AGENT_CANARY_HOSTNAMES, publishedAt: new Date().toISOString(),
     });
-    await logAudit('Publish Jstar Agent version (test PCs)', `v${version} -> ${AGENT_CANARY_HOSTNAMES.join(', ')}`);
+    await logAudit('Publish Jstar Agent version (test PCs)', `v${formatAgentVersion(version)} -> ${AGENT_CANARY_HOSTNAMES.join(', ')}`);
     invalidate('settings');
-    toast(`Agent v${version} published to ${AGENT_CANARY_HOSTNAMES.length} test PC(s) only - the rest of the fleet is unchanged.`);
+    toast(`Agent v${formatAgentVersion(version)} published to ${AGENT_CANARY_HOSTNAMES.length} test PC(s) only - the rest of the fleet is unchanged.`);
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -776,9 +776,9 @@ export async function toggleWorkspaceFleetUpdateFreeze(freeze) {
       frozenAtVersion: freeze ? shell.version : null,
       frozenAt: freeze ? new Date().toISOString() : null,
     });
-    await logAudit(freeze ? 'Freeze Digital Directory fleet updates' : 'Unfreeze Digital Directory fleet updates', freeze ? `pinned at v${shell.version}` : '');
+    await logAudit(freeze ? 'Freeze Digital Directory fleet updates' : 'Unfreeze Digital Directory fleet updates', freeze ? `pinned at v${formatAgentVersion(shell.version)}` : '');
     invalidate('settings');
-    toast(freeze ? `Fleet frozen at v${shell.version} - only the test PCs will update.` : 'Fleet updates resumed.');
+    toast(freeze ? `Fleet frozen at v${formatAgentVersion(shell.version)} - only the test PCs will update.` : 'Fleet updates resumed.');
     setState({});
   } catch (e) { toast(e.message || 'Could not change the freeze state', 'error'); }
 }
@@ -787,14 +787,14 @@ export async function promoteWorkspaceDirectoryAgentShell() {
   const settings = STATE.pageData.settings?.data || {};
   const canary = settings.workspaceDirectoryAgentShellCanary;
   if (!canary?.script) { toast('Publish to the test PCs first - there is nothing to promote.', 'error'); return; }
-  if (!confirm(`Roll agent v${canary.version} out to EVERY PC in the fleet?\n\nIt is currently running on: ${(canary.hostnames || []).join(', ')}`)) return;
+  if (!confirm(`Roll agent v${formatAgentVersion(canary.version)} out to EVERY PC in the fleet?\n\nIt is currently running on: ${(canary.hostnames || []).join(', ')}`)) return;
   try {
     await saveSetting('workspaceDirectoryAgentShell', {
       script: canary.script, version: canary.version, publishedAt: new Date().toISOString(),
     });
-    await logAudit('Promote Jstar Agent version to all PCs', `v${canary.version}`);
+    await logAudit('Promote Jstar Agent version to all PCs', `v${formatAgentVersion(canary.version)}`);
     invalidate('settings');
-    toast(`Agent v${canary.version} promoted - every PC self-updates on its next check-in.`);
+    toast(`Agent v${formatAgentVersion(canary.version)} promoted - every PC self-updates on its next check-in.`);
     setState({});
   } catch (e) { toast(e.message, 'error'); }
 }

@@ -116,6 +116,19 @@ export function fmtRelativeTime(iso) {
   return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
 }
 
+// The Jstar Agent's real version is a plain incrementing integer - v1, v2, v90, v101 - because
+// that is all Invoke-SelfUpdate's own numeric comparison needs, and every already-installed agent
+// out in the fleet compares against that same raw number. This is ONLY a display convention on top
+// of it, for humans looking at a build that is now well past 90 publishes: every full hundred is a
+// major version, the remainder is the minor - v89 reads as 0.89, v100 as 1.0, v101 as 1.1, v199 as
+// 1.99, v200 as 2.0. Never feed this back into a version comparison; the integer is still the only
+// thing that matters there.
+export function formatAgentVersion(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return `${Math.floor(n / 100)}.${n % 100}`;
+}
+
 export function daysUntilInfo(dateStr) {
   if (!dateStr) return { text: '-', urgent: false, overdue: false };
   const today = new Date(todayISO() + 'T00:00:00');

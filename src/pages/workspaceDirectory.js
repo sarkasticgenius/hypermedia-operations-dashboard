@@ -6,7 +6,7 @@ import { listAssetInventory, resetAssetInventoryCache } from '../data/assetsInve
 import { canEdit, canDelete } from '../auth.js';
 import { AGENT_CANARY_HOSTNAMES, defaultOptimizerScript } from './settings.js';
 import { remoteAccessUrl } from '../lib/remoteAccess.js';
-import { esc, jsAttrSq, fmtRelativeTime } from '../lib/format.js';
+import { esc, jsAttrSq, fmtRelativeTime, formatAgentVersion } from '../lib/format.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
 import { logAudit } from '../lib/audit.js';
@@ -1460,12 +1460,12 @@ function agentShellVersionHtml(d) {
   const expected = isTestPc
     ? (settings.workspaceDirectoryAgentShellCanary?.version ?? settings.workspaceDirectoryAgentShell?.version)
     : settings.workspaceDirectoryAgentShell?.version;
-  if (expected == null) return ` &middot; Build v${esc(running)}`;
+  if (expected == null) return ` &middot; Build v${esc(formatAgentVersion(running))}`;
   const current = String(running) === String(expected);
   const label = isTestPc ? 'test-PC build' : 'fleet build';
   return current
-    ? ` &middot; <span title="Running the current ${label} (v${esc(String(expected))})">Build v${esc(running)}</span>`
-    : ` &middot; <span style="color:#e07a2c;" title="This PC is on v${esc(running)} but the current ${label} is v${esc(String(expected))} - it self-updates on its next check-in.">Build v${esc(running)} &rarr; v${esc(String(expected))}</span>`;
+    ? ` &middot; <span title="Running the current ${label} (v${esc(formatAgentVersion(expected))})">Build v${esc(formatAgentVersion(running))}</span>`
+    : ` &middot; <span style="color:#e07a2c;" title="This PC is on v${esc(formatAgentVersion(running))} but the current ${label} is v${esc(formatAgentVersion(expected))} - it self-updates on its next check-in.">Build v${esc(formatAgentVersion(running))} &rarr; v${esc(formatAgentVersion(expected))}</span>`;
 }
 
 // Holds one PC at the agent version it is running, or lets it move again. Aimed per-device rather
