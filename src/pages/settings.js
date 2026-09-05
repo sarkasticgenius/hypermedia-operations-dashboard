@@ -973,34 +973,6 @@ function Get-RustDeskId {
     }
 }
 
-# Applies a permanent RustDesk password sent from the dashboard, via --password - the documented
-# (source-confirmed) way to set one from the command line. No target/install id needed here unlike
-# Set-AnyDeskPassword: Get-RustDeskId only ever reports one id per PC, so there is nothing to
-# disambiguate between.
-#
-# Unlike AnyDesk, RustDesk has no stdin-based way to take a password - --password is a real
-# command-line argument, so it IS briefly visible to Get-CimInstance Win32_Process (or any other
-# local process listing) for as long as this one process runs. That is a genuine gap next to
-# Set-AnyDeskPassword's stdin approach, not an oversight - RustDesk simply does not offer the
-# alternative AnyDesk does. Kept as short-lived as possible (WaitForExit below) to narrow the
-# window rather than pretend it does not exist.
-function Set-RustDeskPassword($password) {
-    try {
-        $exe = @("$env:ProgramFiles\\RustDesk\\rustdesk.exe", "\${env:ProgramFiles(x86)}\\RustDesk\\rustdesk.exe") |
-            Where-Object { Test-Path $_ } | Select-Object -First 1
-        if (-not $exe) { return "RustDesk is not installed on this PC." }
-        $proc = Start-Process -FilePath $exe -ArgumentList @("--password", $password) -PassThru -WindowStyle Hidden
-        if (-not $proc.WaitForExit(10000)) {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            return "RustDesk did not respond within 10 seconds."
-        }
-        if ($proc.ExitCode -eq 0) { return "OK" }
-        return "RustDesk exited with code $($proc.ExitCode)."
-    } catch {
-        return "Could not run RustDesk: $($_.Exception.Message)"
-    }
-}
-
 # Same discovery approach Broadsign's own player leaves on disk (and the same fallback file/keyword
 # search the original Jstar agent used) - matched server-side against Asset Inventory's Player Box
 # ID (Player Type = Broadsign), the exact field broadsign-sync itself matches on, so this PC can be
@@ -2568,6 +2540,42 @@ function Set-AnyDeskPassword($password, $targetId) {
         return "AnyDesk exited with code $LASTEXITCODE."
     } catch {
         return "Could not run AnyDesk: $($_.Exception.Message)"
+    }
+}
+
+# Applies a permanent RustDesk password sent from the dashboard, via --password - the documented
+# (source-confirmed) way to set one from the command line. No target/install id needed here unlike
+# Set-AnyDeskPassword: Get-RustDeskId only ever reports one id per PC, so there is nothing to
+# disambiguate between.
+#
+# Unlike AnyDesk, RustDesk has no stdin-based way to take a password - --password is a real
+# command-line argument, so it IS briefly visible to Get-CimInstance Win32_Process (or any other
+# local process listing) for as long as this one process runs. That is a genuine gap next to
+# Set-AnyDeskPassword's stdin approach, not an oversight - RustDesk simply does not offer the
+# alternative AnyDesk does. Kept as short-lived as possible (WaitForExit below) to narrow the
+# window rather than pretend it does not exist.
+#
+# MUST live here, at the top level of this script, not inside the collector script embedded in
+# Invoke-DefaultCollector - it used to live there, which is exactly why Invoke-PollCycle could
+# never find it: a "function" defined inside another function's body in PowerShell is scoped to
+# that function's own invocation, not hoisted to the top level, so a sibling top-level function
+# like Invoke-PollCycle can never see it. That silently broke every RustDesk password delivery -
+# the server marks a delivery claimed the moment it hands it out, so it looked identical to a
+# healthy no-op poll until Invoke-PollCycle's catch block actually logged the exception.
+function Set-RustDeskPassword($password) {
+    try {
+        $exe = @("$env:ProgramFiles\\RustDesk\\rustdesk.exe", "\${env:ProgramFiles(x86)}\\RustDesk\\rustdesk.exe") |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $exe) { return "RustDesk is not installed on this PC." }
+        $proc = Start-Process -FilePath $exe -ArgumentList @("--password", $password) -PassThru -WindowStyle Hidden
+        if (-not $proc.WaitForExit(10000)) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            return "RustDesk did not respond within 10 seconds."
+        }
+        if ($proc.ExitCode -eq 0) { return "OK" }
+        return "RustDesk exited with code $($proc.ExitCode)."
+    } catch {
+        return "Could not run RustDesk: $($_.Exception.Message)"
     }
 }
 
