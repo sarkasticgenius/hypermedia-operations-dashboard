@@ -104,7 +104,10 @@ function renderMfaSection() {
 
 export async function startAccountMfaEnrollment() {
   try {
-    const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'totp' });
+    // Without an explicit issuer, Supabase labels the factor in the authenticator app using this
+    // project's configured Site URL - which shows up as something like "localhost:3000" rather
+    // than anything a person setting this up on their phone would recognize.
+    const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'totp', issuer: 'Hypermedia Ops', friendlyName: 'Hypermedia Ops' });
     if (error) throw error;
     setState({ mfaEnroll: { factorId: data.id, qr: data.totp.qr_code, secret: data.totp.secret, busy: false, error: null } });
   } catch (e) {
