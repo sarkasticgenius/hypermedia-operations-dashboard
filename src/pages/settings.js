@@ -720,11 +720,12 @@ export function resetWorkspaceDirectoryOptimizerScript() {
 // percentage or a "first N devices" rule: which machines are safe to break is a judgement about
 // physical access (an office test bench you can walk over to) and business impact (not a signage
 // screen in a mall), and nothing in the device data expresses that.
-// PC-88AEDD61E8C5 and PC-88AEDD621627 added alongside HM-OFFICE-TEST specifically to verify the
-// new BrowserPopupScanner/browser-prompt-suppression changes against real PCs that surfaced the
-// gap they close (both hit the same same-process-popup case, 5 Sep 2026), not just an unrelated
-// office machine - remove them once that's confirmed clean.
-export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST', 'PC-88AEDD61E8C5', 'PC-88AEDD621627'];
+// PC-88AEDD621627 added alongside HM-OFFICE-TEST specifically to verify the new
+// BrowserPopupScanner/browser-prompt-suppression changes against a real PC that surfaced the gap
+// they close (same same-process-popup case, 5 Sep 2026), not just an unrelated office machine -
+// remove it once that's confirmed clean. PC-88AEDD61E8C5 served the same purpose and already
+// confirmed running v86 clean, so it's back off the canary list.
+export const AGENT_CANARY_HOSTNAMES = ['HM-OFFICE-TEST', 'PC-88AEDD621627'];
 
 // Publishes to the TEST PCs only (see AGENT_CANARY_HOSTNAMES). Writes the canary slot, which
 // workspace-directory-agent-shell serves only to those hostnames - every other device keeps
