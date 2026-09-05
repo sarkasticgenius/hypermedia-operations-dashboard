@@ -1,5 +1,5 @@
 import { STATE, setState } from '../state.js';
-import { login, requestPasswordReset } from '../auth.js';
+import { login, requestPasswordReset, verifyMfaChallenge } from '../auth.js';
 import { supabase } from '../supabaseClient.js';
 import { LOGO_IMG } from '../logo.js';
 import { esc } from '../lib/format.js';
@@ -58,6 +58,51 @@ export async function doLogin(event) {
 
 export function setLoginView(view) {
   setState({ loginView: view, forgotMsg: null, forgotError: null });
+}
+
+// Shown by main.js's rootRender instead of the normal login form/shell whenever STATE.mfaChallenge
+// is set (see gateOnMfaChallenge in auth.js) - a password has already been verified and a real,
+// if not-yet-fully-authenticated, session exists at this point; this just collects the code and
+// hands it to verifyMfaChallenge to finish signing in.
+export function renderMfaChallenge() {
+  const err = STATE.mfaChallengeError ? `<div class="login-error">${esc(STATE.mfaChallengeError)}</div>` : '';
+  return `
+    <div class="login-wrap">
+      <div class="theme-toggle-corner">${renderThemeToggle()}</div>
+      <div class="login-card">
+        <div class="login-logo">
+          <div class="logo-badge logo-badge-lg">${LOGO_IMG}</div>
+          <div class="login-title">HYPERMEDIA</div>
+        </div>
+        <div class="login-sub">Enter your two-factor code</div>
+        ${err}
+        <form onsubmit="App.doMfaChallenge(event)">
+          <div class="field">
+            <label>6-digit code</label>
+            <input id="mfa-challenge-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" required autofocus>
+          </div>
+          <button class="btn btn-primary btn-full" type="submit" ${STATE.mfaChallengeBusy ? 'disabled' : ''}>
+            ${STATE.mfaChallengeBusy ? 'Verifying...' : 'Verify'}
+          </button>
+        </form>
+        <div class="small" style="text-align:center;margin-top:10px;">
+          <a href="#" onclick="event.preventDefault();App.logout()">Sign in with a different account</a>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+export async function doMfaChallenge(event) {
+  event.preventDefault();
+  const code = document.getElementById('mfa-challenge-code').value.trim();
+  setState({ mfaChallengeBusy: true, mfaChallengeError: null });
+  try {
+    await verifyMfaChallenge(code);
+    setState({ mfaChallengeBusy: false, mfaChallengeError: null });
+  } catch (e) {
+    setState({ mfaChallengeBusy: false, mfaChallengeError: e.message || 'Invalid code - try again.' });
+  }
 }
 
 // A locked-out user's self-service recovery entry point - separate from doLogin() above. Always

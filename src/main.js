@@ -1,7 +1,7 @@
 import { STATE, initRender, render, renderToasts, closeModal } from './state.js';
 import { initAuth } from './auth.js';
-import { renderLogin, doLogin, setLoginView, doRequestPasswordReset, renderPasswordRecovery, doSetRecoveredPassword } from './pages/login.js';
-import { renderAccount, saveAccountProfile, saveAccountPassword } from './pages/account.js';
+import { renderLogin, doLogin, setLoginView, doRequestPasswordReset, renderPasswordRecovery, doSetRecoveredPassword, renderMfaChallenge, doMfaChallenge } from './pages/login.js';
+import { renderAccount, saveAccountProfile, saveAccountPassword, startAccountMfaEnrollment, verifyAccountMfaEnrollment, cancelAccountMfaEnrollment, removeAccountMfaFactor } from './pages/account.js';
 import { renderDashboard } from './pages/dashboard.js';
 import * as opsOverviewPage from './pages/opsOverview.js';
 import * as assetsPage from './pages/assets.js';
@@ -94,6 +94,11 @@ window.App = {
   setLoginView,
   doRequestPasswordReset,
   doSetRecoveredPassword,
+  doMfaChallenge,
+  startAccountMfaEnrollment,
+  verifyAccountMfaEnrollment,
+  cancelAccountMfaEnrollment,
+  removeAccountMfaFactor,
   logout: doLogout,
   setPage: goToPage,
   goToDashGroup,
@@ -137,9 +142,16 @@ function rootRender() {
   // Checked before the normal user/renderShell branch - a recovery session (from clicking a
   // password-reset email link) must never silently drop someone straight into the dashboard
   // without setting a new password first, even though Supabase's client does establish a real
-  // (recovery-scoped) session for it under the hood.
+  // (recovery-scoped) session for it under the hood. mfaChallenge is checked next, before
+  // STATE.user, since a password-only (aal1) session with a verified factor still pending this
+  // session's own challenge must never reach the real app either - see gateOnMfaChallenge in
+  // auth.js. Two-factor itself is opt-in (enabled from Account, not forced here): an account with
+  // no factor enrolled at all just never hits the mfaChallenge branch and goes straight to the
+  // shell as it always has.
   const body = STATE.passwordRecoveryMode
     ? renderPasswordRecovery()
+    : STATE.mfaChallenge
+    ? renderMfaChallenge()
     : (STATE.user ? renderShell(renderPage(STATE.page) + renderModalRoot()) : renderLogin());
   const toasts = renderToasts();
   return body + (toasts ? `<div class="toast-stack">${toasts}</div>` : '');

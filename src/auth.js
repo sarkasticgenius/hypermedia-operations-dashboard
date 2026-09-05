@@ -22,13 +22,13 @@ export const authReady = new Promise((resolve) => { authReadyResolve = resolve; 
 
 export async function initAuth() {
   const { data: { session } } = await supabase.auth.getSession();
-  if (session) await loadProfile(session.user.id);
+  if (session && !(await gateOnMfaChallenge())) await loadProfile(session.user.id);
   authReadyResolve();
   render();
 
   supabase.auth.onAuthStateChange(async (event, session) => {
     if (event === 'SIGNED_OUT') {
-      setState({ user: null, permissions: {}, page: 'dashboard' });
+      setState({ user: null, permissions: {}, page: 'dashboard', mfaChallenge: null });
     } else if (event === 'PASSWORD_RECOVERY') {
       // Fires automatically once the Supabase client parses a genuine recovery link's token out of
       // the URL (see request-password-reset edge function / src/pages/login.js's
@@ -38,11 +38,59 @@ export async function initAuth() {
       setState({ passwordRecoveryMode: true });
     } else if (session && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
       if (!STATE.user || STATE.user.id !== session.user.id) {
-        await loadProfile(session.user.id);
-        render();
+        if (!(await gateOnMfaChallenge())) {
+          await loadProfile(session.user.id);
+          // Only a genuine new sign-in, never a background token refresh, counts as a login for
+          // the audit trail/history - and only once actually fully authenticated (no two-factor
+          // pending), matching what verifyMfaChallenge records for the challenged case below.
+          if (event === 'SIGNED_IN') { await logAudit('Login', ''); await recordLoginEvent('login'); }
+          render();
+        }
       }
     }
   });
+}
+
+// True (and STATE.mfaChallenge set to the factor to verify) when the current session has a
+// verified TOTP factor this particular session hasn't proven yet - blocks loadProfile()/the real
+// app from ever rendering until the code is submitted (see main.js's rootRender). Checked on
+// every fresh sign-in AND on session restore (a page refresh mid-challenge, or a tab closed before
+// finishing it, must re-prompt rather than silently granting access at aal1). Fails OPEN (returns
+// false) on any error here - this client-side gate is a UX nudge, not the actual security
+// boundary; that's Stage B's RLS-level aal2 check on is_admin/has_permission/is_own_client/
+// is_active_user, which fails CLOSED regardless of what this function does.
+async function gateOnMfaChallenge() {
+  try {
+    const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    if (error || !data) { setState({ mfaChallenge: null }); return false; }
+    if (data.nextLevel === 'aal2' && data.currentLevel !== data.nextLevel) {
+      const { data: factorsData } = await supabase.auth.mfa.listFactors();
+      const factor = factorsData?.totp?.find((f) => f.status === 'verified');
+      if (factor) { setState({ mfaChallenge: { factorId: factor.id } }); return true; }
+    }
+    setState({ mfaChallenge: null });
+    return false;
+  } catch {
+    setState({ mfaChallenge: null });
+    return false;
+  }
+}
+
+// Submits the code from login.js's challenge screen. Kept separate from the SIGNED_IN listener's
+// own gateOnMfaChallenge call (rather than re-running that same check) since this is invoked
+// directly from a user action with the code in hand - no need to re-derive anything, just verify.
+export async function verifyMfaChallenge(code) {
+  const factorId = STATE.mfaChallenge?.factorId;
+  if (!factorId) throw new Error('No pending two-factor challenge.');
+  const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code: String(code).trim() });
+  if (error) throw error;
+  setState({ mfaChallenge: null });
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session) {
+    await loadProfile(session.user.id);
+    await logAudit('Login', '');
+    await recordLoginEvent('login');
+  }
 }
 
 async function loadProfile(userId) {
@@ -106,8 +154,11 @@ export async function login(identifier, password) {
     access_token: data.access_token, refresh_token: data.refresh_token,
   });
   if (sessionError) throw sessionError;
-  await logAudit('Login', '');
-  await recordLoginEvent('login');
+  // Nothing else to do here - setSession() above fires Supabase's own SIGNED_IN event, and
+  // initAuth()'s listener reacts to it: either a two-factor challenge blocks the rest of sign-in
+  // (see gateOnMfaChallenge), or loadProfile() runs and the Login audit/history record fires right
+  // there, once sign-in is ACTUALLY complete rather than merely "a token was adopted." Recording it
+  // here unconditionally would log a login that a wrong or abandoned two-factor code never finished.
 }
 
 // IP/location/browser for the Admin > Login History tab - see record-login-event, which resolves
