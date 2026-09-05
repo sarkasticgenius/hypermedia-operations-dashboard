@@ -180,7 +180,8 @@ function commandPresetsHtml(pkgInputId, chocoInputId, targetId) {
       <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('Get-DuDataUsage | ConvertTo-Json', '${targetId}')">Test DU Scrape</button>
       <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('winget list', '${targetId}')">List Installed (winget)</button>
       <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('choco list --local-only', '${targetId}')">List Installed (choco)</button>
-      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand(${jsonAttr(EVENT_LOG_CHECK_COMMAND)}, '${targetId}')">Check Event Logs</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('${jsAttrSq(EVENT_LOG_CHECK_COMMAND)}', '${targetId}')">Check Event Logs</button>
+      <button type="button" class="btn-sm" onclick="App.fillWorkspaceCommand('${jsAttrSq(AGENT_LOG_TAIL_COMMAND)}', '${targetId}')">View Agent Log</button>
     </div>`;
 }
 
@@ -193,6 +194,14 @@ function commandPresetsHtml(pkgInputId, chocoInputId, targetId) {
 // message flattened to one line so the result stays readable in the Last Command Output box instead
 // of one giant unreadable blob.
 const EVENT_LOG_CHECK_COMMAND = "$d = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational';Id=1116,1117,5007} -MaxEvents 10 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,@{n='Message';e={$_.Message -replace \"`r`n\",' '}}; $a = Get-WinEvent -FilterHashtable @{LogName='Application';Level=2,3} -MaxEvents 15 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -match 'Chrome|MsEdge|Application Error|WorkspaceDirectoryAgent|.NET Runtime' } | Select-Object TimeCreated,Id,ProviderName,@{n='Message';e={$_.Message -replace \"`r`n\",' '}}; @{defenderEvents=@($d); chromeEdgeAgentErrors=@($a)} | ConvertTo-Json -Depth 4 -Compress";
+
+// The agent's OWN text log (Write-AgentLog's target throughout settings.js) - everything the Event
+// Log check above can't see, since Write-AgentLog is a plain Add-Content call, not a Windows Event
+// Log provider. This is the ONLY way to see the exact failure reason behind something like "Could
+// not update the RustDesk password: <reason>" without a remote-desktop session - the dashboard only
+// ever stores the LATEST Run Command's own output in last_command_output, not the continuous
+// check-in-cycle log this line comes from. Last 60 lines, not the whole file, to stay readable.
+const AGENT_LOG_TAIL_COMMAND = "if (Test-Path \"$env:ProgramData\\WorkspaceDirectoryAgent\\agent.log\") { Get-Content \"$env:ProgramData\\WorkspaceDirectoryAgent\\agent.log\" -Tail 60 -ErrorAction SilentlyContinue | Out-String } else { 'No agent.log found on this PC.' }";
 
 // Lets an admin queue an actual installer package (not just a script referencing a URL) - uploads
 // the file to the private agent-installers bucket, mints a signed URL (expires in 7 days - long
