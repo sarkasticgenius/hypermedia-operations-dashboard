@@ -1,7 +1,7 @@
 import { STATE, initRender, render, renderToasts, closeModal } from './state.js';
 import { initAuth } from './auth.js';
 import { renderLogin, doLogin, setLoginView, doRequestPasswordReset, renderPasswordRecovery, doSetRecoveredPassword, renderMfaChallenge, doMfaChallenge } from './pages/login.js';
-import { renderAccount, saveAccountProfile, saveAccountPassword, startAccountMfaEnrollment, verifyAccountMfaEnrollment, cancelAccountMfaEnrollment, removeAccountMfaFactor } from './pages/account.js';
+import { renderAccount, saveAccountProfile, saveAccountPassword, renderMandatoryMfaSetup, needsMandatoryMfaSetup, startAccountMfaEnrollment, verifyAccountMfaEnrollment, cancelAccountMfaEnrollment, removeAccountMfaFactor } from './pages/account.js';
 import { renderDashboard } from './pages/dashboard.js';
 import * as opsOverviewPage from './pages/opsOverview.js';
 import * as assetsPage from './pages/assets.js';
@@ -145,14 +145,18 @@ function rootRender() {
   // (recovery-scoped) session for it under the hood. mfaChallenge is checked next, before
   // STATE.user, since a password-only (aal1) session with a verified factor still pending this
   // session's own challenge must never reach the real app either - see gateOnMfaChallenge in
-  // auth.js. Two-factor itself is opt-in (enabled from Account, not forced here): an account with
-  // no factor enrolled at all just never hits the mfaChallenge branch and goes straight to the
-  // shell as it always has.
+  // auth.js. Two-factor is mandatory for every account, enforced for real at the RLS level (see
+  // the migration adding an aal2 check to is_admin/has_permission/is_own_client/is_active_user) -
+  // needsMandatoryMfaSetup() is what walks someone who hasn't enrolled yet through doing so, right
+  // after a plain password login, rather than leaving them to discover the hard way that every
+  // table now silently returns nothing.
   const body = STATE.passwordRecoveryMode
     ? renderPasswordRecovery()
     : STATE.mfaChallenge
     ? renderMfaChallenge()
-    : (STATE.user ? renderShell(renderPage(STATE.page) + renderModalRoot()) : renderLogin());
+    : (STATE.user
+      ? (needsMandatoryMfaSetup() ? renderMandatoryMfaSetup() : renderShell(renderPage(STATE.page) + renderModalRoot()))
+      : renderLogin());
   const toasts = renderToasts();
   return body + (toasts ? `<div class="toast-stack">${toasts}</div>` : '');
 }

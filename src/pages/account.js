@@ -97,9 +97,38 @@ function renderMfaSection() {
   }
 
   return `
-    <div class="small muted" style="margin-bottom:10px;">Not enabled. Two-factor authentication adds a code from your phone on top of your password - entirely optional.</div>
+    <div class="small muted" style="margin-bottom:10px;">Not enabled yet. Two-factor authentication is required for every account - you'll be asked to set this up the next time you sign in if you skip it here.</div>
     <button class="btn btn-orange" onclick="App.startAccountMfaEnrollment()">Enable Two-Factor Authentication</button>
   `;
+}
+
+// Full-screen, non-dismissible variant shown by main.js's rootRender in place of the whole app
+// shell for a signed-in (aal1) user with no verified factor yet - reuses renderMfaSection's own
+// enroll/verify flow, so there is exactly one place that logic lives. needsMandatoryMfaSetup below
+// is what rootRender checks to decide whether to show this at all. Works at aal1 with no RLS
+// access to anything beyond the user's own profile row: enroll/challengeAndVerify are Supabase Auth
+// (GoTrue) endpoints, not Postgres RLS-gated at all, so this never depends on the DB-level aal2
+// checks it exists to help satisfy.
+export function renderMandatoryMfaSetup() {
+  return `
+    <div class="login-wrap">
+      <div class="login-card" style="max-width:420px;">
+        <div class="login-sub" style="margin-bottom:2px;">Set up two-factor authentication</div>
+        <div class="small muted" style="margin-bottom:14px;">Required for every account before you can continue.</div>
+        ${renderMfaSection()}
+      </div>
+    </div>
+  `;
+}
+
+// Fails OPEN (false = "don't block") while factors are still loading or on any error - this
+// client-side gate is the UX path that walks someone through enrolling; the actual security
+// boundary is the aal2 check baked into is_admin/has_permission/is_own_client/is_active_user
+// (see the migration adding it), which fails CLOSED regardless of what this function returns.
+export function needsMandatoryMfaSetup() {
+  const factors = loadData('mfaFactors', listMfaFactors);
+  if (!factors || factors.__error) return false;
+  return !(factors.totp || []).some((f) => f.status === 'verified');
 }
 
 export async function startAccountMfaEnrollment() {
