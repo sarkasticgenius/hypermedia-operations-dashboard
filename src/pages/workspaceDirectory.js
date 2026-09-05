@@ -3,10 +3,11 @@ import { registerModal, loadingCard } from '../modals.js';
 import { listWorkspaceDevices, updateWorkspaceDevice, deleteWorkspaceDevice, listGhostWorkspaceDevices, restoreWorkspaceDevice, permanentlyDeleteWorkspaceDevice, getWorkspaceDeviceSoftware, getWorkspaceDeviceDailyUsage } from '../data/workspaceDevices.js';
 import { listSimCards } from '../data/simCards.js';
 import { listAssetInventory, resetAssetInventoryCache } from '../data/assetsInventory.js';
-import { canEdit, canDelete } from '../auth.js';
+import { canEdit, canDelete, isAdmin } from '../auth.js';
 import { AGENT_CANARY_HOSTNAMES, defaultOptimizerScript } from './settings.js';
 import { remoteAccessUrl } from '../lib/remoteAccess.js';
-import { esc, jsAttrSq, fmtRelativeTime, formatAgentVersion } from '../lib/format.js';
+import { esc, jsAttrSq, fmtRelativeTime, fmtDateTime, formatAgentVersion } from '../lib/format.js';
+import { exportToExcel } from '../lib/excelExport.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
 import { logAudit } from '../lib/audit.js';
@@ -1105,6 +1106,7 @@ export function renderWorkspaceDirectory() {
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <input placeholder="Search hostname, screen, venue, location, IP, remote ID, Broadsign/Grassfish ID, user..." value="${esc(STATE.workspaceDirectorySearch || '')}" oninput="App.setWorkspaceDirectorySearch(this.value)" style="min-width:240px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;">
           <button class="btn-sm" title="Reload this page's data without refreshing the whole app" onclick="App.refreshWorkspaceDirectory()">&#8635; Refresh</button>
+          ${isAdmin() ? `<button class="btn-sm" title="Download every device and every field below as an .xlsx file" onclick="App.exportWorkspaceDirectoryExcel()">Export to Excel</button>` : ''}
         </div>
       </div>
       ${pagerHtml}
@@ -1155,6 +1157,53 @@ export function refreshWorkspaceDirectory() {
   resetAssetInventoryCache();
   setState({});
   toast('Refreshed');
+}
+
+// Admin-only (the button that calls this is gated by isAdmin() in renderWorkspaceDirectory) - the
+// whole fleet, every field the table/Details modal surfaces, not just what's currently
+// filtered/paged on screen. Reuses whatever's already loaded rather than re-fetching, so this is
+// instant even on the full ~1,200-device fleet. software/components are deliberately excluded, same
+// as the on-screen list itself (see LIST_COLUMNS's own comment in data/workspaceDevices.js) - those
+// two fields alone dwarf everything else combined and are only ever pulled per-device on demand.
+export async function exportWorkspaceDirectoryExcel() {
+  const devices = STATE.pageData.workspaceDevices?.data;
+  const assetInventory = STATE.pageData.assetInventory?.data;
+  const simCards = STATE.pageData.simCardsForDirectory?.data;
+  if (!devices || !assetInventory || !simCards) { toast('Still loading - try again in a moment.', 'error'); return; }
+  const simById = new Map(simCards.map((s) => [s.id, s]));
+  await exportToExcel('digital-directory.xlsx', [
+    { label: 'Hostname', value: (d) => d.hostname },
+    { label: 'Status', value: (d) => (isOnline(d) ? 'Online' : 'Offline') },
+    { label: 'Location', value: (d) => d.location || '' },
+    { label: 'Matched Screen(s)', value: (d) => matchedScreensFor(d, assetInventory).map(matchedScreenLabel).join('; ') },
+    { label: 'IP Address', value: (d) => d.ip_address || '' },
+    { label: 'Logged-in User', value: (d) => d.logged_in_user || '' },
+    { label: 'OS Name', value: (d) => d.os_name || '' },
+    { label: 'OS Version', value: (d) => d.os_version || '' },
+    { label: 'Agent Version', value: (d) => d.agent_version || '' },
+    { label: 'Agent Shell Build', value: (d) => (d.agent_shell_version ? formatAgentVersion(d.agent_shell_version) : '') },
+    { label: 'Last Seen', value: (d) => fmtDateTime(d.last_seen) },
+    { label: 'First Seen', value: (d) => fmtDateTime(d.created_at) },
+    { label: 'AnyDesk ID', value: (d) => d.anydesk_id || '' },
+    { label: 'AnyDesk Password Set At', value: (d) => fmtDateTime(d.anydesk_password_set_at) },
+    { label: 'TeamViewer ID', value: (d) => d.teamviewer_id || '' },
+    { label: 'RustDesk Password Set At', value: (d) => fmtDateTime(d.rustdesk_password_set_at) },
+    { label: 'Other Remote IDs', value: (d) => (d.other_remote_ids || []).map((r) => `${r.tool}: ${r.id}`).join('; ') },
+    { label: 'Broadsign Player ID', value: (d) => d.broadsign_player_id || '' },
+    { label: 'Grassfish Box ID', value: (d) => d.grassfish_box_id || '' },
+    { label: 'SIM Number', value: (d) => simById.get(d.sim_card_id)?.sim_number || '' },
+    { label: 'DU Phone Number', value: (d) => d.du_phone_number || '' },
+    { label: 'DU Data Used (GB)', value: (d) => d.du_data_used_gb ?? '' },
+    { label: 'DU Data Total (GB)', value: (d) => d.du_data_total_gb ?? '' },
+    { label: 'DU Data Left (GB)', value: (d) => d.du_data_left_gb ?? '' },
+    { label: 'DU Scraped At', value: (d) => fmtDateTime(d.du_scraped_at) },
+    { label: 'Volumes', value: (d) => (d.volumes || []).map((v) => `${v.drive || ''}${v.label ? ` (${v.label})` : ''}: ${v.freeGb ?? '?'} of ${v.sizeGb ?? '?'} GB free`).join('; ') },
+    { label: 'Antivirus', value: (d) => d.antivirus || '' },
+    { label: 'Problems', value: (d) => visibleProblems(d).join('; ') },
+    { label: 'Updates Disabled', value: (d) => (d.updates_disabled ? 'Yes' : 'No') },
+    { label: 'Updates Pinned Version', value: (d) => (d.updates_pinned_version ? formatAgentVersion(d.updates_pinned_version) : '') },
+    { label: 'Notes', value: (d) => d.notes || '' },
+  ], devices);
 }
 
 // Any new search starts from page 1 - keeping the old page number would land on an empty or
@@ -1713,7 +1762,7 @@ function ghostBannerHtml(ghostDevices) {
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:6px 0;border-top:1px solid rgba(0,0,0,.08);">
       <span><b>${esc(d.hostname)}</b> <span class="small muted">checked in ${esc(fmtRelativeTime(d.last_seen))} - removed ${esc(fmtRelativeTime(d.removed_at))}</span></span>
       ${deleteOk ? `<div style="display:flex;gap:6px;">
-        <button class="btn-sm" onclick="App.queueRemoteWorkspaceUninstall('${d.id}')">Uninstall Agent</button>
+        <button class="btn-sm" onclick="App.confirmRemoteWorkspaceUninstall('${d.id}')">Uninstall Agent</button>
         <button class="btn-sm" onclick="App.restoreGhostWorkspaceDevice('${d.id}')">Restore to Directory</button>
         <button class="btn-sm" style="color:#c0392b;" onclick="App.permanentlyDeleteGhostWorkspaceDevice('${d.id}')">Delete Permanently</button>
       </div>` : ''}
@@ -1735,8 +1784,28 @@ function ghostBannerHtml(ghostDevices) {
 // authentication IS the authorization. Runs on the device's next check-in (light or full, either
 // picks up a pending_command) and reports back immediately once done, rather than waiting a second
 // cycle like a normal Run Command - there's no "next cycle" to report on once its tasks are gone.
+// A styled replacement for the native browser confirm() this button used to call directly - the
+// abrupt system dialog felt out of place next to the app's own modal styling for something this
+// consequential. The actual uninstall logic stays in queueRemoteWorkspaceUninstall below, unchanged
+// apart from no longer gating itself on window.confirm.
+registerModal('workspaceUninstallConfirm', (data) => {
+  const devices = [...(STATE.pageData.workspaceDevices?.data || []), ...(STATE.pageData.ghostWorkspaceDevices?.data || [])];
+  const hostname = devices.find((d) => d.id === data.deviceId)?.hostname || 'this PC';
+  return `
+    <h3>Remotely uninstall the Jstar Agent?</h3>
+    <p style="margin:4px 0 16px;">This removes <b>${esc(hostname)}</b>'s scheduled tasks and local state on its next check-in (within ~20 minutes). This cannot be undone from here - the agent would need to be reinstalled locally on that PC to bring it back.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn-sm" onclick="App.closeModal()">Cancel</button>
+      <button type="button" class="btn-sm" style="background:#c0392b;color:#fff;border-color:#c0392b;" onclick="App.closeModal(); App.queueRemoteWorkspaceUninstall('${data.deviceId}')">Uninstall Agent</button>
+    </div>
+  `;
+});
+
+export function confirmRemoteWorkspaceUninstall(id) {
+  openModal('workspaceUninstallConfirm', { deviceId: id });
+}
+
 export async function queueRemoteWorkspaceUninstall(id) {
-  if (!confirm('Remotely uninstall the Jstar Agent from this PC? Its scheduled tasks and local state will be removed on its next check-in (within ~20 minutes). This cannot be undone from here - the agent would need to be reinstalled locally on that PC to bring it back.')) return;
   try {
     await updateWorkspaceDevice(id, { pending_command: '::UNINSTALL' });
     await logAudit('Queue remote agent uninstall', id);
