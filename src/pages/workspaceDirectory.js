@@ -87,7 +87,11 @@ function remoteAccessButtonHtml(d) {
     if (url) tools.push({ tool: r.tool, id: r.id, url });
   });
   if (!tools.length) return '<span class="small muted">-</span>';
-  return `<button class="btn-sm" onclick='App.openRemoteAccessPicker(${jsonAttr({ tools, label: d.hostname })})'>Remote Access</button>`;
+  // Stays class="btn-sm" (not .btn-outline) so the zebra-table override further down in styles.css
+  // still forces a transparent background here - .btn-outline's own opaque background would bring
+  // back the exact row-banding bug that override was written to fix. The border/color/weight below
+  // are inline instead, for the same "eye-catching" look without losing that.
+  return `<button class="btn-sm" style="border:1.5px solid var(--brand-orange);color:var(--brand-orange-dark);font-weight:700;" onclick='App.openRemoteAccessPicker(${jsonAttr({ tools, label: d.hostname })})'>Remote Access</button>`;
 }
 
 export function copyWorkspaceId(event, id) {
@@ -1508,12 +1512,14 @@ export function openWorkspaceBulkAnyDeskPasswordModal() {
   openModal('workspaceBulkAnyDeskPassword', {});
 }
 
-// Sends the SAME AnyDesk password to every selected device's PRIMARY AnyDesk install (d.anydesk_id)
-// in one batch insert - same agent_secret_deliveries path as the single-device version above, just
-// fanned out over N rows in one request instead of N requests. A device with no AnyDesk id at all
-// (never installed, or not yet reported) is skipped rather than sent a delivery that can never
-// match an install - see the modal's own skipped-count line. A device running more than one AnyDesk
-// install only gets its primary one changed here; use the single-device modal for a secondary one.
+// Sends the SAME AnyDesk password to every selected device's STANDARD AnyDesk install (d.anydesk_id
+// - see Get-AllAnyDeskIds's own comment for why that field always resolves to the standard install,
+// never a custom-branded one, whenever both exist) in one batch insert - same agent_secret_deliveries
+// path as the single-device version above, just fanned out over N rows in one request instead of N
+// requests. A device with no AnyDesk id at all (never installed, or not yet reported) is skipped
+// rather than sent a delivery that can never match an install - see the modal's own skipped-count
+// line. A device running a second, custom-branded install only gets its standard one changed here;
+// use the single-device modal (which lists both by name) for the custom build.
 export async function saveWorkspaceBulkAnyDeskPassword(event) {
   event.preventDefault();
   const ids = STATE.workspaceDirectorySelectedIds || [];
@@ -2189,13 +2195,25 @@ function rustDeskIdFor(d) {
   return hit ? String(hit.id) : null;
 }
 
+// "Standard install" vs "Custom-branded build" comes straight from Get-AnyDeskInstalls' own
+// service-name check (settings.js): the plain "AnyDesk" service is the standard install; anything
+// matching "AnyDesk-<folder>" is a custom-branded MSI build living in its own ad_*_msi folder.
+// Only known when `a.service` was actually reported - the pre-detailed-collection fallback in
+// anyDeskInstallsFor (an id with no service/exe attached) has no way to tell them apart, so this
+// stays silent rather than guessing.
+function anyDeskInstallKind(a) {
+  if (!a.service) return null;
+  return a.service === 'AnyDesk' ? 'Standard install' : 'Custom-branded build';
+}
+
 function anyDeskInstallLabel(a) {
   // null (rather than false) means "this device predates the indicator" - saying "no password set"
   // there would be a claim the data does not support.
   const state = a.passwordSet === true ? 'password set'
     : a.passwordSet === false ? 'no password set'
     : 'password state unknown';
-  return `${a.id} - ${state}`;
+  const kind = anyDeskInstallKind(a);
+  return kind ? `${a.id} (${kind}) - ${state}` : `${a.id} - ${state}`;
 }
 
 registerModal('workspaceAnyDeskPassword', (data) => {
@@ -2276,15 +2294,23 @@ registerModal('workspaceBulkAnyDeskPassword', () => {
   const selected = ids.map((id) => devices.find((d) => d.id === id)).filter(Boolean);
   const targets = selected.filter((d) => d.anydesk_id);
   const skipped = selected.filter((d) => !d.anydesk_id);
+  // Get-AllAnyDeskIds (settings.js) always checks the standard install's own config paths before it
+  // ever looks at a custom-branded ad_*_msi folder, so anydeskId - and therefore d.anydesk_id here -
+  // is deterministically the STANDARD install's id, never the custom-branded one, whenever both
+  // exist. Surfaced explicitly rather than left implicit, since silently skipping a real second
+  // install an admin might actually have meant to reset is exactly the kind of thing worth a
+  // named warning instead of a footnote.
+  const multiInstall = targets.filter((d) => anyDeskInstallsFor(d).length > 1);
   return `
     <h3>Set AnyDesk Password - ${targets.length} device(s)</h3>
     <div class="small muted" style="margin-bottom:10px;">${esc(targets.map((d) => d.hostname).join(', ')) || 'None of the selected devices have a known AnyDesk ID.'}</div>
     ${skipped.length ? `<div class="small" style="border-left:3px solid #e07a2c;padding:8px 12px;margin-bottom:10px;background:var(--bg);">${skipped.length} selected device(s) skipped - no AnyDesk ID reported yet: ${esc(skipped.map((d) => d.hostname).join(', '))}</div>` : ''}
+    ${multiInstall.length ? `<div class="small" style="border-left:3px solid #e07a2c;padding:8px 12px;margin-bottom:10px;background:var(--bg);"><b>${multiInstall.length} device(s) run a second (custom-branded) AnyDesk install that this will NOT touch</b> - only the standard install's password changes: ${esc(multiInstall.map((d) => d.hostname).join(', '))}. Use the single-device modal on each to reset the custom build's password too.</div>` : ''}
     <form onsubmit="App.saveWorkspaceBulkAnyDeskPassword(event)" autocomplete="off">
       <div class="field">
         <label>New AnyDesk password</label>
         <input id="wd-bulk-anydesk-pw" type="password" autocomplete="new-password" spellcheck="false" required>
-        <div class="small muted" style="margin-top:4px;">Applies to each device's PRIMARY AnyDesk install only. A device running a second AnyDesk install needs the single-device modal for that one.</div>
+        <div class="small muted" style="margin-top:4px;">Applies to each device's STANDARD AnyDesk install only - never the custom-branded build, even when both exist on the same PC.</div>
       </div>
       <div class="field">
         <label>Confirm password</label>
