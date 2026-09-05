@@ -57,10 +57,53 @@ export async function getWorkspaceDeviceSoftware(id) {
   return data;
 }
 
+const PAGE_SIZE = 1000;
+
+// Supabase's project-wide "Max Rows" setting hard-caps any single request (default 1000)
+// regardless of what .range() asks for - see fetchAssetInventory in assetsInventory.js, which
+// already had to page around this exact limit for the same reason. Confirmed live, 5 Sep 2026: the
+// fleet had grown to 1073 real devices, and the dashboard's own "Total Devices" tile just quietly
+// said 1000 with no error - the count itself is derived client-side from however many rows came
+// back, not a real COUNT(*), so it was silently wrong right along with the list. Asking for an
+// exact count alongside the first page (free - PostgREST returns it in the same request's
+// Content-Range header) turns a table that outgrows one page into a single extra parallel batch
+// instead of silent truncation.
+async function fetchWorkspaceDevices(removed) {
+  // withCount is only ever true for the first page's own select() - Supabase's exact-count option
+  // has to be passed to select() itself, not chained on afterward, and the later parallel pages
+  // don't need to ask for it again.
+  const baseQuery = (withCount) => {
+    const q = supabase.from('workspace_devices').select(LIST_COLUMNS, withCount ? { count: 'exact' } : undefined);
+    return removed ? q.not('removed_at', 'is', null) : q.is('removed_at', null);
+  };
+  const applyOrder = (q) => (removed ? q.order('last_seen', { ascending: false }) : q.order('hostname'));
+
+  const first = await applyOrder(baseQuery(true)).range(0, PAGE_SIZE - 1);
+  if (first.error) throw first.error;
+
+  let all = first.data || [];
+  const total = first.count;
+  if (total == null) {
+    for (let from = PAGE_SIZE; ; from += PAGE_SIZE) {
+      const { data, error } = await applyOrder(baseQuery(false)).range(from, from + PAGE_SIZE - 1);
+      if (error) throw error;
+      all = all.concat(data);
+      if (data.length < PAGE_SIZE) break;
+    }
+  } else if (total > PAGE_SIZE) {
+    const starts = [];
+    for (let from = PAGE_SIZE; from < total; from += PAGE_SIZE) starts.push(from);
+    const pages = await Promise.all(starts.map((from) => applyOrder(baseQuery(false)).range(from, from + PAGE_SIZE - 1)));
+    for (const p of pages) {
+      if (p.error) throw p.error;
+      all = all.concat(p.data || []);
+    }
+  }
+  return all;
+}
+
 export async function listWorkspaceDevices() {
-  const { data, error } = await supabase.from('workspace_devices').select(LIST_COLUMNS).is('removed_at', null).order('hostname');
-  if (error) throw error;
-  return data;
+  return fetchWorkspaceDevices(false);
 }
 
 // Removed-but-still-checking-in devices: an admin took it out of the directory, but its agent (and
@@ -68,8 +111,7 @@ export async function listWorkspaceDevices() {
 // thing a plain "removed_at is set" can't tell you on its own is whether that's happened yet, hence
 // the last_seen > removed_at filter.
 export async function listGhostWorkspaceDevices() {
-  const { data, error } = await supabase.from('workspace_devices').select(LIST_COLUMNS).not('removed_at', 'is', null).order('last_seen', { ascending: false });
-  if (error) throw error;
+  const data = await fetchWorkspaceDevices(true);
   return (data || []).filter((d) => d.last_seen && d.removed_at && new Date(d.last_seen) > new Date(d.removed_at));
 }
 
