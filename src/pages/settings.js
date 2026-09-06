@@ -5017,6 +5017,23 @@ function renderIntegrationsTab() {
       <div class="card-head"><h3>Slack Status Summary</h3><div class="desc">The automatic alerts above only fire on a CHANGE (something going offline, a new issue) - this instead posts a one-off snapshot of current status, whenever you click it. Good for a shift handover or just checking in on the channel without opening the dashboard.</div></div>
       <button type="button" class="btn btn-orange btn-sm" ${STATE.sendingStatusSummary ? 'disabled' : ''} onclick="App.sendWorkspaceStatusSummaryToSlack()">${STATE.sendingStatusSummary ? 'Sending...' : 'Send Status Summary Now'}</button>
     </div>` : ''}
+    <div class="card">
+      <div class="card-head"><h3>Slack Bot Q&amp;A</h3><div class="desc">Lets people ask the channel plain questions ("how many screens offline in metro", "how many screens in Abu Dhabi Mall") and get a live-data reply - the reverse direction from the webhook above, which can only push, never receive. This needs a real Slack App (a webhook alone can't answer anything):</div></div>
+      <ol class="small muted" style="margin:0 0 12px;padding-left:18px;">
+        <li>At <a href="https://api.slack.com/apps" target="_blank" rel="noopener">api.slack.com/apps</a>: Create New App -&gt; From scratch, pick this workspace.</li>
+        <li>OAuth &amp; Permissions -&gt; Bot Token Scopes: add <code>chat:write</code>, <code>channels:history</code>, and <code>groups:history</code> (only if the channel is private).</li>
+        <li>Event Subscriptions -&gt; Enable Events -&gt; Request URL: <code>https://ehvspjuxugvhdjxdevkh.supabase.co/functions/v1/slack-events</code> (deploy this feature first - Slack verifies the URL immediately and won't save it otherwise). Under "Subscribe to bot events" add <code>message.channels</code> (+ <code>message.groups</code> for a private channel).</li>
+        <li>Install App to Workspace, then copy the <b>Bot User OAuth Token</b> (starts <code>xoxb-</code>) and, from Basic Information -&gt; App Credentials, the <b>Signing Secret</b>.</li>
+        <li>Invite the bot to the channel: <code>/invite @&lt;your bot's name&gt;</code>.</li>
+        <li>Paste both values below and check Enabled.</li>
+      </ol>
+      <form onsubmit="App.saveIntegrationForm(event,'slackBotQa')">
+        <div class="field"><label>Bot User OAuth Token</label><input id="int-slackBotQa-botToken" type="password" autocomplete="off" placeholder="xoxb-..." value="${esc(settings.slackBotQa?.botToken || '')}"></div>
+        <div class="field"><label>Signing Secret</label><input id="int-slackBotQa-signingSecret" type="password" autocomplete="off" value="${esc(settings.slackBotQa?.signingSecret || '')}"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-bottom:10px;"><input type="checkbox" id="int-slackBotQa-enabled" style="width:auto;" ${settings.slackBotQa?.enabled ? 'checked' : ''}> Enabled</label>
+        <button class="btn btn-orange" type="submit">Save</button>
+      </form>
+    </div>
     ${integrationField(settings, 'sendgridEmail', 'SendGrid Email', [
       { name: 'apiKey', label: 'API Key', type: 'password' },
       { name: 'fromEmail', label: 'From Email (must be a Verified Sender in SendGrid)', type: 'email' },
