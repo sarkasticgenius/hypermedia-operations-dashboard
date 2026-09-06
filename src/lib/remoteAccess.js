@@ -21,3 +21,19 @@ export function remoteAccessUrl(tool, id) {
   // Unknown tool: the id is still worth showing and copying, there is just nothing to launch.
   return '';
 }
+
+// Border for the compact "Remote Access" button, colored after whichever tool(s) it actually
+// launches - AnyDesk's own brand red and TeamViewer's own brand blue (see --anydesk-red/
+// --teamviewer-blue in styles.css), split diagonally (border-image gradient) when a PC has both so
+// neither tool's color dominates. Falls back to the brand-orange treatment when the PC only has
+// something else (RustDesk, etc.) so the button still stands out from plain btn-sm. Text stays the
+// normal body color throughout - only the border carries the brand color, since colored text on
+// top of a colored border read as harder to scan than a plain black/white label.
+export function remoteAccessButtonStyle(hasAnyDesk, hasTeamViewer) {
+  if (hasAnyDesk && hasTeamViewer) {
+    return 'border:2px solid transparent;border-image:linear-gradient(135deg, var(--anydesk-red) 50%, var(--teamviewer-blue) 50%) 1;color:var(--text);font-weight:700;';
+  }
+  if (hasAnyDesk) return 'border:1.5px solid var(--anydesk-red);color:var(--text);font-weight:700;';
+  if (hasTeamViewer) return 'border:1.5px solid var(--teamviewer-blue);color:var(--text);font-weight:700;';
+  return 'border:1.5px solid var(--brand-orange);color:var(--brand-orange-dark);font-weight:700;';
+}

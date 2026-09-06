@@ -19,6 +19,10 @@
   --amber-bg:#fef3c7;
   --red:#c0392b;
   --red-bg:#fdecea;
+  /* Exact brand colors (not retheming for dark mode - these identify a specific product's logo,
+     same reasoning as brandLogos.js keeping actual logo art unchanged across themes). */
+  --anydesk-red:#ef443b;
+  --teamviewer-blue:#0e8ee9;
   /* Secondary surfaces - split out from the hardcoded hex values scattered through this file so
      dark mode (below) can retheme them in one place instead of chasing every literal #fff. */
   --row-hover:#fbfbfa;

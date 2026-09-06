@@ -12,7 +12,7 @@ import { supabase } from '../supabaseClient.js';
 import { isAdmin, canAdd } from '../auth.js';
 import { logAudit } from '../lib/audit.js';
 import { esc, jsAttrSq, fmtRelativeTime, fmtDateTime } from '../lib/format.js';
-import { remoteAccessUrl } from '../lib/remoteAccess.js';
+import { remoteAccessUrl, remoteAccessButtonStyle } from '../lib/remoteAccess.js';
 import { aiooSiteCategory, aiooSiteDisplayName, SITE_CATEGORIES } from '../lib/aiooSiteCategory.js';
 import { sortTh, applySort, colWidthCh, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 
@@ -775,7 +775,8 @@ function remoteAccessOptionsFor(device) {
 function remoteAccessButtonHtml(device, label) {
   const tools = remoteAccessOptionsFor(device);
   if (!tools.length) return '<span class="small muted">-</span>';
-  return `<button class="btn-sm" onclick='App.openRemoteAccessPicker(${jsonAttr({ tools, label: label || '' })})'>Remote Access</button>`;
+  const style = remoteAccessButtonStyle(!!device.anydesk_id, !!device.teamviewer_id);
+  return `<button class="btn-sm" style="${style}" onclick='App.openRemoteAccessPicker(${jsonAttr({ tools, label: label || '' })})'>Remote Access</button>`;
 }
 
 registerModal('remoteAccessPicker', (data) => {

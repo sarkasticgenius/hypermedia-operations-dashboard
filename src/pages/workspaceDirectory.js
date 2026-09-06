@@ -5,7 +5,7 @@ import { listSimCards } from '../data/simCards.js';
 import { listAssetInventory, resetAssetInventoryCache } from '../data/assetsInventory.js';
 import { canEdit, canDelete, isAdmin } from '../auth.js';
 import { AGENT_CANARY_HOSTNAMES, defaultOptimizerScript } from './settings.js';
-import { remoteAccessUrl } from '../lib/remoteAccess.js';
+import { remoteAccessUrl, remoteAccessButtonStyle } from '../lib/remoteAccess.js';
 import { esc, jsAttrSq, fmtRelativeTime, fmtDateTime, formatAgentVersion } from '../lib/format.js';
 import { exportToExcel } from '../lib/excelExport.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
@@ -91,7 +91,8 @@ function remoteAccessButtonHtml(d) {
   // still forces a transparent background here - .btn-outline's own opaque background would bring
   // back the exact row-banding bug that override was written to fix. The border/color/weight below
   // are inline instead, for the same "eye-catching" look without losing that.
-  return `<button class="btn-sm" style="border:1.5px solid var(--brand-orange);color:var(--brand-orange-dark);font-weight:700;" onclick='App.openRemoteAccessPicker(${jsonAttr({ tools, label: d.hostname })})'>Remote Access</button>`;
+  const style = remoteAccessButtonStyle(!!d.anydesk_id, !!d.teamviewer_id);
+  return `<button class="btn-sm" style="${style}" onclick='App.openRemoteAccessPicker(${jsonAttr({ tools, label: d.hostname })})'>Remote Access</button>`;
 }
 
 export function copyWorkspaceId(event, id) {
