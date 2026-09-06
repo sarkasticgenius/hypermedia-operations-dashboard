@@ -6,7 +6,7 @@ import { listAssetInventory, resetAssetInventoryCache } from '../data/assetsInve
 import { canEdit, canDelete, isAdmin } from '../auth.js';
 import { AGENT_CANARY_HOSTNAMES, defaultOptimizerScript } from './settings.js';
 import { remoteAccessUrl, remoteAccessButtonStyle } from '../lib/remoteAccess.js';
-import { esc, jsAttrSq, fmtRelativeTime, fmtDateTime, formatAgentVersion } from '../lib/format.js';
+import { esc, jsAttrSq, fmtRelativeTime, fmtDateTime, formatAgentVersion, OPS_TIME_ZONE } from '../lib/format.js';
 import { exportToExcel } from '../lib/excelExport.js';
 import { sortTh, applySort, FIXED_TABLE_STYLE } from '../lib/sortableTable.js';
 import { renderTabs } from '../lib/tabs.js';
@@ -477,13 +477,23 @@ function deviceCategoryTab(d, assetInventory, venueCategoryFallbackMap) {
 // stored du phone number, or a past successful scrape) - a Wi-Fi/LAN device with no SIM at all
 // legitimately has nothing to report every single day, and that is not a failure (see the
 // 'nodata'-with-no-knownSim branch of dataUsageCellHtml/duScrapeStatusHtml, which this mirrors).
+//
+// "Today" is a Dubai calendar day, not the viewer's own - matches todayStr in the Details modal's
+// own "today vs that day" check a few hundred lines down, for the same reason (see that comment).
+const duDayKey = (value) => new Intl.DateTimeFormat('en-CA', { timeZone: OPS_TIME_ZONE }).format(new Date(value));
 function dataCheckFailedToday(d) {
   const attemptedAt = d.du_scrape_attempted_at;
   if (!attemptedAt) return false;
-  const attempted = new Date(attemptedAt);
-  const now = new Date();
-  const isToday = attempted.getFullYear() === now.getFullYear() && attempted.getMonth() === now.getMonth() && attempted.getDate() === now.getDate();
-  if (!isToday) return false;
+  if (duDayKey(attemptedAt) !== duDayKey(Date.now())) return false;
+  // A same-day success already on record beats a later same-day attempt that came back worse.
+  // du_scraped_at only ever advances on a real figure (workspace-directory-checkin), while
+  // du_scrape_outcome/du_scrape_attempted_at always advance to whatever the LATEST attempt did that
+  // day - so a PC whose scheduled scrape succeeds can still end up flagged here if a second attempt
+  // fires later the same day and regresses (nodata/error/etc). Confirmed live, 6 Sep 2026: 10 devices
+  // (e.g. DESKTOP-QOJKQ58, PC-1C697A0F87E4) held a fresh same-day du_scraped_at with real figures
+  // while du_scrape_outcome read 'nodata' from an attempt hours later - the day's real check had
+  // already succeeded, so counting them as failed was the wrong answer, not a stale-data problem.
+  if (d.du_scraped_at && duDayKey(d.du_scraped_at) === duDayKey(Date.now())) return false;
   if (d.du_scrape_outcome === 'nobrowser' || d.du_scrape_outcome === 'error') return true;
   // 'partial'/'nofigures' (agent v70+) mean du answered with the SIM's number and no usage at all.
   // That IS a failed data check by definition - the figures on display are older than the attempt -
