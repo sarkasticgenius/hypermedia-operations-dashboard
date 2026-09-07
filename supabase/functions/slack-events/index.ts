@@ -63,7 +63,10 @@ function parseQuestion(rawText: string): { status: Status; place: string | null 
   // literal token regardless of where in the channel history the message came from.
   const text = rawText.replace(/^<@[A-Z0-9]+>\s*/i, '').trim();
   if (!/\bscreens?\b/i.test(text)) return null;
-  if (!/\bhow many\b|\bcount\b|\bnumber of\b/i.test(text)) return null;
+  // "any screens offline in X?" is just as natural a way to ask this as "how many" - confirmed
+  // live: it got no reply at all before this, which reads as the bot being broken rather than the
+  // question being outside its fixed set.
+  if (!/\bhow many\b|\bcount\b|\bnumber of\b|\bany\b/i.test(text)) return null;
 
   const status: Status = /\boffline\b/i.test(text) ? 'offline' : /\bonline\b/i.test(text) ? 'online' : null;
   const placeMatch = text.match(/\b(?:in|at|for)\s+(.+?)\s*\??$/i);
