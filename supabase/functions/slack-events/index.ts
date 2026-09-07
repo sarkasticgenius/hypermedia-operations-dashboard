@@ -67,7 +67,21 @@ function parseQuestion(rawText: string): { status: Status; place: string | null 
 
   const status: Status = /\boffline\b/i.test(text) ? 'offline' : /\bonline\b/i.test(text) ? 'online' : null;
   const placeMatch = text.match(/\b(?:in|at|for)\s+(.+?)\s*\??$/i);
-  const place = placeMatch ? placeMatch[1].replace(/^the\s+/i, '').trim() : null;
+  // Strips conversational trailing words ("...in Dubai Metro NOW", "...in the mall PLEASE") that
+  // the greedy-to-end-of-string capture above would otherwise swallow into the place phrase -
+  // confirmed live: "how many screens offline in Dubai Metro now" resolved to the whole Dubai
+  // EMIRATE (890 screens) instead of the Metro chain specifically (285), because "dubai metro now"
+  // doesn't exactly match either METRO_KEYWORDS or a real venue/chain name the way "dubai metro"
+  // alone does. Applied repeatedly since more than one can stack ("now please").
+  let place = placeMatch ? placeMatch[1].replace(/^the\s+/i, '').trim() : null;
+  if (place) {
+    let stripped = place;
+    do {
+      place = stripped;
+      stripped = place.replace(/\s+(?:now|please|pls|today|currently|right now)$/i, '').trim();
+    } while (stripped !== place && stripped);
+    place = stripped || place;
+  }
   return { status, place: place || null };
 }
 
